@@ -47,10 +47,12 @@ export default function EvaluationOverview({
   const completed = runs.filter((run) => run.status === 'completed').length
   const failed = runs.filter((run) => run.status === 'failed').length
   const latestRun = runs[0]
+  const latestCompletedRun = runs.find((run) => run.status === 'completed') || null
   const latestReportRun = latestReport
     ? runs.find((run) => run.id === latestReport.run.id) || null
     : null
   const latestReportName = latestReportRun?.name || latestReport?.run.name
+  const latestEvidenceName = latestReportName || latestCompletedRun?.name
   const isDiagnostic = latestReport?.run.evidence_level === 'E0'
   const serverAttested = latestReport ? hasServerEvaluationAttestation(latestReport) : false
   const isServerAttestedDiagnostic = isDiagnostic && serverAttested
@@ -80,7 +82,7 @@ export default function EvaluationOverview({
         <div className={styles.readinessCopy}>
           <span className={styles.eyebrow}>Decision readiness</span>
           <h2 id="evaluation-readiness-title">
-            {latestReportName || 'Establish the first evidence baseline'}
+            {latestEvidenceName || 'Establish the first evidence baseline'}
           </h2>
           <p>
             {latestReport
@@ -89,7 +91,9 @@ export default function EvaluationOverview({
                 : isServerAttestedDiagnostic
                   ? 'This server-attested E0 report exposes a bounded set of independently reduced diagnostics. Promotion remains withheld until native benchmark and execution receipts qualify the claim.'
                   : 'Review required blockers and measured outcomes before changing the production recipe or model pool.'
-              : 'Create a bounded replay or live run. The plane keeps missing evidence explicit and never promotes an unmeasured gate.'}
+              : reportLoading && latestCompletedRun
+                ? 'Loading the newest completed report and its server attestation. No decision state is inferred while evidence is in flight.'
+                : 'Create a bounded replay or live run. The plane keeps missing evidence explicit and never promotes an unmeasured gate.'}
           </p>
         </div>
         <div className={styles.readinessActions}>
@@ -138,13 +142,15 @@ export default function EvaluationOverview({
             <span className={styles.eyebrow}>
               {runLedgerComplete ? 'Latest completed evidence' : 'Latest readable evidence'}
             </span>
-            <h2 id="latest-evidence-title">{latestReportName || 'No completed report yet'}</h2>
+            <h2 id="latest-evidence-title">{latestEvidenceName || 'No completed report yet'}</h2>
             <p>
-              {isLegacyReport
-                ? `${legacyEvidenceLabel}. Headline elevation is withheld; the complete metric set remains in the report explorer.`
-                : serverAttested
-                  ? 'Only metrics reduced by the current server attestation are elevated here; the complete worker-derived metric set remains in the report explorer.'
-                  : 'Headline elevation is withheld until the report carries a current server attestation.'}
+              {reportLoading && !latestReport
+                ? 'Loading the current server attestation and independently reduced headline metrics.'
+                : isLegacyReport
+                  ? `${legacyEvidenceLabel}. Headline elevation is withheld; the complete metric set remains in the report explorer.`
+                  : serverAttested
+                    ? 'Only metrics reduced by the current server attestation are elevated here; the complete worker-derived metric set remains in the report explorer.'
+                    : 'Headline elevation is withheld until the report carries a current server attestation.'}
             </p>
           </div>
           {latestReport ? (

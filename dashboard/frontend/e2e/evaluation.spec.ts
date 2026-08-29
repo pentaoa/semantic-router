@@ -93,6 +93,30 @@ test.describe('Evaluation Plane', () => {
     await expect(page.getByText('Decision readiness', { exact: true })).toBeVisible()
   })
 
+  test('keeps completed evidence identity honest while the newest report is loading', async ({
+    page,
+  }) => {
+    await mockEvaluationPlane(page, defaultEvaluationRuns, { reportDelayMs: 750 })
+    await page.goto('/evaluation')
+
+    await expect(page.getByText('Loading report summary…', { exact: true })).toBeVisible()
+    await expect(page.locator('#evaluation-readiness-title')).toHaveText('Candidate recipe')
+    await expect(page.locator('#latest-evidence-title')).toHaveText('Candidate recipe')
+    await expect(
+      page.getByText(
+        'Loading the newest completed report and its server attestation. No decision state is inferred while evidence is in flight.',
+        { exact: true },
+      ),
+    ).toBeVisible()
+    await expect(
+      page.getByText('Establish the first evidence baseline', { exact: true }),
+    ).toHaveCount(0)
+    await expect(page.getByText('No completed report yet', { exact: true })).toHaveCount(0)
+
+    await expect(page.getByText('Loading report summary…', { exact: true })).toHaveCount(0)
+    await expect(page.getByText(/server-attested E0 report exposes a bounded set/i)).toBeVisible()
+  })
+
   test('supports keyboard navigation across the evaluation tabs', async ({ page }) => {
     await mockEvaluationPlane(page)
     await page.goto('/evaluation')
@@ -423,6 +447,25 @@ test.describe('Evaluation Plane', () => {
       await expect(gate.getByText('Passed', { exact: true })).toHaveCount(0)
     }
     await captureEvaluationSurface(page, 'report-gates-desktop')
+  })
+
+  test('pages dense metric reports and resets the page when filters change', async ({ page }) => {
+    await mockEvaluationPlane(page, defaultEvaluationRuns, { reportMetricCount: 45 })
+    await page.goto('/evaluation?view=reports&report=candidate-run')
+
+    const metrics = page.getByRole('table', { name: 'Evaluation metrics' })
+    await expect(metrics.getByRole('row')).toHaveCount(21)
+    await expect(page.getByText('1–20 of 45', { exact: true })).toBeVisible()
+    await expect(page.getByText('Page 1 of 3', { exact: true })).toBeVisible()
+
+    await page.getByRole('button', { name: 'Next', exact: true }).click()
+    await expect(page.getByText('Page 2 of 3', { exact: true })).toBeVisible()
+    await expect(page.getByText('21–40 of 45', { exact: true })).toBeVisible()
+
+    await page.getByLabel('Find a metric').fill('metric 45')
+    await expect(page.getByText('1–1 of 1 matching · 45 total', { exact: true })).toBeVisible()
+    await expect(page.getByText('Page 2 of 3', { exact: true })).toHaveCount(0)
+    await expect(metrics.getByRole('row')).toHaveCount(2)
   })
 
   test('isolates an invalid capacity diagnostic artifact without collapsing the report', async ({

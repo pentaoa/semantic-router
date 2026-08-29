@@ -636,6 +636,8 @@ interface MockEvaluationPlaneOptions {
   mutationDelayMs?: number
   catalogDelayMs?: number
   ledgerDelayMs?: number
+  reportDelayMs?: number
+  reportMetricCount?: number
   ledgerWarnings?: EvaluationRunLedgerWarning[]
   legacyReportRunIdentity?: boolean
   unattestedPromotionClaim?: boolean
@@ -820,6 +822,7 @@ export async function mockEvaluationPlane(
     })
   })
   await page.route('**/api/evaluation/v1/runs/*/report', async (route) => {
+    await new Promise<void>((resolve) => setTimeout(resolve, options.reportDelayMs || 0))
     const parts = new URL(route.request().url()).pathname.split('/')
     const id = decodeURIComponent(parts[parts.length - 2] || '')
     reportRequests.push(id)
@@ -847,6 +850,13 @@ export async function mockEvaluationPlane(
       return
     }
     const report = evaluationReport(run)
+    if (options.reportMetricCount && report.metrics.length) {
+      report.metrics = Array.from({ length: options.reportMetricCount }, (_, index) => ({
+        ...report.metrics[index % report.metrics.length],
+        id: `diagnostic.metric_${String(index + 1).padStart(2, '0')}`,
+        name: `Diagnostic metric ${index + 1}`,
+      }))
+    }
     if (options.legacyReportRunIdentity) {
       delete report.attestation_revision
       report.run = {

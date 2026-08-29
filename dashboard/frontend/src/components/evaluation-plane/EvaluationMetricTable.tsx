@@ -1,4 +1,4 @@
-import { useDeferredValue, useMemo, useState } from 'react'
+import { useDeferredValue, useEffect, useMemo, useState } from 'react'
 
 import type {
   EvidenceLevel,
@@ -24,6 +24,8 @@ interface EvaluationMetricTableProps {
   evidenceLevel?: EvidenceLevel
   serverAttested?: boolean
 }
+
+const METRICS_PAGE_SIZE = 20
 
 function directionLabel(direction: EvaluationMetric['direction']): string {
   switch (direction) {
@@ -71,6 +73,7 @@ export default function EvaluationMetricTable({
 }: EvaluationMetricTableProps) {
   const [search, setSearch] = useState('')
   const [track, setTrack] = useState<EvaluationTrackId | 'all'>('all')
+  const [page, setPage] = useState(1)
   const deferredSearch = useDeferredValue(search.trim().toLowerCase())
   const tracks = useMemo(
     () =>
@@ -79,7 +82,7 @@ export default function EvaluationMetricTable({
       ].sort() as EvaluationTrackId[],
     [metrics],
   )
-  const visible = useMemo(
+  const filtered = useMemo(
     () =>
       metrics.filter((metric) => {
         if (track !== 'all' && metric.track_id !== track) return false
@@ -90,6 +93,15 @@ export default function EvaluationMetricTable({
       }),
     [deferredSearch, metrics, track],
   )
+  const pages = Math.max(1, Math.ceil(filtered.length / METRICS_PAGE_SIZE))
+  const safePage = Math.min(page, pages)
+  const firstVisibleIndex = (safePage - 1) * METRICS_PAGE_SIZE
+  const visible = filtered.slice(firstVisibleIndex, firstVisibleIndex + METRICS_PAGE_SIZE)
+
+  useEffect(() => setPage(1), [deferredSearch, track])
+  useEffect(() => {
+    if (page > pages) setPage(pages)
+  }, [page, pages])
 
   if (metrics.length === 0) {
     return <p className={styles.empty}>No metrics were produced for this evidence slice.</p>
@@ -125,7 +137,10 @@ export default function EvaluationMetricTable({
             </label>
           ) : null}
           <span className={styles.metricResultCount} aria-live="polite">
-            {visible.length} of {metrics.length}
+            {filtered.length
+              ? `${firstVisibleIndex + 1}–${firstVisibleIndex + visible.length} of ${filtered.length}`
+              : `0 of ${metrics.length}`}
+            {filtered.length !== metrics.length ? ` matching · ${metrics.length} total` : ''}
           </span>
         </div>
       ) : null}
@@ -209,6 +224,27 @@ export default function EvaluationMetricTable({
           </table>
         </div>
       )}
+      {filtered.length > 0 && pages > 1 ? (
+        <nav className={styles.metricPagination} aria-label="Metric table pages">
+          <button
+            type="button"
+            disabled={safePage === 1}
+            onClick={() => setPage((value) => Math.max(1, value - 1))}
+          >
+            Previous
+          </button>
+          <span>
+            Page {safePage} of {pages}
+          </span>
+          <button
+            type="button"
+            disabled={safePage === pages}
+            onClick={() => setPage((value) => Math.min(pages, value + 1))}
+          >
+            Next
+          </button>
+        </nav>
+      ) : null}
     </div>
   )
 }
