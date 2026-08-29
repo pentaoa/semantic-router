@@ -41,5 +41,21 @@ export function useEvaluationOverviewReport(completedRuns: EvaluationRun[], enab
     else void refresh()
   }, [fallbackIndex, refresh])
 
-  return { ...reportState, fallbackCount: fallbackIndex, retry }
+  const requestedRunID = enabled ? runID : null
+  const requestedReportLoaded = reportState.report?.run.id === requestedRunID
+  const requestedReportFailed = reportState.errorRunID === requestedRunID
+  const switchingRequests = Boolean(
+    requestedRunID && !requestedReportLoaded && !requestedReportFailed,
+  )
+
+  return {
+    ...reportState,
+    loading: enabled && (reportState.loading || switchingRequests),
+    error: requestedReportFailed ? reportState.error : null,
+    errorRunID: requestedReportFailed ? reportState.errorRunID : null,
+    errorStatus: requestedReportFailed ? reportState.errorStatus : null,
+    requestedRunID,
+    fallbackCount: fallbackIndex,
+    retry,
+  }
 }

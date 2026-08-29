@@ -24,7 +24,7 @@ export default function EvaluationMethodCoverage({ catalog }: { catalog: Evaluat
           <h2 id="evaluation-methods-title">What the plane knows how to measure</h2>
           <p>
             Nine method families preserve the distinct ideas from {REGISTERED_BENCHMARK_COUNT}{' '}
-            pinned benchmark adapters. Registration describes the contract; only an installed,
+            pinned benchmark contracts. Registration describes the contract; only an installed,
             attested suite can raise a scientific claim above E0.
           </p>
         </div>

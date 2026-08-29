@@ -637,6 +637,7 @@ interface MockEvaluationPlaneOptions {
   catalogDelayMs?: number
   ledgerDelayMs?: number
   reportDelayMs?: number
+  reportDelayByID?: Record<string, number>
   reportMetricCount?: number
   ledgerWarnings?: EvaluationRunLedgerWarning[]
   legacyReportRunIdentity?: boolean
@@ -822,9 +823,10 @@ export async function mockEvaluationPlane(
     })
   })
   await page.route('**/api/evaluation/v1/runs/*/report', async (route) => {
-    await new Promise<void>((resolve) => setTimeout(resolve, options.reportDelayMs || 0))
     const parts = new URL(route.request().url()).pathname.split('/')
     const id = decodeURIComponent(parts[parts.length - 2] || '')
+    const reportDelay = options.reportDelayByID?.[id] ?? options.reportDelayMs ?? 0
+    await new Promise<void>((resolve) => setTimeout(resolve, reportDelay))
     reportRequests.push(id)
     if (options.reportFailureIDs?.includes(id)) {
       await fulfillError(

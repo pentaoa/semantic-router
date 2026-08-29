@@ -23,6 +23,7 @@ interface EvaluationOverviewProps {
   runs: EvaluationRun[]
   runLedgerComplete: boolean
   latestReport: EvaluationReport | null
+  requestedReportRunID: string | null
   reportLoading: boolean
   reportError: string | null
   reportFallbackCount: number
@@ -36,6 +37,7 @@ export default function EvaluationOverview({
   runs,
   runLedgerComplete,
   latestReport,
+  requestedReportRunID,
   reportLoading,
   reportError,
   reportFallbackCount,
@@ -51,8 +53,12 @@ export default function EvaluationOverview({
   const latestReportRun = latestReport
     ? runs.find((run) => run.id === latestReport.run.id) || null
     : null
+  const requestedReportRun = requestedReportRunID
+    ? runs.find((run) => run.id === requestedReportRunID) || null
+    : null
   const latestReportName = latestReportRun?.name || latestReport?.run.name
-  const latestEvidenceName = latestReportName || latestCompletedRun?.name
+  const latestEvidenceName =
+    latestReportName || requestedReportRun?.name || latestCompletedRun?.name
   const isDiagnostic = latestReport?.run.evidence_level === 'E0'
   const serverAttested = latestReport ? hasServerEvaluationAttestation(latestReport) : false
   const isServerAttestedDiagnostic = isDiagnostic && serverAttested
@@ -91,8 +97,10 @@ export default function EvaluationOverview({
                 : isServerAttestedDiagnostic
                   ? 'This server-attested E0 report exposes a bounded set of independently reduced diagnostics. Promotion remains withheld until native benchmark and execution receipts qualify the claim.'
                   : 'Review required blockers and measured outcomes before changing the production recipe or model pool.'
-              : reportLoading && latestCompletedRun
-                ? 'Loading the newest completed report and its server attestation. No decision state is inferred while evidence is in flight.'
+              : reportLoading && requestedReportRun
+                ? reportFallbackCount > 0
+                  ? `Loading an earlier completed report after ${reportFallbackCount} newer report${reportFallbackCount === 1 ? '' : 's'} proved unreadable. No decision state is inferred while evidence is in flight.`
+                  : 'Loading the newest completed report and its server attestation. No decision state is inferred while evidence is in flight.'
                 : 'Create a bounded replay or live run. The plane keeps missing evidence explicit and never promotes an unmeasured gate.'}
           </p>
         </div>
@@ -140,7 +148,13 @@ export default function EvaluationOverview({
         <header className={styles.surfaceHeader}>
           <div>
             <span className={styles.eyebrow}>
-              {runLedgerComplete ? 'Latest completed evidence' : 'Latest readable evidence'}
+              {reportFallbackCount > 0
+                ? latestReport
+                  ? 'Previous readable evidence'
+                  : 'Earlier completed evidence'
+                : runLedgerComplete
+                  ? 'Latest completed evidence'
+                  : 'Latest readable evidence'}
             </span>
             <h2 id="latest-evidence-title">{latestEvidenceName || 'No completed report yet'}</h2>
             <p>

@@ -354,6 +354,32 @@ test.describe('Evaluation Plane', () => {
     await expect(page.getByRole('button', { name: 'Retry newest' })).toBeVisible()
   })
 
+  test('binds fallback loading copy and identity to the report being requested', async ({
+    page,
+  }) => {
+    await mockEvaluationPlane(page, defaultEvaluationRuns, {
+      reportFailureIDs: ['candidate-run'],
+      reportFailureStatus: 404,
+      reportDelayByID: { 'baseline-run': 1_000 },
+    })
+    await page.goto('/evaluation')
+
+    await expect(page.locator('#evaluation-readiness-title')).toHaveText('Production baseline')
+    await expect(page.locator('#latest-evidence-title')).toHaveText('Production baseline')
+    await expect(page.getByText('Earlier completed evidence', { exact: true })).toBeVisible()
+    await expect(page.getByText('Loading report summary…', { exact: true })).toBeVisible()
+    await expect(
+      page.getByText(
+        'Loading an earlier completed report after 1 newer report proved unreadable. No decision state is inferred while evidence is in flight.',
+        { exact: true },
+      ),
+    ).toBeVisible()
+    await expect(page.getByText('Candidate recipe', { exact: true })).toHaveCount(0)
+
+    await expect(page.getByText('Showing the previous readable report.')).toBeVisible()
+    await expect(page.getByText('Previous readable evidence', { exact: true })).toBeVisible()
+  })
+
   test('does not cascade through report history during a service outage', async ({ page }) => {
     const state = await mockEvaluationPlane(page, defaultEvaluationRuns, {
       reportFailureIDs: ['candidate-run'],

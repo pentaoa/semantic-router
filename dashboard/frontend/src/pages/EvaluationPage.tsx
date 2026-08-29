@@ -285,6 +285,7 @@ export function EvaluationPage() {
                 runs={plane.runs}
                 runLedgerComplete={plane.runLedgerComplete}
                 latestReport={latestReportState.report}
+                requestedReportRunID={latestReportState.requestedRunID}
                 reportLoading={latestReportState.loading}
                 reportError={latestReportState.error}
                 reportFallbackCount={latestReportState.fallbackCount}
