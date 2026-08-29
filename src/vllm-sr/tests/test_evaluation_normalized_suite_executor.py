@@ -530,6 +530,8 @@ def test_installed_composite_executes_all_tracks_deterministically_without_leaks
     assert "xroute-private-case" not in public_payload
     assert "ace-private-case" not in public_payload
     assert "r2-private-case" not in public_payload
+    records = (first_store / "runs" / manifest.run_id / "records.jsonl").read_text()
+    assert "normalized suite does not declare this track" not in records
 
     lineage_path = first_store / "runs" / manifest.run_id / "lineage.json"
     lineage = json.loads(lineage_path.read_text())

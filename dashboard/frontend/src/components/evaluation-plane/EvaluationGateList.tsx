@@ -1,6 +1,6 @@
 import type { EvaluationGate } from '../../types/evaluationPlane'
 import { formatDateTime } from '../../utils/dateTime'
-import { formatMetric } from './evaluationPresentation'
+import { formatMetric, gateVerdictPresentation } from './evaluationPresentation'
 import { GateVerdictBadge } from './EvaluationPrimitives'
 import styles from './EvaluationReport.module.css'
 
@@ -9,66 +9,74 @@ export default function EvaluationGateList({ gates }: { gates: EvaluationGate[] 
 
   return (
     <div className={styles.gateList}>
-      {gates.map((gate) => (
-        <article key={gate.id} className={styles.gateRow}>
-          <div className={styles.gateIdentity}>
-            <div>
-              <strong>{gate.name}</strong>
-              <code>{gate.id}</code>
+      {gates.map((gate) => {
+        const verdict = gateVerdictPresentation(gate)
+        return (
+          <article key={gate.id} className={styles.gateRow} data-tone={verdict.tone}>
+            <div className={styles.gateIdentity}>
+              <div>
+                <strong>{gate.name}</strong>
+                <code>{gate.id}</code>
+              </div>
+              <p className={styles.gateRationale}>{gate.rationale || verdict.explanation}</p>
+              {gate.description ? <small>{gate.description}</small> : null}
             </div>
-            <p>{gate.description || gate.rationale || 'No gate rationale was recorded.'}</p>
-          </div>
-          <div className={styles.gateEvidence}>
-            <span>{gate.disposition.replace('_', ' ')}</span>
-            {typeof gate.observed === 'number' ? (
+            <div className={styles.gateEvidence}>
+              <span>{gate.disposition.replace('_', ' ')}</span>
+              {typeof gate.observed === 'number' ? (
+                <small>
+                  Observed{' '}
+                  {formatMetric({ value: gate.observed, unit: gate.threshold?.unit || '' })}
+                  {gate.threshold
+                    ? ` · ${gate.threshold.operator} ${formatMetric({ value: gate.threshold.value, unit: gate.threshold.unit || '' })}`
+                    : ''}
+                </small>
+              ) : null}
               <small>
-                Observed {formatMetric({ value: gate.observed, unit: gate.threshold?.unit || '' })}
-                {gate.threshold
-                  ? ` · ${gate.threshold.operator} ${formatMetric({ value: gate.threshold.value, unit: gate.threshold.unit || '' })}`
-                  : ''}
+                Profile <code>{gate.change_profile}</code> · contract{' '}
+                <code>{gate.contract_version}</code>
               </small>
-            ) : null}
-            <small>
-              Profile <code>{gate.change_profile}</code> · contract{' '}
-              <code>{gate.contract_version}</code>
-            </small>
-            {typeof gate.sample_count === 'number' ? <small>N = {gate.sample_count}</small> : null}
-            {gate.coverage ? (
-              <small>
-                Coverage {gate.coverage.evaluated}/{gate.coverage.total} (
-                {(gate.coverage.fraction * 100).toFixed(1)}%)
-                {gate.coverage.unavailable ? ` · ${gate.coverage.unavailable} unavailable` : ''}
-                {gate.coverage.confidence_interval
-                  ? ` · CI ${(gate.coverage.confidence_interval[0] * 100).toFixed(1)}–${(
-                      gate.coverage.confidence_interval[1] * 100
-                    ).toFixed(1)}%`
-                  : ''}
-              </small>
-            ) : null}
-            {gate.owner ? <small>Owner {gate.owner}</small> : null}
-            {gate.evaluated_at ? (
-              <small>Evaluated {formatDateTime(gate.evaluated_at)}</small>
-            ) : null}
-            {gate.evidence_refs.length ? (
-              <ul className={styles.gateReferences} aria-label={`${gate.id} evidence references`}>
-                {gate.evidence_refs.map((reference, index) => (
-                  <li key={`${index}-${reference}`}>
-                    <code>{reference}</code>
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <small>No evidence references recorded.</small>
-            )}
-            {gate.disposition === 'required' && gate.verdict === 'unavailable' ? (
-              <strong className={styles.unavailableWarning}>
-                Required gate is not satisfied: unavailable evidence never counts as pass.
-              </strong>
-            ) : null}
-          </div>
-          <GateVerdictBadge verdict={gate.verdict} />
-        </article>
-      ))}
+              {typeof gate.sample_count === 'number' ? (
+                <small>N = {gate.sample_count}</small>
+              ) : null}
+              {gate.coverage ? (
+                <small>
+                  Coverage {gate.coverage.evaluated}/{gate.coverage.total} (
+                  {(gate.coverage.fraction * 100).toFixed(1)}%)
+                  {gate.coverage.unavailable ? ` · ${gate.coverage.unavailable} unavailable` : ''}
+                  {gate.coverage.confidence_interval
+                    ? ` · CI ${(gate.coverage.confidence_interval[0] * 100).toFixed(1)}–${(
+                        gate.coverage.confidence_interval[1] * 100
+                      ).toFixed(1)}%`
+                    : ''}
+                </small>
+              ) : null}
+              {gate.owner ? <small>Owner {gate.owner}</small> : null}
+              {gate.evaluated_at ? (
+                <small>Evaluated {formatDateTime(gate.evaluated_at)}</small>
+              ) : null}
+              {gate.evidence_refs.length ? (
+                <ul className={styles.gateReferences} aria-label={`${gate.id} evidence references`}>
+                  {gate.evidence_refs.map((reference, index) => (
+                    <li key={`${index}-${reference}`}>
+                      <code>{reference}</code>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <small>No evidence references recorded.</small>
+              )}
+              {gate.disposition === 'required' && gate.verdict === 'unavailable' ? (
+                <strong className={styles.unavailableWarning}>
+                  Promotion blocker · produce the referenced qualified evidence before this gate can
+                  pass.
+                </strong>
+              ) : null}
+            </div>
+            <GateVerdictBadge verdict={gate.verdict} disposition={gate.disposition} />
+          </article>
+        )
+      })}
     </div>
   )
 }

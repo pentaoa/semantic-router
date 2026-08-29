@@ -278,19 +278,39 @@ identifiers.
 
 Read the report in this order:
 
-1. **Coverage.** Confirm how many planned cases produced usable evidence.
-   Failure and unavailable cases remain in the denominator.
-2. **Required gates.** A failed required gate blocks the claim. An unavailable
+1. **Decision boundary and blockers.** Check the evidence level and required
+   gates first. E0 exposes useful diagnostics but withholds a promotion summary.
+2. **Coverage.** Confirm how many applicable plan cells produced usable
+   evidence. Failed and not-measured cells remain in the denominator.
+3. **Required gates.** A failed required gate blocks the claim. An unavailable
    gate means the run lacks the evidence to decide; it is not a pass.
-3. **Primary quality and safety metrics.** Check confidence intervals and
+4. **Primary quality and safety metrics.** Check confidence intervals and
    slices, not only the aggregate.
-4. **Routing and pool decomposition.** Compare realized utility with best
+5. **Routing and pool decomposition.** Compare realized utility with best
    single and pool-oracle baselines.
-5. **Latency, reliability, and three cost ledgers.** Runtime cost, evaluation
+6. **Latency, reliability, and three cost ledgers.** Runtime cost, evaluation
    overhead, and capacity/TCO answer different questions and must not be added
    without an explicit model.
-6. **Failure cases and lineage.** Verify the candidate, environment, workload,
+7. **Failure cases and lineage.** Verify the candidate, environment, workload,
    and grader are the intended frozen revisions.
+
+The Dashboard deliberately keeps state axes separate:
+
+| UI state | Meaning | Decision effect |
+|----------|---------|-----------------|
+| `Not selected` | the track or method is outside this run's declared scope | excluded from the execution plan and coverage denominator |
+| `Not measured` | an applicable selected cell produced no usable observation | remains in coverage and can make a required gate need evidence |
+| `Evidence needed` | a required gate lacks the qualified evidence named by its rationale | blocks promotion; never treated as a pass |
+| `Not required` | the selected change profile marks the gate not applicable | reported but does not block |
+| `Failed` / `Cancelled` | execution ended without a sealed completed report | inspect the durable timeline and error; no report is fabricated |
+
+When one run selects heterogeneous suites, the executor plans only the tracks
+declared by each suite. It does not form a suite-by-track Cartesian product.
+For example, a routing-only suite and a capacity-only suite contribute their
+own applicable cells; each is not counted as unavailable for the other's
+track. Target availability in the catalog means the server has the configured
+capability contract. It is not a live health probe; execution state and
+observation state remain separate.
 
 Candidate comparison is also fail-closed. It rejects self-comparison, a
 mismatched `baseline_run_id`, workload/benchmark/seed drift, and treatment

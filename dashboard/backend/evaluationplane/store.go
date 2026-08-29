@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -20,15 +21,24 @@ const (
 	reportFileName   = "report.json"
 	maxEventsPerRun  = uint64(8192)
 	maxEventLogBytes = int64(16 * 1024 * 1024)
+
+	corruptRunBundleWarningCode = "corrupt_run_bundle"
 )
 
 var safeIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`)
 
 type Store struct {
-	root      string
-	runsRoot  string
-	mu        sync.Mutex
-	sequences map[string]uint64
+	root            string
+	runsRoot        string
+	mu              sync.Mutex
+	sequences       map[string]uint64
+	runListWarnings map[string]runListWarning
+}
+
+type runListWarning struct {
+	Code    string
+	RunID   string
+	Message string
 }
 
 func NewStore(root string) (*Store, error) {
@@ -55,7 +65,10 @@ func NewStore(root string) (*Store, error) {
 			return nil, err
 		}
 	}
-	return &Store{root: absRoot, runsRoot: runsRoot, sequences: make(map[string]uint64)}, nil
+	return &Store{
+		root: absRoot, runsRoot: runsRoot,
+		sequences: make(map[string]uint64), runListWarnings: make(map[string]runListWarning),
+	}, nil
 }
 
 func (s *Store) Root() string { return s.root }
@@ -97,6 +110,9 @@ func (s *Store) GetRun(id string) (Run, error) {
 	if err := readJSON(filepath.Join(runDir, runFileName), &run); err != nil {
 		return Run{}, err
 	}
+	if err := validateStoredRun(id, run); err != nil {
+		return Run{}, fmt.Errorf("validate evaluation run status: %w", err)
+	}
 	return run, nil
 }
 
@@ -108,18 +124,64 @@ func (s *Store) ListRuns() ([]Run, error) {
 		return nil, fmt.Errorf("list evaluation runs: %w", err)
 	}
 	runs := make([]Run, 0, len(entries))
+	warnings := make(map[string]runListWarning)
 	for _, entry := range entries {
 		if !entry.IsDir() || !safeIDPattern.MatchString(entry.Name()) {
 			continue
 		}
 		run, readErr := s.GetRun(entry.Name())
 		if readErr != nil {
-			return nil, fmt.Errorf("read run bundle %s: %w", entry.Name(), readErr)
+			warnings[entry.Name()] = runListWarning{
+				Code: corruptRunBundleWarningCode, RunID: entry.Name(), Message: readErr.Error(),
+			}
+			continue
 		}
 		runs = append(runs, run)
 	}
+	s.updateRunListWarnings(warnings)
 	sort.Slice(runs, func(i, j int) bool { return runs[i].CreatedAt.After(runs[j].CreatedAt) })
 	return runs, nil
+}
+
+func validateStoredRun(bundleID string, run Run) error {
+	if run.SchemaVersion != SchemaVersion {
+		return fmt.Errorf("status schema_version must be %q", SchemaVersion)
+	}
+	if run.ID != bundleID {
+		return fmt.Errorf("status run identity does not match its bundle")
+	}
+	switch run.Status {
+	case StatusPending, StatusRunning, StatusCompleted, StatusFailed, StatusCancelled:
+		return nil
+	default:
+		return fmt.Errorf("status contains an invalid run state")
+	}
+}
+
+func (s *Store) updateRunListWarnings(current map[string]runListWarning) {
+	for runID, warning := range current {
+		if previous, unchanged := s.runListWarnings[runID]; unchanged && previous == warning {
+			continue
+		}
+		log.Printf(
+			"evaluationplane: warning_code=%s run_id=%q message=%q",
+			warning.Code,
+			warning.RunID,
+			warning.Message,
+		)
+	}
+	s.runListWarnings = current
+}
+
+func (s *Store) activeRunListWarnings() []runListWarning {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	warnings := make([]runListWarning, 0, len(s.runListWarnings))
+	for _, warning := range s.runListWarnings {
+		warnings = append(warnings, warning)
+	}
+	sort.Slice(warnings, func(i, j int) bool { return warnings[i].RunID < warnings[j].RunID })
+	return warnings
 }
 
 func (s *Store) UpdateRun(run Run) error {

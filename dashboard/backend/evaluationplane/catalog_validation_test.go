@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -209,6 +210,88 @@ func TestCreateRunAllowlistAndCanonicalManifest(t *testing.T) {
 	}
 	if _, statErr := os.Stat(filepath.Join(root, "runs", run.ID, "events.jsonl")); !os.IsNotExist(statErr) {
 		t.Fatalf("Go control plane must not create Python evidence events.jsonl; err=%v", statErr)
+	}
+}
+
+func TestCreateRunClientRequestIDIsIdempotent(t *testing.T) {
+	service, _ := newTestService(t, &controlledProcess{}, 1)
+	request := validCreateRequest()
+	request.ClientRequestID = "4d0b4f2c-1fc5-40b0-b04e-876ad9d4d8e2"
+
+	first, err := service.CreateRun(context.Background(), request)
+	if err != nil {
+		t.Fatalf("first CreateRun: %v", err)
+	}
+	second, err := service.CreateRun(context.Background(), request)
+	if err != nil {
+		t.Fatalf("replayed CreateRun: %v", err)
+	}
+	if first.ID != second.ID || second.ClientRequestID != request.ClientRequestID {
+		t.Fatalf("idempotent create returned distinct runs: first=%+v second=%+v", first, second)
+	}
+	runs, err := service.ListRuns()
+	if err != nil {
+		t.Fatalf("ListRuns: %v", err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("ListRuns count=%d, want 1", len(runs))
+	}
+
+	changed := request
+	changed.Name = "Different experiment"
+	if _, err := service.CreateRun(context.Background(), changed); !errors.Is(err, ErrConflict) {
+		t.Fatalf("changed idempotent replay error=%v, want ErrConflict", err)
+	}
+}
+
+func TestCreateRunRejectsInvalidClientRequestID(t *testing.T) {
+	service, _ := newTestService(t, &controlledProcess{}, 1)
+	request := validCreateRequest()
+	request.ClientRequestID = "retry-me"
+	if _, err := service.CreateRun(context.Background(), request); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("CreateRun error=%v, want ErrInvalid", err)
+	}
+}
+
+func TestCreateRunClientRequestIDCollapsesConcurrentRetries(t *testing.T) {
+	service, _ := newTestService(t, &controlledProcess{}, 1)
+	request := validCreateRequest()
+	request.ClientRequestID = "06f3556a-6769-4b33-b90f-4cf4e2b79a31"
+
+	const attempts = 16
+	ids := make(chan string, attempts)
+	errs := make(chan error, attempts)
+	var workers sync.WaitGroup
+	for range attempts {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			run, err := service.CreateRun(context.Background(), request)
+			if err != nil {
+				errs <- err
+				return
+			}
+			ids <- run.ID
+		}()
+	}
+	workers.Wait()
+	close(ids)
+	close(errs)
+	for err := range errs {
+		t.Errorf("concurrent CreateRun: %v", err)
+	}
+	var first string
+	for id := range ids {
+		if first == "" {
+			first = id
+		}
+		if id != first {
+			t.Fatalf("concurrent retry returned run %q, want %q", id, first)
+		}
+	}
+	runs, err := service.ListRuns()
+	if err != nil || len(runs) != 1 {
+		t.Fatalf("ListRuns count=%d err=%v, want one durable run", len(runs), err)
 	}
 }
 

@@ -22,28 +22,26 @@ export default function EvaluationReports({
   onSelect,
   onRetry,
 }: EvaluationReportsProps) {
-  const reportableRuns = runs.filter((run) =>
-    ['completed', 'failed', 'cancelled'].includes(run.status),
-  )
+  const reportableRuns = runs.filter((run) => run.status === 'completed')
   return (
-    <div className={styles.sectionStack}>
-      <section className={styles.panel}>
-        <div className={styles.panelHeader}>
+    <div className={styles.sectionStack} aria-busy={loading}>
+      <section className={styles.surface}>
+        <div className={styles.surfaceHeader}>
           <div>
             <span className={styles.eyebrow}>Evidence browser</span>
             <h2>Reports</h2>
             <p>
-              Inspect gate verdicts, track coverage, costs, recommendations, and immutable
+              Inspect measured outcomes, gate blockers, cost ledgers, diagnostics, and immutable
               provenance.
             </p>
           </div>
           <label className={styles.reportSelector}>
             <span>Run</span>
             <select value={selectedRunID} onChange={(event) => onSelect(event.target.value)}>
-              <option value="">Select a terminal run</option>
+              <option value="">Select a completed run</option>
               {reportableRuns.map((run) => (
                 <option key={run.id} value={run.id}>
-                  {run.name} · {run.status}
+                  {run.name} · {run.evidence_level}
                 </option>
               ))}
             </select>
@@ -67,7 +65,11 @@ export default function EvaluationReports({
       {!loading && !error && report ? <EvaluationReportView report={report} /> : null}
       {!loading && !error && !report ? (
         <div className={styles.emptyState}>
-          <p>Select a terminal run to load its report.</p>
+          <p>
+            {reportableRuns.length
+              ? 'Select a completed run to load its verified report.'
+              : 'No completed run has published a report yet. Failed and cancelled runs remain in the run inspector.'}
+          </p>
         </div>
       ) : null}
     </div>

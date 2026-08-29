@@ -12,6 +12,7 @@ interface ConfirmDialogProps {
   eyebrow?: string
   details?: ReactNode
   pending?: boolean
+  pendingLabel?: string
   tone?: 'danger' | 'warning' | 'neutral'
   confirmationText?: string
   onCancel: () => void
@@ -27,6 +28,7 @@ export default function ConfirmDialog({
   eyebrow = 'Confirm action',
   details,
   pending = false,
+  pendingLabel = 'Working…',
   tone = 'danger',
   confirmationText,
   onCancel,
@@ -67,6 +69,7 @@ export default function ConfirmDialog({
         aria-modal="true"
         aria-labelledby={titleId}
         aria-describedby={descriptionId}
+        aria-busy={pending}
         tabIndex={-1}
         onMouseDown={(event) => event.stopPropagation()}
       >
@@ -112,7 +115,7 @@ export default function ConfirmDialog({
               className={`${styles.confirmButton} ${styles[tone]}`}
               disabled={pending || !confirmationReady}
             >
-              {pending ? 'Working…' : confirmLabel}
+              {pending ? pendingLabel : confirmLabel}
             </button>
           </div>
         </form>

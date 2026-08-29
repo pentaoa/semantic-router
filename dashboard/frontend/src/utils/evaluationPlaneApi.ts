@@ -106,6 +106,7 @@ export function buildCreateRunPayload(
   }
 
   return {
+    ...(request.client_request_id ? { client_request_id: request.client_request_id } : {}),
     name: request.name.trim(),
     description: request.description.trim(),
     suite_ids: [...new Set(request.suite_ids)],
@@ -180,6 +181,20 @@ export function isDownloadableEvaluationArtifact(artifact: {
 
 export function getEvaluationArtifactURL(runID: string, artifactID: string): string {
   return `${EVALUATION_API_BASE}/runs/${encodeURIComponent(runID)}/artifacts/${encodeURIComponent(artifactID)}`
+}
+
+export async function getEvaluationArtifactJSON<T>(
+  runID: string,
+  artifactID: string,
+  signal?: AbortSignal,
+): Promise<T> {
+  const response = await fetch(getEvaluationArtifactURL(runID, artifactID), { signal })
+  if (!response.ok) throw new Error(await readError(response))
+  const contentType = response.headers.get('Content-Type') || ''
+  if (!contentType.toLowerCase().includes('application/json')) {
+    throw new Error('Evaluation artifact did not return JSON evidence.')
+  }
+  return response.json() as Promise<T>
 }
 
 export function compareEvaluationRuns(

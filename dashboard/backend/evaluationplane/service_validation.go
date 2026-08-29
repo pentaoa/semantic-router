@@ -3,6 +3,8 @@ package evaluationplane
 import (
 	"fmt"
 	"strings"
+
+	"github.com/google/uuid"
 )
 
 const (
@@ -14,12 +16,20 @@ const (
 
 func (s *Service) validateCreateRequest(registry *Registry, request CreateRunRequest) (CreateRunRequest, targetDefinition, error) {
 	request.Name = strings.TrimSpace(request.Name)
+	request.ClientRequestID = strings.TrimSpace(request.ClientRequestID)
 	request.Description = strings.TrimSpace(request.Description)
 	request.TargetID = strings.TrimSpace(request.TargetID)
 	request.ChangeProfile = ChangeProfile(strings.TrimSpace(string(request.ChangeProfile)))
 	request.BaselineRunID = strings.TrimSpace(request.BaselineRunID)
 	request.SuiteIDs = uniqueStrings(request.SuiteIDs)
 	request.TrackIDs = uniqueTracks(request.TrackIDs)
+	if request.ClientRequestID != "" {
+		parsed, err := uuid.Parse(request.ClientRequestID)
+		if err != nil {
+			return request, targetDefinition{}, fmt.Errorf("%w: client_request_id must be a UUID", ErrInvalid)
+		}
+		request.ClientRequestID = parsed.String()
+	}
 	if request.Name == "" || len(request.Name) > maxRunNameLength {
 		return request, targetDefinition{}, fmt.Errorf("%w: name must be 1-%d characters", ErrInvalid, maxRunNameLength)
 	}

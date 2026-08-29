@@ -81,6 +81,7 @@ export interface EvaluationCatalog {
 }
 
 export interface CreateEvaluationRunRequest {
+  client_request_id?: string
   name: string
   description: string
   suite_ids: string[]
@@ -106,6 +107,7 @@ export interface EvaluationRunProgress {
 export interface EvaluationRun {
   schema_version: EvaluationSchemaVersion
   id: string
+  client_request_id?: string
   name: string
   description: string
   status: EvaluationRunStatus
@@ -269,6 +271,43 @@ export interface EvaluationRunEvent {
   message: string
   track_id?: EvaluationTrackId
   progress?: EvaluationRunProgress
+}
+
+export interface EvaluationFailureSummaryRow {
+  track_id: EvaluationTrackId
+  succeeded: number
+  failed: number
+  unavailable: number
+}
+
+export interface EvaluationFailureSummary {
+  schema_version: EvaluationSchemaVersion
+  total_records: number
+  failed: number
+  unavailable: number
+  by_track: EvaluationFailureSummaryRow[]
+}
+
+export interface EvaluationCapacityLevel {
+  concurrency: number
+  requests: number
+  successes: number
+  errors: number
+  elapsed_seconds: number
+  throughput_rps: number
+  latency_p50_ms: number | null
+  latency_p95_ms: number | null
+  latency_p99_ms: number | null
+  input_tokens: number
+  output_tokens: number
+  runtime_cost_usd: number
+}
+
+export interface EvaluationCapacityProfile {
+  schema_version: EvaluationSchemaVersion
+  kind: string
+  levels: EvaluationCapacityLevel[]
+  slo: Record<string, unknown> | null
 }
 
 export const TRACK_PRESENTATION: Record<EvaluationTrackId, { label: string; description: string }> =

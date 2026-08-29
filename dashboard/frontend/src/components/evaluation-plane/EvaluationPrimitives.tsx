@@ -2,6 +2,7 @@ import type { ReactNode } from 'react'
 
 import type {
   EvaluationCoverage,
+  EvaluationGate,
   EvaluationMetric,
   EvaluationRunStatus,
   EvaluationTrackId,
@@ -12,8 +13,9 @@ import { TRACK_PRESENTATION } from '../../types/evaluationPlane'
 import {
   clampFraction,
   formatMetric,
-  GATE_VERDICT_LABELS,
+  gateVerdictPresentation,
   RUN_STATUS_LABELS,
+  TRACK_STATUS_LABELS,
 } from './evaluationPresentation'
 import styles from './EvaluationPlane.module.css'
 
@@ -23,14 +25,26 @@ export function RunStatusBadge({
   status: EvaluationRunStatus | EvaluationTrackStatus
 }) {
   const label =
-    status in RUN_STATUS_LABELS ? RUN_STATUS_LABELS[status as EvaluationRunStatus] : status
+    status in RUN_STATUS_LABELS
+      ? RUN_STATUS_LABELS[status as EvaluationRunStatus]
+      : TRACK_STATUS_LABELS[status]
   return <span className={`${styles.badge} ${styles[`status_${status}`]}`}>{label}</span>
 }
 
-export function GateVerdictBadge({ verdict }: { verdict: GateVerdict }) {
+export function GateVerdictBadge({
+  verdict,
+  disposition = 'advisory',
+}: {
+  verdict: GateVerdict
+  disposition?: EvaluationGate['disposition']
+}) {
+  const presentation = gateVerdictPresentation({ verdict, disposition })
   return (
-    <span className={`${styles.badge} ${styles[`gate_${verdict}`]}`}>
-      {GATE_VERDICT_LABELS[verdict]}
+    <span
+      className={`${styles.badge} ${styles[`gate_${verdict}`]}`}
+      title={presentation.explanation}
+    >
+      {presentation.label}
     </span>
   )
 }
@@ -66,8 +80,8 @@ export function CoverageBar({ coverage }: { coverage: EvaluationCoverage }) {
         <span style={{ width: `${fraction * 100}%` }} />
       </div>
       <small>
-        {coverage.evaluated} of {coverage.total} cases
-        {coverage.unavailable ? ` · ${coverage.unavailable} unavailable` : ''}
+        {coverage.evaluated} of {coverage.total} cases observed
+        {coverage.unavailable ? ` · ${coverage.unavailable} without an observation` : ''}
       </small>
     </div>
   )
@@ -102,7 +116,7 @@ export function MetricGrid({ metrics }: { metrics: EvaluationMetric[] }) {
           label={metric.name}
           value={formatMetric(metric)}
           detail={
-            metric.sample_count
+            typeof metric.sample_count === 'number'
               ? `${metric.sample_count} samples${metric.confidence_interval ? ' · confidence interval available' : ''}`
               : undefined
           }

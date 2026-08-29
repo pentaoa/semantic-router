@@ -1,14 +1,18 @@
-import { useDeferredValue, useMemo, useState } from 'react'
+import { useDeferredValue, useEffect, useMemo, useState } from 'react'
 
-import ProductIcon from '../ProductIcon'
 import type {
   EvaluationRun,
   EvaluationRunEvent,
   EvaluationRunStatus,
+  EvaluationTrackId,
 } from '../../types/evaluationPlane'
+import { EVALUATION_TRACK_IDS, TRACK_PRESENTATION } from '../../types/evaluationPlane'
 import { formatDateTime, formatDurationBetween } from '../../utils/dateTime'
+import ProductIcon from '../ProductIcon'
 import { RunStatusBadge, TrackChips } from './EvaluationPrimitives'
 import styles from './EvaluationPlane.module.css'
+
+const PAGE_SIZE = 10
 
 interface EvaluationRunsProps {
   runs: EvaluationRun[]
@@ -18,7 +22,9 @@ interface EvaluationRunsProps {
   eventsError: string | null
   canRun: boolean
   canDelete: boolean
-  pending: boolean
+  refreshing: boolean
+  lastUpdatedAt: Date | null
+  mutationKey: string | null
   onSelect: (run: EvaluationRun) => void
   onStart: (run: EvaluationRun) => void
   onCancel: (run: EvaluationRun) => void
@@ -35,7 +41,9 @@ export default function EvaluationRuns({
   eventsError,
   canRun,
   canDelete,
-  pending,
+  refreshing,
+  lastUpdatedAt,
+  mutationKey,
   onSelect,
   onStart,
   onCancel,
@@ -45,12 +53,15 @@ export default function EvaluationRuns({
 }: EvaluationRunsProps) {
   const [search, setSearch] = useState('')
   const [status, setStatus] = useState<EvaluationRunStatus | 'all'>('all')
+  const [track, setTrack] = useState<EvaluationTrackId | 'all'>('all')
+  const [page, setPage] = useState(1)
   const deferredSearch = useDeferredValue(search.trim().toLowerCase())
   const selectedRun = runs.find((run) => run.id === selectedRunID) || null
   const filteredRuns = useMemo(
     () =>
       runs.filter((run) => {
         if (status !== 'all' && run.status !== status) return false
+        if (track !== 'all' && !run.track_ids.includes(track)) return false
         if (!deferredSearch) return true
         return [
           run.id,
@@ -64,34 +75,63 @@ export default function EvaluationRuns({
           .toLowerCase()
           .includes(deferredSearch)
       }),
-    [deferredSearch, runs, status],
+    [deferredSearch, runs, status, track],
   )
+  const pages = Math.max(1, Math.ceil(filteredRuns.length / PAGE_SIZE))
+  const visibleRuns = filteredRuns.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE)
+
+  useEffect(() => setPage(1), [deferredSearch, status, track])
+  useEffect(() => {
+    if (page > pages) setPage(pages)
+  }, [page, pages])
+
+  const resetFilters = () => {
+    setSearch('')
+    setStatus('all')
+    setTrack('all')
+  }
+  const selectedPending = (operation: string) =>
+    Boolean(selectedRun && mutationKey === `${operation}:${selectedRun.id}`)
+  const mutationPending = mutationKey !== null
 
   return (
     <div className={styles.sectionStack}>
-      <section className={styles.panel}>
-        <div className={styles.panelHeader}>
+      <section className={styles.surface} aria-labelledby="evaluation-runs-title">
+        <header className={styles.surfaceHeader}>
           <div>
             <span className={styles.eyebrow}>Execution ledger</span>
-            <h2>Evaluation runs</h2>
-            <p>Every run is an immutable experiment snapshot with its own event stream.</p>
+            <h2 id="evaluation-runs-title">Evaluation runs</h2>
+            <p>
+              Search the immutable run ledger, then inspect one execution and its durable timeline.
+            </p>
           </div>
-          <button
-            type="button"
-            className={styles.iconButton}
-            onClick={onRefresh}
-            aria-label="Refresh evaluation runs"
-          >
-            <ProductIcon name="refresh" /> Refresh
-          </button>
-        </div>
+          <div className={styles.refreshCluster}>
+            <span>
+              {lastUpdatedAt
+                ? `Updated ${formatDateTime(lastUpdatedAt.toISOString())}`
+                : 'Not refreshed yet'}
+            </span>
+            <button
+              type="button"
+              className={styles.iconButton}
+              disabled={refreshing}
+              aria-busy={refreshing}
+              onClick={onRefresh}
+              aria-label="Refresh evaluation runs"
+            >
+              <ProductIcon name="refresh" /> {refreshing ? 'Refreshing…' : 'Refresh'}
+            </button>
+          </div>
+        </header>
+
         <div className={styles.filters}>
           <label>
             <span>Search</span>
             <input
+              type="search"
               value={search}
               onChange={(event) => setSearch(event.target.value)}
-              placeholder="Run, target, or track"
+              placeholder="Run, target, profile, or ID"
             />
           </label>
           <label>
@@ -108,176 +148,246 @@ export default function EvaluationRuns({
               <option value="cancelled">Cancelled</option>
             </select>
           </label>
-          <span className={styles.resultCount}>
+          <label>
+            <span>Track</span>
+            <select
+              value={track}
+              onChange={(event) => setTrack(event.target.value as EvaluationTrackId | 'all')}
+            >
+              <option value="all">All tracks</option>
+              {EVALUATION_TRACK_IDS.map((id) => (
+                <option key={id} value={id}>
+                  {TRACK_PRESENTATION[id].label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <span className={styles.resultCount} aria-live="polite">
             {filteredRuns.length} of {runs.length} runs
           </span>
         </div>
 
-        {filteredRuns.length === 0 ? (
-          <div className={styles.emptyState}>
-            <p>No evaluation runs match this view.</p>
-          </div>
-        ) : (
-          <div className={styles.runList}>
-            {filteredRuns.map((run) => (
-              <article
-                key={run.id}
-                className={`${styles.runRow} ${selectedRunID === run.id ? styles.runSelected : ''}`}
-              >
-                <button type="button" className={styles.runSummary} onClick={() => onSelect(run)}>
-                  <div className={styles.runIdentity}>
-                    <div>
-                      <strong>{run.name}</strong>
-                      <code>{run.id}</code>
-                    </div>
-                    <p>{run.description || 'No experiment description.'}</p>
-                    <TrackChips trackIDs={run.track_ids} />
-                  </div>
-                  <div className={styles.runMetadata}>
-                    <RunStatusBadge status={run.status} />
-                    <span>
-                      {run.mode} · {run.evidence_level} · {run.change_profile}
-                    </span>
-                    <span>{formatDateTime(run.created_at)}</span>
-                  </div>
-                </button>
-                <div className={styles.runProgress}>
-                  <div
-                    className={styles.progressTrack}
-                    role="progressbar"
-                    aria-label={`${run.name} progress`}
-                    aria-valuemin={0}
-                    aria-valuemax={100}
-                    aria-valuenow={Math.round(run.progress.percent)}
-                  >
-                    <span
-                      style={{ width: `${Math.max(0, Math.min(100, run.progress.percent))}%` }}
-                    />
-                  </div>
-                  <small>
-                    {run.progress.completed}/{run.progress.total} ·{' '}
-                    {run.progress.message || 'Awaiting execution'}
-                  </small>
+        <div className={styles.runWorkspace}>
+          <div className={styles.runLedger}>
+            {visibleRuns.length === 0 ? (
+              <div className={styles.emptyState}>
+                <div>
+                  <strong>
+                    {runs.length ? 'No runs match these filters.' : 'No evaluation runs yet.'}
+                  </strong>
+                  <p>
+                    {runs.length
+                      ? 'Reset filters to return to the full ledger.'
+                      : 'Create an experiment to establish the first evidence baseline.'}
+                  </p>
                 </div>
-                <div className={styles.rowActions}>
-                  {run.status === 'pending' && canRun ? (
-                    <button type="button" disabled={pending} onClick={() => onStart(run)}>
-                      <ProductIcon name="play" /> Start
-                    </button>
-                  ) : null}
-                  {run.status === 'running' && canRun ? (
+                {runs.length ? (
+                  <button type="button" onClick={resetFilters}>
+                    Reset filters
+                  </button>
+                ) : null}
+              </div>
+            ) : (
+              <ol className={styles.runList} aria-label="Evaluation run ledger">
+                {visibleRuns.map((run) => (
+                  <li
+                    key={run.id}
+                    className={`${styles.runRow} ${selectedRunID === run.id ? styles.runSelected : ''}`}
+                  >
                     <button
                       type="button"
-                      disabled={pending}
+                      className={styles.runSummary}
+                      aria-label={`Inspect ${run.name}`}
+                      aria-current={selectedRunID === run.id ? 'true' : undefined}
+                      onClick={() => onSelect(run)}
+                    >
+                      <span className={styles.runRowTop}>
+                        <strong>{run.name}</strong>
+                        <RunStatusBadge status={run.status} />
+                      </span>
+                      <span className={styles.runRowMeta}>
+                        {run.mode} · {run.change_profile} · {formatDateTime(run.created_at)}
+                      </span>
+                      <span className={styles.runRowProgress}>
+                        {Math.round(run.progress.percent)}% ·{' '}
+                        {run.progress.message || 'Awaiting execution'}
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ol>
+            )}
+            {pages > 1 ? (
+              <nav className={styles.pagination} aria-label="Run ledger pages">
+                <button
+                  type="button"
+                  disabled={page === 1}
+                  onClick={() => setPage((value) => value - 1)}
+                >
+                  Previous
+                </button>
+                <span>
+                  Page {page} of {pages}
+                </span>
+                <button
+                  type="button"
+                  disabled={page === pages}
+                  onClick={() => setPage((value) => value + 1)}
+                >
+                  Next
+                </button>
+              </nav>
+            ) : null}
+          </div>
+
+          <aside className={styles.runInspector} aria-labelledby="run-inspector-title">
+            {selectedRun ? (
+              <>
+                <header className={styles.inspectorHeader}>
+                  <div>
+                    <span className={styles.eyebrow}>Run inspector</span>
+                    <h3 id="run-inspector-title">{selectedRun.name}</h3>
+                    <code>{selectedRun.id}</code>
+                  </div>
+                  <RunStatusBadge status={selectedRun.status} />
+                </header>
+                <TrackChips trackIDs={selectedRun.track_ids} />
+                <dl className={styles.definitionGrid}>
+                  <div>
+                    <dt>Target</dt>
+                    <dd>{selectedRun.target_id}</dd>
+                  </div>
+                  <div>
+                    <dt>Evidence</dt>
+                    <dd>{selectedRun.evidence_level}</dd>
+                  </div>
+                  <div>
+                    <dt>Workload</dt>
+                    <dd>
+                      {selectedRun.sample_limit} cases · c{selectedRun.concurrency}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Seed</dt>
+                    <dd>{selectedRun.seed}</dd>
+                  </div>
+                  <div>
+                    <dt>Duration</dt>
+                    <dd>
+                      {formatDurationBetween(selectedRun.started_at, selectedRun.completed_at)}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Baseline</dt>
+                    <dd>
+                      <code>{selectedRun.baseline_run_id || 'None'}</code>
+                    </dd>
+                  </div>
+                  <div className={styles.definitionWide}>
+                    <dt>Suites</dt>
+                    <dd>{selectedRun.suite_ids.join(', ') || 'None'}</dd>
+                  </div>
+                </dl>
+                {selectedRun.error ? (
+                  <div className={styles.errorBanner} role="alert">
+                    {selectedRun.error}
+                  </div>
+                ) : null}
+                <div
+                  className={styles.inspectorActions}
+                  aria-label={`Actions for ${selectedRun.name}`}
+                >
+                  {selectedRun.status === 'pending' && canRun ? (
+                    <button
+                      type="button"
+                      disabled={mutationPending}
+                      aria-label={`Start ${selectedRun.name}`}
+                      onClick={() => onStart(selectedRun)}
+                    >
+                      <ProductIcon name="play" /> {selectedPending('start') ? 'Starting…' : 'Start'}
+                    </button>
+                  ) : null}
+                  {selectedRun.status === 'running' && canRun ? (
+                    <button
+                      type="button"
                       className={styles.warningButton}
-                      onClick={() => onCancel(run)}
+                      disabled={mutationPending}
+                      aria-label={`Cancel ${selectedRun.name}`}
+                      onClick={() => onCancel(selectedRun)}
                     >
                       <ProductIcon name="close" /> Cancel
                     </button>
                   ) : null}
-                  {['completed', 'failed', 'cancelled'].includes(run.status) ? (
-                    <button type="button" onClick={() => onOpenReport(run)}>
-                      <ProductIcon name="chart" /> Report
-                    </button>
-                  ) : null}
-                  {run.status !== 'running' && canDelete ? (
+                  {selectedRun.status === 'completed' ? (
                     <button
                       type="button"
-                      disabled={pending}
+                      aria-label={`Open report for ${selectedRun.name}`}
+                      onClick={() => onOpenReport(selectedRun)}
+                    >
+                      <ProductIcon name="chart" /> Open report
+                    </button>
+                  ) : null}
+                  {selectedRun.status !== 'running' && canDelete ? (
+                    <button
+                      type="button"
                       className={styles.dangerButton}
-                      onClick={() => onDelete(run)}
+                      disabled={mutationPending}
+                      aria-label={`Delete ${selectedRun.name}`}
+                      onClick={() => onDelete(selectedRun)}
                     >
                       <ProductIcon name="trash" /> Delete
                     </button>
                   ) : null}
                 </div>
-              </article>
-            ))}
-          </div>
-        )}
-      </section>
-
-      {selectedRun ? (
-        <section className={styles.panel} aria-label="Selected evaluation run details">
-          <div className={styles.panelHeader}>
-            <div>
-              <span className={styles.eyebrow}>Run inspector</span>
-              <h2>{selectedRun.name}</h2>
-              <p>
-                {selectedRun.target_id} · seed {selectedRun.seed} · sample limit{' '}
-                {selectedRun.sample_limit} · concurrency {selectedRun.concurrency}
-              </p>
-            </div>
-            <RunStatusBadge status={selectedRun.status} />
-          </div>
-          <dl className={styles.definitionGrid}>
-            <div>
-              <dt>Mode</dt>
-              <dd>{selectedRun.mode}</dd>
-            </div>
-            <div>
-              <dt>Evidence</dt>
-              <dd>{selectedRun.evidence_level}</dd>
-            </div>
-            <div>
-              <dt>Change profile</dt>
-              <dd>{selectedRun.change_profile}</dd>
-            </div>
-            <div>
-              <dt>Started</dt>
-              <dd>{formatDateTime(selectedRun.started_at)}</dd>
-            </div>
-            <div>
-              <dt>Duration</dt>
-              <dd>{formatDurationBetween(selectedRun.started_at, selectedRun.completed_at)}</dd>
-            </div>
-            <div>
-              <dt>Suites</dt>
-              <dd>{selectedRun.suite_ids.join(', ') || '-'}</dd>
-            </div>
-            <div>
-              <dt>Baseline</dt>
-              <dd>{selectedRun.baseline_run_id || '-'}</dd>
-            </div>
-          </dl>
-          {selectedRun.error ? (
-            <div className={styles.errorBanner} role="alert">
-              {selectedRun.error}
-            </div>
-          ) : null}
-
-          <div className={styles.eventHeader}>
-            <h3>Live events</h3>
-            {selectedRun.status === 'running' ? (
-              <span className={eventsConnected ? styles.live : styles.offline}>
-                {eventsConnected ? 'Connected' : 'Reconnecting'}
-              </span>
+                {selectedRun.status !== 'completed' &&
+                ['failed', 'cancelled'].includes(selectedRun.status) ? (
+                  <p className={styles.scopeNotice}>
+                    A completed report was not published. Inspect the failure reason and durable
+                    lifecycle events instead.
+                  </p>
+                ) : null}
+                <div className={styles.eventHeader}>
+                  <h4>Execution timeline</h4>
+                  <span className={eventsConnected ? styles.live : styles.offline}>
+                    {eventsConnected
+                      ? 'Stream connected'
+                      : selectedRun.status === 'running'
+                        ? 'Reconnecting'
+                        : 'Durable history'}
+                  </span>
+                </div>
+                {eventsError ? <p className={styles.inlineError}>{eventsError}</p> : null}
+                {events.length === 0 ? (
+                  <p className={styles.emptyCopy}>
+                    {selectedRun.status === 'running'
+                      ? 'Waiting for the first event…'
+                      : 'No durable lifecycle events were returned for this run.'}
+                  </p>
+                ) : (
+                  <ol className={styles.eventList}>
+                    {events.map((event, index) => (
+                      <li key={event.id || `${event.timestamp}-${index}`}>
+                        <time>{formatDateTime(event.timestamp)}</time>
+                        <div>
+                          <strong>
+                            {event.track_id ? TRACK_PRESENTATION[event.track_id].label : event.type}
+                          </strong>
+                          <span>{event.message}</span>
+                        </div>
+                      </li>
+                    ))}
+                  </ol>
+                )}
+              </>
             ) : (
-              <span className={styles.offline}>Terminal</span>
+              <div className={styles.inspectorEmpty}>
+                <strong>Select a run</strong>
+                <p>Its immutable scope, valid actions, and execution timeline appear here.</p>
+              </div>
             )}
-          </div>
-          {eventsError ? <p className={styles.inlineError}>{eventsError}</p> : null}
-          {events.length === 0 ? (
-            <p className={styles.emptyCopy}>
-              {selectedRun.status === 'running'
-                ? 'Waiting for the first event…'
-                : 'No live events retained in this browser session.'}
-            </p>
-          ) : (
-            <ol className={styles.eventList}>
-              {events.map((event, index) => (
-                <li key={event.id || `${event.timestamp}-${index}`}>
-                  <time>{formatDateTime(event.timestamp)}</time>
-                  <div>
-                    <strong>{event.track_id || event.type}</strong>
-                    <span>{event.message}</span>
-                  </div>
-                </li>
-              ))}
-            </ol>
-          )}
-        </section>
-      ) : null}
+          </aside>
+        </div>
+      </section>
     </div>
   )
 }

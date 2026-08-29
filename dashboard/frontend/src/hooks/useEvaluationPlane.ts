@@ -32,38 +32,89 @@ function sortRuns(runs: EvaluationRun[]): EvaluationRun[] {
 export function useEvaluationPlane() {
   const [catalog, setCatalog] = useState<EvaluationCatalog | null>(null)
   const [runs, setRuns] = useState<EvaluationRun[]>([])
+  const [runsLoaded, setRunsLoaded] = useState(false)
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const [refreshing, setRefreshing] = useState(false)
+  const [catalogError, setCatalogError] = useState<string | null>(null)
+  const [runsError, setRunsError] = useState<string | null>(null)
+  const [lastUpdatedAt, setLastUpdatedAt] = useState<Date | null>(null)
   const [mutationPending, setMutationPending] = useState(false)
+  const [mutationKey, setMutationKey] = useState<string | null>(null)
   const [mutationError, setMutationError] = useState<string | null>(null)
-  const requestVersion = useRef(0)
+  const catalogRequestVersion = useRef(0)
+  const runsRequestVersion = useRef(0)
+  const catalogController = useRef<AbortController | null>(null)
+  const runsController = useRef<AbortController | null>(null)
+  const mutationLock = useRef(false)
 
   const refresh = useCallback(async (showLoading = false) => {
-    const version = ++requestVersion.current
+    const catalogVersion = ++catalogRequestVersion.current
+    const runsVersion = ++runsRequestVersion.current
+    catalogController.current?.abort()
+    runsController.current?.abort()
+    const nextCatalogController = new AbortController()
+    const nextRunsController = new AbortController()
+    catalogController.current = nextCatalogController
+    runsController.current = nextRunsController
     if (showLoading) setLoading(true)
-    try {
-      const [nextCatalog, nextRuns] = await Promise.all([
-        getEvaluationCatalog(),
-        listEvaluationRuns(),
-      ])
-      if (version !== requestVersion.current) return
-      setCatalog(nextCatalog)
-      setRuns(sortRuns(nextRuns))
-      setError(null)
-    } catch (refreshError) {
-      if (version !== requestVersion.current) return
-      setError(messageFrom(refreshError, 'Failed to load the evaluation plane.'))
-    } finally {
-      if (version === requestVersion.current) setLoading(false)
+    else setRefreshing(true)
+    const catalogRequest = getEvaluationCatalog(nextCatalogController.signal)
+      .then((nextCatalog) => {
+        if (
+          nextCatalogController.signal.aborted ||
+          catalogVersion !== catalogRequestVersion.current
+        )
+          return
+        setCatalog(nextCatalog)
+        setCatalogError(null)
+      })
+      .catch((reason: unknown) => {
+        if (
+          nextCatalogController.signal.aborted ||
+          catalogVersion !== catalogRequestVersion.current
+        )
+          return
+        setCatalogError(messageFrom(reason, 'Failed to load the evaluation catalog.'))
+      })
+      .finally(() => {
+        if (catalogVersion === catalogRequestVersion.current) setLoading(false)
+      })
+    const runsRequest = listEvaluationRuns(nextRunsController.signal)
+      .then((nextRuns) => {
+        if (nextRunsController.signal.aborted || runsVersion !== runsRequestVersion.current) return
+        setRuns(sortRuns(nextRuns))
+        setRunsLoaded(true)
+        setRunsError(null)
+        setLastUpdatedAt(new Date())
+      })
+      .catch((reason: unknown) => {
+        if (nextRunsController.signal.aborted || runsVersion !== runsRequestVersion.current) return
+        setRunsError(messageFrom(reason, 'Failed to load evaluation runs.'))
+      })
+    await Promise.allSettled([catalogRequest, runsRequest])
+    if (!nextRunsController.signal.aborted && runsVersion === runsRequestVersion.current) {
+      setRefreshing(false)
     }
   }, [])
 
   const refreshRuns = useCallback(async () => {
+    const version = ++runsRequestVersion.current
+    runsController.current?.abort()
+    const controller = new AbortController()
+    runsController.current = controller
+    setRefreshing(true)
     try {
-      setRuns(sortRuns(await listEvaluationRuns()))
-      setError(null)
+      const nextRuns = await listEvaluationRuns(controller.signal)
+      if (controller.signal.aborted || version !== runsRequestVersion.current) return
+      setRuns(sortRuns(nextRuns))
+      setRunsLoaded(true)
+      setRunsError(null)
+      setLastUpdatedAt(new Date())
     } catch (refreshError) {
-      setError(messageFrom(refreshError, 'Failed to refresh evaluation runs.'))
+      if (controller.signal.aborted || version !== runsRequestVersion.current) return
+      setRunsError(messageFrom(refreshError, 'Failed to refresh evaluation runs.'))
+    } finally {
+      if (version === runsRequestVersion.current) setRefreshing(false)
     }
   }, [])
 
@@ -77,7 +128,10 @@ export function useEvaluationPlane() {
     }
     document.addEventListener('visibilitychange', handleVisibility)
     return () => {
-      requestVersion.current += 1
+      catalogRequestVersion.current += 1
+      runsRequestVersion.current += 1
+      catalogController.current?.abort()
+      runsController.current?.abort()
       window.clearInterval(interval)
       document.removeEventListener('visibilitychange', handleVisibility)
     }
@@ -90,18 +144,27 @@ export function useEvaluationPlane() {
   }, [])
 
   const mutateRun = useCallback(
-    async (operation: () => Promise<EvaluationRun>, fallback: string) => {
+    async (key: string, operation: () => Promise<EvaluationRun>, fallback: string) => {
+      if (mutationLock.current) return null
+      mutationLock.current = true
       setMutationPending(true)
+      setMutationKey(key)
       setMutationError(null)
       try {
         const run = await operation()
+        runsRequestVersion.current += 1
+        runsController.current?.abort()
+        setRefreshing(false)
         replaceRun(run)
+        setLastUpdatedAt(new Date())
         return run
       } catch (mutationFailure) {
         setMutationError(messageFrom(mutationFailure, fallback))
         return null
       } finally {
+        mutationLock.current = false
         setMutationPending(false)
+        setMutationKey(null)
       }
     },
     [replaceRun],
@@ -114,6 +177,7 @@ export function useEvaluationPlane() {
         return null
       }
       return mutateRun(
+        'create',
         () => createEvaluationRun(request, catalog),
         'Failed to create the evaluation run.',
       )
@@ -122,37 +186,57 @@ export function useEvaluationPlane() {
   )
 
   const startRun = useCallback(
-    (id: string) => mutateRun(() => startEvaluationRun(id), 'Failed to start the evaluation run.'),
+    (id: string) =>
+      mutateRun(`start:${id}`, () => startEvaluationRun(id), 'Failed to start the evaluation run.'),
     [mutateRun],
   )
 
   const cancelRun = useCallback(
     (id: string) =>
-      mutateRun(() => cancelEvaluationRun(id), 'Failed to cancel the evaluation run.'),
+      mutateRun(
+        `cancel:${id}`,
+        () => cancelEvaluationRun(id),
+        'Failed to cancel the evaluation run.',
+      ),
     [mutateRun],
   )
 
   const deleteRun = useCallback(async (id: string) => {
+    if (mutationLock.current) return false
+    mutationLock.current = true
     setMutationPending(true)
+    setMutationKey(`delete:${id}`)
     setMutationError(null)
     try {
       await deleteEvaluationRun(id)
+      runsRequestVersion.current += 1
+      runsController.current?.abort()
+      setRefreshing(false)
       setRuns((current) => current.filter((run) => run.id !== id))
+      setLastUpdatedAt(new Date())
       return true
     } catch (mutationFailure) {
       setMutationError(messageFrom(mutationFailure, 'Failed to delete the evaluation run.'))
       return false
     } finally {
+      mutationLock.current = false
       setMutationPending(false)
+      setMutationKey(null)
     }
   }, [])
 
   return {
     catalog,
     runs,
+    runsLoaded,
     loading,
-    error,
+    refreshing,
+    error: catalogError || runsError,
+    catalogError,
+    runsError,
+    lastUpdatedAt,
     mutationPending,
+    mutationKey,
     mutationError,
     clearMutationError: () => setMutationError(null),
     refresh: () => refresh(true),
@@ -168,40 +252,51 @@ export function useEvaluationReport(runID: string | null) {
   const [report, setReport] = useState<EvaluationReport | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const requestVersion = useRef(0)
 
   const refresh = useCallback(async () => {
     if (!runID) return
+    const version = ++requestVersion.current
     setLoading(true)
     try {
-      setReport(await getEvaluationReport(runID))
+      const nextReport = await getEvaluationReport(runID)
+      if (version !== requestVersion.current) return
+      setReport(nextReport)
       setError(null)
     } catch (reportError) {
+      if (version !== requestVersion.current) return
       setReport(null)
       setError(messageFrom(reportError, 'Failed to load the evaluation report.'))
     } finally {
-      setLoading(false)
+      if (version === requestVersion.current) setLoading(false)
     }
   }, [runID])
 
   useEffect(() => {
+    const version = ++requestVersion.current
     setReport(null)
     setError(null)
+    setLoading(false)
     if (!runID) return
     const controller = new AbortController()
     setLoading(true)
     void getEvaluationReport(runID, controller.signal)
       .then((nextReport) => {
+        if (version !== requestVersion.current) return
         setReport(nextReport)
         setError(null)
       })
       .catch((reportError: unknown) => {
-        if (controller.signal.aborted) return
+        if (controller.signal.aborted || version !== requestVersion.current) return
         setError(messageFrom(reportError, 'Failed to load the evaluation report.'))
       })
       .finally(() => {
-        if (!controller.signal.aborted) setLoading(false)
+        if (!controller.signal.aborted && version === requestVersion.current) setLoading(false)
       })
-    return () => controller.abort()
+    return () => {
+      requestVersion.current += 1
+      controller.abort()
+    }
   }, [runID])
 
   return { report: report?.run.id === runID ? report : null, loading, error, refresh }
@@ -211,25 +306,49 @@ export function useEvaluationComparison(baselineID: string, candidateID: string)
   const [comparison, setComparison] = useState<EvaluationComparison | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const requestVersion = useRef(0)
+  const controller = useRef<AbortController | null>(null)
 
   const compare = useCallback(async () => {
     if (!baselineID || !candidateID || baselineID === candidateID) return
+    const version = ++requestVersion.current
+    controller.current?.abort()
+    const nextController = new AbortController()
+    controller.current = nextController
     setLoading(true)
     setComparison(null)
     try {
-      setComparison(await compareEvaluationRuns(baselineID, candidateID))
+      const nextComparison = await compareEvaluationRuns(
+        baselineID,
+        candidateID,
+        nextController.signal,
+      )
+      if (nextController.signal.aborted || version !== requestVersion.current) return
+      setComparison(nextComparison)
       setError(null)
     } catch (comparisonError) {
+      if (nextController.signal.aborted || version !== requestVersion.current) return
       setError(messageFrom(comparisonError, 'Failed to compare evaluation runs.'))
     } finally {
-      setLoading(false)
+      if (version === requestVersion.current) setLoading(false)
     }
   }, [baselineID, candidateID])
 
   useEffect(() => {
+    requestVersion.current += 1
+    controller.current?.abort()
     setComparison(null)
     setError(null)
+    setLoading(false)
   }, [baselineID, candidateID])
+
+  useEffect(
+    () => () => {
+      requestVersion.current += 1
+      controller.current?.abort()
+    },
+    [],
+  )
 
   return { comparison, loading, error, compare }
 }
@@ -247,7 +366,7 @@ export function useEvaluationRunEvents(run: EvaluationRun | null, onTerminal: ()
     setEvents([])
     setError(null)
     setConnected(false)
-    if (!runID || runStatus !== 'running') return
+    if (!runID) return
 
     let disconnect: (() => void) | null = null
     const connect = () => {

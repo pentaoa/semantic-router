@@ -1,7 +1,9 @@
 import type { EvaluationComparison, EvaluationRun } from '../../types/evaluationPlane'
 import EvaluationGateList from './EvaluationGateList'
-import { effectiveGateVerdict, formatDelta, formatMetric } from './evaluationPresentation'
+import EvaluationMetricTable from './EvaluationMetricTable'
+import { effectiveGateVerdict } from './evaluationPresentation'
 import { GateVerdictBadge } from './EvaluationPrimitives'
+import { cohortMismatches, eligibleComparisonCandidates } from './evaluationRunSupport'
 import styles from './EvaluationReport.module.css'
 
 interface EvaluationCompareProps {
@@ -14,6 +16,7 @@ interface EvaluationCompareProps {
   onBaselineChange: (id: string) => void
   onCandidateChange: (id: string) => void
   onCompare: () => void
+  onCreateRun?: () => void
 }
 
 export default function EvaluationCompare({
@@ -26,81 +29,126 @@ export default function EvaluationCompare({
   onBaselineChange,
   onCandidateChange,
   onCompare,
+  onCreateRun,
 }: EvaluationCompareProps) {
-  const completedRuns = runs.filter((run) => run.status === 'completed')
-  const baselineRun = completedRuns.find((run) => run.id === baselineID)
-  const candidateRun = completedRuns.find((run) => run.id === candidateID)
-  const profileMismatch = Boolean(
-    baselineRun && candidateRun && baselineRun.change_profile !== candidateRun.change_profile,
+  const completed = new Map(
+    runs.filter((run) => run.status === 'completed').map((run) => [run.id, run]),
   )
-  const invalidPair = !baselineID || !candidateID || baselineID === candidateID || profileMismatch
+  const candidates = eligibleComparisonCandidates(runs)
+  const candidate = completed.get(candidateID)
+  const baseline = completed.get(baselineID)
+  const mismatches = baseline && candidate ? cohortMismatches(baseline, candidate) : []
+  const lineageMismatch = Boolean(candidate && candidate.baseline_run_id !== baselineID)
+  const invalidPair = !baseline || !candidate || lineageMismatch || mismatches.length > 0
   const comparisonVerdict = comparison
     ? effectiveGateVerdict(comparison.verdict, comparison.gates)
     : null
+
+  const chooseCandidate = (id: string) => {
+    const next = completed.get(id)
+    onCandidateChange(id)
+    onBaselineChange(next?.baseline_run_id || '')
+  }
+
   return (
-    <div className={styles.report}>
+    <div className={styles.report} aria-busy={loading}>
       <section className={styles.compareHero}>
         <div>
           <span className={styles.eyebrow}>Paired evidence</span>
-          <h2>Compare candidate against baseline</h2>
-          <p>Review metric deltas and promotion gates on two completed, reproducible runs.</p>
+          <h2>Compare a candidate with its pinned baseline</h2>
+          <p>
+            Candidate lineage fixes the baseline and cohort. Arbitrary completed runs are excluded
+            because they can manufacture invalid deltas.
+          </p>
         </div>
         <div className={styles.compareControls}>
           <label>
-            Baseline
-            <select value={baselineID} onChange={(event) => onBaselineChange(event.target.value)}>
-              <option value="">Select baseline</option>
-              {completedRuns.map((run) => (
-                <option
-                  key={run.id}
-                  value={run.id}
-                  disabled={
-                    run.id === candidateID ||
-                    Boolean(candidateRun && run.change_profile !== candidateRun.change_profile)
-                  }
-                >
+            Candidate
+            <select
+              value={candidateID}
+              disabled={loading || candidates.length === 0}
+              onChange={(event) => chooseCandidate(event.target.value)}
+            >
+              <option value="">Select a candidate with baseline lineage</option>
+              {candidates.map((run) => (
+                <option key={run.id} value={run.id}>
                   {run.name} · {run.change_profile}
                 </option>
               ))}
             </select>
           </label>
           <label>
-            Candidate
-            <select value={candidateID} onChange={(event) => onCandidateChange(event.target.value)}>
-              <option value="">Select candidate</option>
-              {completedRuns.map((run) => (
-                <option
-                  key={run.id}
-                  value={run.id}
-                  disabled={
-                    run.id === baselineID ||
-                    Boolean(baselineRun && run.change_profile !== baselineRun.change_profile)
-                  }
-                >
-                  {run.name} · {run.change_profile}
-                </option>
-              ))}
-            </select>
+            Pinned baseline
+            <input
+              value={baseline?.name || ''}
+              placeholder="Derived from candidate"
+              readOnly
+              aria-describedby="evaluation-baseline-help"
+            />
+            <small id="evaluation-baseline-help">Read-only scientific lineage</small>
           </label>
           <button type="button" disabled={invalidPair || loading} onClick={onCompare}>
-            {loading ? 'Comparing…' : 'Compare runs'}
+            {loading ? 'Comparing paired evidence…' : 'Compare paired evidence'}
           </button>
         </div>
       </section>
 
+      {candidates.length === 0 ? (
+        <div className={styles.emptyState}>
+          <div>
+            <strong>No comparable candidate exists.</strong>
+            <p>Create a new run from a completed baseline; the form pins the exact cohort.</p>
+          </div>
+          {onCreateRun ? (
+            <button type="button" onClick={onCreateRun}>
+              Create candidate run
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+      {baseline && candidate ? (
+        <dl className={styles.comparabilityStrip} aria-label="Comparison cohort">
+          <div>
+            <dt>Profile</dt>
+            <dd>{candidate.change_profile}</dd>
+          </div>
+          <div>
+            <dt>Mode / target</dt>
+            <dd>
+              {candidate.mode} · {candidate.target_id}
+            </dd>
+          </div>
+          <div>
+            <dt>Workload</dt>
+            <dd>
+              {candidate.sample_limit} cases · c{candidate.concurrency}
+            </dd>
+          </div>
+          <div>
+            <dt>Seed</dt>
+            <dd>{candidate.seed}</dd>
+          </div>
+        </dl>
+      ) : null}
+      {lineageMismatch ? (
+        <div className={styles.error} role="alert">
+          The selected candidate is not pinned to this baseline.
+        </div>
+      ) : null}
+      {mismatches.length ? (
+        <div className={styles.error} role="alert">
+          Cohort mismatch: {mismatches.join(', ')}.
+        </div>
+      ) : null}
       {error ? (
         <div className={styles.error} role="alert">
           {error}
         </div>
       ) : null}
-      {profileMismatch ? (
-        <div className={styles.error} role="alert">
-          Baseline and candidate must use the same change profile.
-        </div>
-      ) : null}
-      {!comparison && !error ? (
+
+      {!comparison && !error && candidates.length > 0 ? (
         <div className={styles.empty}>
-          Choose two different completed runs, then calculate the comparison.
+          Choose a candidate, then calculate its paired comparison.
         </div>
       ) : null}
       {comparison ? (
@@ -110,24 +158,19 @@ export default function EvaluationCompare({
               <div>
                 <span className={styles.eyebrow}>Comparison verdict</span>
                 <h3>{comparison.summary}</h3>
+                <p>
+                  Improvement colors follow each metric direction; schema mismatches stay unmatched.
+                </p>
               </div>
-              {comparisonVerdict ? <GateVerdictBadge verdict={comparisonVerdict} /> : null}
+              {comparisonVerdict ? (
+                <GateVerdictBadge verdict={comparisonVerdict} disposition="required" />
+              ) : null}
             </div>
-            <div className={styles.deltaGrid}>
-              {comparison.metrics.map((metric) => (
-                <article key={metric.id}>
-                  <span>{metric.name}</span>
-                  <strong>{formatMetric(metric)}</strong>
-                  <small
-                    className={
-                      (metric.delta || 0) < 0 ? styles.negativeDelta : styles.positiveDelta
-                    }
-                  >
-                    {formatDelta(metric) || 'No delta'} vs baseline
-                  </small>
-                </article>
-              ))}
-            </div>
+            <EvaluationMetricTable
+              metrics={comparison.metrics}
+              caption="Paired comparison metrics"
+              controls={comparison.metrics.length > 6}
+            />
           </section>
           <section className={styles.section}>
             <div className={styles.sectionHeader}>
@@ -138,23 +181,22 @@ export default function EvaluationCompare({
             </div>
             <EvaluationGateList gates={comparison.gates} />
           </section>
-          <section className={styles.section}>
-            <div className={styles.sectionHeader}>
-              <div>
-                <span className={styles.eyebrow}>Next actions</span>
-                <h3>Recommendations</h3>
-              </div>
+          <details className={styles.disclosure}>
+            <summary>
+              Comparison findings <span>{comparison.recommendations.length}</span>
+            </summary>
+            <div className={styles.disclosureBody}>
+              {comparison.recommendations.length ? (
+                <ol className={styles.recommendations}>
+                  {comparison.recommendations.map((item, index) => (
+                    <li key={`${index}-${item}`}>{item}</li>
+                  ))}
+                </ol>
+              ) : (
+                <p className={styles.empty}>No comparison findings were generated.</p>
+              )}
             </div>
-            {comparison.recommendations.length ? (
-              <ol className={styles.recommendations}>
-                {comparison.recommendations.map((item, index) => (
-                  <li key={`${index}-${item}`}>{item}</li>
-                ))}
-              </ol>
-            ) : (
-              <p className={styles.empty}>No comparison recommendations were generated.</p>
-            )}
-          </section>
+          </details>
         </>
       ) : null}
     </div>

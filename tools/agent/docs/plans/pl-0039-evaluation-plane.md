@@ -68,14 +68,21 @@ reproducible evidence and actionable reports.
   selection through the runtime Entrypoint, and Dashboard restart recovery.
   E0 evidence remains diagnostic and is never treated as promotion evidence.
 - [x] `TASK-09` Reconcile architecture findings, docs, and any durable debt before handoff.
+- [ ] `TASK-10` Harden the Evaluation product experience and evidence semantics.
+  Replace repeated card walls with decision-first overview, run ledger,
+  metric explorer, and paired-comparison workflows; make every control,
+  dialog, loading/error state, keyboard path, and responsive layout usable;
+  separate service, execution, observation, qualification, applicability, and
+  decision states; expose the exact native-method gaps across all thirteen
+  registered benchmarks; and validate partial-failure behavior plus real AMD
+  end-to-end reporting without promoting E0 diagnostics.
 
 ## Next Action
 
-Use the ignored AMD campaign receipt as the operational regression baseline.
-Close the qualified direct-arm and native-adapter gaps in TD-049 and TD-050,
-then add online assignment, paired promotion statistics, and lifecycle policy
-from TD-048, TD-052, and TD-053 before claiming E1-E5 promotion evidence or
-parity with upstream benchmark leaderboards.
+Finish TASK-10 with frontend, backend, contract, accessibility, local E2E, and
+real AMD validation. Keep TD-049 and TD-050 visible in the product as explicit
+native-method qualification gaps; do not claim E1-E5 or upstream leaderboard
+parity until those debt contracts are closed.
 
 ## Operating Rules
 

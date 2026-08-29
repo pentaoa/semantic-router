@@ -53,6 +53,7 @@ type Service struct {
 	semaphore          chan struct{}
 	evidenceReads      chan struct{}
 	workerTimeout      time.Duration
+	createMu           sync.Mutex
 
 	mu              sync.Mutex
 	active          map[string]context.CancelFunc
@@ -154,6 +155,26 @@ func (s *Service) CreateRun(ctx context.Context, request CreateRunRequest) (Run,
 	if qualificationErr := requireQualifiedCodeRevision(evidenceLevel, s.codeRevision); qualificationErr != nil {
 		return Run{}, qualificationErr
 	}
+	// Serialize keyed creates before consulting mutable baseline state. A client
+	// retry after a lost response must return the run that was already persisted,
+	// even if its baseline was removed afterward.
+	if validated.ClientRequestID != "" {
+		s.createMu.Lock()
+		defer s.createMu.Unlock()
+		existing, listErr := s.store.ListRuns()
+		if listErr != nil {
+			return Run{}, listErr
+		}
+		for _, candidate := range existing {
+			if candidate.ClientRequestID != validated.ClientRequestID {
+				continue
+			}
+			if !createRequestMatchesRun(validated, candidate) {
+				return Run{}, fmt.Errorf("%w: client_request_id was already used for a different evaluation run", ErrConflict)
+			}
+			return candidate, nil
+		}
+	}
 	if validated.BaselineRunID != "" {
 		baseline, getErr := s.store.GetRun(validated.BaselineRunID)
 		if getErr != nil {
@@ -174,7 +195,8 @@ func (s *Service) CreateRun(ctx context.Context, request CreateRunRequest) (Run,
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	run := Run{
 		SchemaVersion: SchemaVersion,
-		ID:            uuid.NewString(), Name: validated.Name, Description: validated.Description,
+		ID:            uuid.NewString(), ClientRequestID: validated.ClientRequestID,
+		Name: validated.Name, Description: validated.Description,
 		Status: StatusPending, Mode: validated.Mode, EvidenceLevel: evidenceLevel,
 		TargetID: validated.TargetID, ChangeProfile: validated.ChangeProfile,
 		SuiteIDs: validated.SuiteIDs, TrackIDs: validated.TrackIDs,
@@ -213,6 +235,15 @@ func (s *Service) CreateRun(ctx context.Context, request CreateRunRequest) (Run,
 		return Run{}, err
 	}
 	return run, nil
+}
+
+func createRequestMatchesRun(request CreateRunRequest, run Run) bool {
+	return request.Name == run.Name && request.Description == run.Description &&
+		request.Mode == run.Mode && request.TargetID == run.TargetID &&
+		request.ChangeProfile == run.ChangeProfile && request.SampleLimit == run.SampleLimit &&
+		request.Concurrency == run.Concurrency && request.Seed == run.Seed &&
+		request.BaselineRunID == run.BaselineRunID &&
+		sameStringSet(request.SuiteIDs, run.SuiteIDs) && sameTrackSet(request.TrackIDs, run.TrackIDs)
 }
 
 func requireQualifiedCodeRevision(_ EvidenceLevel, revision string) error {

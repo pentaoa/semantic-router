@@ -91,18 +91,19 @@ type Catalog struct {
 }
 
 type CreateRunRequest struct {
-	Name          string        `json:"name"`
-	Description   string        `json:"description"`
-	SuiteIDs      []string      `json:"suite_ids"`
-	TrackIDs      []TrackID     `json:"track_ids"`
-	Mode          Mode          `json:"mode"`
-	TargetID      string        `json:"target_id"`
-	ChangeProfile ChangeProfile `json:"change_profile"`
-	SampleLimit   int           `json:"sample_limit"`
-	Concurrency   int           `json:"concurrency"`
-	Seed          int64         `json:"seed"`
-	BaselineRunID string        `json:"baseline_run_id,omitempty"`
-	AutoStart     bool          `json:"auto_start"`
+	ClientRequestID string        `json:"client_request_id,omitempty"`
+	Name            string        `json:"name"`
+	Description     string        `json:"description"`
+	SuiteIDs        []string      `json:"suite_ids"`
+	TrackIDs        []TrackID     `json:"track_ids"`
+	Mode            Mode          `json:"mode"`
+	TargetID        string        `json:"target_id"`
+	ChangeProfile   ChangeProfile `json:"change_profile"`
+	SampleLimit     int           `json:"sample_limit"`
+	Concurrency     int           `json:"concurrency"`
+	Seed            int64         `json:"seed"`
+	BaselineRunID   string        `json:"baseline_run_id,omitempty"`
+	AutoStart       bool          `json:"auto_start"`
 }
 
 type RunProgress struct {
@@ -114,26 +115,27 @@ type RunProgress struct {
 }
 
 type Run struct {
-	SchemaVersion string        `json:"schema_version"`
-	ID            string        `json:"id"`
-	Name          string        `json:"name"`
-	Description   string        `json:"description"`
-	Status        RunStatus     `json:"status"`
-	Mode          Mode          `json:"mode"`
-	EvidenceLevel EvidenceLevel `json:"evidence_level"`
-	TargetID      string        `json:"target_id"`
-	ChangeProfile ChangeProfile `json:"change_profile"`
-	SuiteIDs      []string      `json:"suite_ids"`
-	TrackIDs      []TrackID     `json:"track_ids"`
-	SampleLimit   int           `json:"sample_limit"`
-	Concurrency   int           `json:"concurrency"`
-	Seed          int64         `json:"seed"`
-	BaselineRunID string        `json:"baseline_run_id,omitempty"`
-	Progress      RunProgress   `json:"progress"`
-	CreatedAt     time.Time     `json:"created_at"`
-	StartedAt     *time.Time    `json:"started_at,omitempty"`
-	CompletedAt   *time.Time    `json:"completed_at,omitempty"`
-	Error         string        `json:"error,omitempty"`
+	SchemaVersion   string        `json:"schema_version"`
+	ID              string        `json:"id"`
+	ClientRequestID string        `json:"client_request_id,omitempty"`
+	Name            string        `json:"name"`
+	Description     string        `json:"description"`
+	Status          RunStatus     `json:"status"`
+	Mode            Mode          `json:"mode"`
+	EvidenceLevel   EvidenceLevel `json:"evidence_level"`
+	TargetID        string        `json:"target_id"`
+	ChangeProfile   ChangeProfile `json:"change_profile"`
+	SuiteIDs        []string      `json:"suite_ids"`
+	TrackIDs        []TrackID     `json:"track_ids"`
+	SampleLimit     int           `json:"sample_limit"`
+	Concurrency     int           `json:"concurrency"`
+	Seed            int64         `json:"seed"`
+	BaselineRunID   string        `json:"baseline_run_id,omitempty"`
+	Progress        RunProgress   `json:"progress"`
+	CreatedAt       time.Time     `json:"created_at"`
+	StartedAt       *time.Time    `json:"started_at,omitempty"`
+	CompletedAt     *time.Time    `json:"completed_at,omitempty"`
+	Error           string        `json:"error,omitempty"`
 }
 
 type ManifestTarget struct {

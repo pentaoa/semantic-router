@@ -214,12 +214,8 @@ func validateReportMetricsAndGates(runDir string, report Report, records recordA
 	if len(report.Gates) != len(requiredGateIDs) {
 		return fmt.Errorf("%w: report must contain the complete G0-G9 gate set", ErrInvalid)
 	}
-	metricIDs := make(map[string]bool, len(report.Metrics))
-	for _, metric := range report.Metrics {
-		if strings.TrimSpace(metric.ID) == "" || metricIDs[metric.ID] {
-			return fmt.Errorf("%w: report contains a duplicate or blank metric id", ErrInvalid)
-		}
-		metricIDs[metric.ID] = true
+	if err := validateReportMetrics(report.Metrics, report.Run.TrackIDs); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
 	passed, failed, unavailable := 0, 0, 0
 	dispositions := gateDispositionMatrix[report.Run.ChangeProfile]
@@ -286,6 +282,79 @@ func validateReportMetricsAndGates(runDir string, report Report, records recordA
 		}
 		if !reflect.DeepEqual(track.Gates, expectedGates) || !reflect.DeepEqual(track.Metrics, expectedMetrics) {
 			return fmt.Errorf("%w: track report does not match top-level metrics and gates", ErrInvalid)
+		}
+	}
+	return nil
+}
+
+func validateReportMetrics(metrics []Metric, selectedTrackIDs []TrackID) error {
+	selectedTracks := make(map[TrackID]struct{}, len(selectedTrackIDs))
+	for _, trackID := range selectedTrackIDs {
+		selectedTracks[trackID] = struct{}{}
+	}
+	metricIDs := make(map[string]struct{}, len(metrics))
+	for _, metric := range metrics {
+		if strings.TrimSpace(metric.ID) == "" {
+			return fmt.Errorf("evaluation report contains a blank metric id")
+		}
+		if _, duplicate := metricIDs[metric.ID]; duplicate {
+			return fmt.Errorf("evaluation report contains duplicate metric id %q", metric.ID)
+		}
+		metricIDs[metric.ID] = struct{}{}
+		if strings.TrimSpace(metric.Name) == "" {
+			return fmt.Errorf("evaluation metric %q has a blank name", metric.ID)
+		}
+		if strings.TrimSpace(metric.Unit) == "" {
+			return fmt.Errorf("evaluation metric %q has a blank unit", metric.ID)
+		}
+		if metric.TrackID != "" {
+			if _, selected := selectedTracks[metric.TrackID]; !selected {
+				return fmt.Errorf("evaluation metric %q track_id %q is not selected by the run", metric.ID, metric.TrackID)
+			}
+		}
+		if !validMetricDirection(metric.Direction) {
+			return fmt.Errorf("evaluation metric %q has invalid direction", metric.ID)
+		}
+		if metric.SampleCount < 0 {
+			return fmt.Errorf("evaluation metric %q sample_count cannot be negative", metric.ID)
+		}
+		for _, value := range []struct {
+			name  string
+			value *float64
+		}{
+			{name: "value", value: metric.Value},
+			{name: "baseline_value", value: metric.BaselineValue},
+			{name: "delta", value: metric.Delta},
+		} {
+			if value.value != nil && !finiteFloat(*value.value) {
+				return fmt.Errorf("evaluation metric %q %s must be finite", metric.ID, value.name)
+			}
+		}
+		if metric.ConfidenceInterval != nil {
+			if len(metric.ConfidenceInterval) != 2 {
+				return fmt.Errorf("evaluation metric %q confidence_interval must contain exactly two bounds", metric.ID)
+			}
+			lower, upper := metric.ConfidenceInterval[0], metric.ConfidenceInterval[1]
+			if !finiteFloat(lower) || !finiteFloat(upper) {
+				return fmt.Errorf("evaluation metric %q confidence_interval bounds must be finite", metric.ID)
+			}
+			if lower > upper {
+				return fmt.Errorf("evaluation metric %q confidence_interval bounds are reversed", metric.ID)
+			}
+			if metric.Value == nil || metric.SampleCount == 0 {
+				return fmt.Errorf("evaluation metric %q confidence_interval requires an estimate and samples", metric.ID)
+			}
+		}
+		if (metric.BaselineValue == nil) != (metric.Delta == nil) {
+			return fmt.Errorf("evaluation metric %q baseline_value and delta must be published together", metric.ID)
+		}
+		if metric.BaselineValue != nil {
+			if metric.Value == nil {
+				return fmt.Errorf("evaluation metric %q comparison requires a candidate value", metric.ID)
+			}
+			if *metric.Delta != *metric.Value-*metric.BaselineValue {
+				return fmt.Errorf("evaluation metric %q delta does not match value minus baseline_value", metric.ID)
+			}
 		}
 	}
 	return nil

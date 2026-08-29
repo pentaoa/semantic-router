@@ -137,7 +137,9 @@ func pairedMetricEvidence(baseline, candidate []Metric) ([]Metric, comparisonEvi
 	for _, metric := range candidate {
 		old, ok := baselineByID[metric.ID]
 		if !ok || old.Value == nil || metric.Value == nil ||
-			(old.Direction != "" && metric.Direction != "" && old.Direction != metric.Direction) {
+			old.Unit != metric.Unit || old.TrackID != metric.TrackID || old.Direction != metric.Direction {
+			metric.BaselineValue = nil
+			metric.Delta = nil
 			metrics = append(metrics, metric)
 			continue
 		}

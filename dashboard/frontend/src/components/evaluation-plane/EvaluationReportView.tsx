@@ -1,179 +1,220 @@
 import type { EvaluationReport } from '../../types/evaluationPlane'
 import { TRACK_PRESENTATION } from '../../types/evaluationPlane'
+import useEvaluationReportDiagnostics from '../../hooks/useEvaluationReportDiagnostics'
 import { formatDateTime } from '../../utils/dateTime'
 import {
   getEvaluationArtifactURL,
   isDownloadableEvaluationArtifact,
 } from '../../utils/evaluationPlaneApi'
 import EvaluationGateList from './EvaluationGateList'
-import { effectiveGateVerdict, formatMetric } from './evaluationPresentation'
-import {
-  CoverageBar,
-  GateVerdictBadge,
-  MetricCard,
-  MetricGrid,
-  RunStatusBadge,
-} from './EvaluationPrimitives'
+import EvaluationMetricTable from './EvaluationMetricTable'
+import EvaluationReportDiagnostics from './EvaluationReportDiagnostics'
+import { effectiveGateVerdict, formatMetric, selectHeadlineMetrics } from './evaluationPresentation'
+import { CoverageBar, GateVerdictBadge, RunStatusBadge } from './EvaluationPrimitives'
 import styles from './EvaluationReport.module.css'
+
+function presentCount(value: number | undefined, suffix: string): string {
+  return typeof value === 'number'
+    ? `${new Intl.NumberFormat().format(value)} ${suffix}`
+    : 'Not recorded'
+}
 
 export default function EvaluationReportView({ report }: { report: EvaluationReport }) {
   const summary = report.summary
-  const gateContractVersion = report.gates[0]?.contract_version || 'unavailable'
+  const gateContractVersion = report.gates[0]?.contract_version || 'not recorded'
   const requiredGates = report.gates.filter((gate) => gate.disposition === 'required')
   const requiredPassed = requiredGates.filter((gate) => gate.verdict === 'pass').length
   const requiredFailed = requiredGates.filter((gate) => gate.verdict === 'fail').length
   const requiredUnavailable = requiredGates.filter((gate) => gate.verdict === 'unavailable').length
+  const requiredBlockers = requiredGates.filter(
+    (gate) => gate.verdict === 'fail' || gate.verdict === 'unavailable',
+  )
   const promotionVerdict = effectiveGateVerdict(summary.verdict, report.gates)
+  const headlines = selectHeadlineMetrics(report)
+  const diagnostics = useEvaluationReportDiagnostics(report)
+  const isDiagnostic = report.run.evidence_level === 'E0'
+
   return (
-    <div className={styles.report}>
+    <article className={styles.report} aria-labelledby="evaluation-report-title">
       <section className={styles.reportHero}>
-        <div>
+        <div className={styles.reportHeroCopy}>
           <span className={styles.eyebrow}>Evidence report · {report.schema_version}</span>
-          <h2>{report.run.name}</h2>
-          <p>{report.run.description || 'No experiment description.'}</p>
+          <h2 id="evaluation-report-title">{report.run.name}</h2>
+          <p>{report.run.description || 'No experiment description was recorded.'}</p>
           <div className={styles.heroBadges}>
             <RunStatusBadge status={report.run.status} />
-            <GateVerdictBadge verdict={promotionVerdict} />
-            <span>{report.run.evidence_level}</span>
+            <GateVerdictBadge verdict={promotionVerdict} disposition="required" />
+            <span>{report.run.evidence_level} evidence</span>
             <span>{report.run.mode}</span>
-            <span>Profile {report.run.change_profile}</span>
-            <span>Gate contract {gateContractVersion}</span>
+            <span>{report.run.change_profile}</span>
           </div>
         </div>
         <CoverageBar coverage={summary.coverage} />
       </section>
 
-      <div className={styles.summaryGrid}>
-        <MetricCard
-          label="Quality"
-          value={formatMetric({ value: summary.quality_score, unit: 'ratio' })}
-          detail="Aggregate task quality"
-        />
-        <MetricCard
-          label="P95 latency"
-          value={formatMetric({ value: summary.latency_p95_ms, unit: 'ms' })}
-          detail="End-to-end request latency"
-        />
-        <MetricCard
-          label="Runtime cost"
-          value={formatMetric({ value: summary.runtime_cost, unit: 'usd' })}
-          detail="Serving execution ledger"
-        />
-        <MetricCard
-          label="Capacity TCO"
-          value={formatMetric({ value: summary.capacity_tco, unit: 'usd' })}
-          detail="Capacity planning ledger"
-        />
-        <MetricCard
-          label="Required gates"
-          value={`${requiredPassed}/${requiredGates.length} passed`}
-          detail={`${requiredFailed} failed · ${requiredUnavailable} unavailable`}
-          tone={requiredFailed ? 'negative' : requiredUnavailable ? 'warning' : 'positive'}
-        />
-        <MetricCard
-          label="Unavailable"
-          value={summary.unavailable_gates}
-          detail="Never counted as pass"
-          tone={summary.unavailable_gates ? 'warning' : 'neutral'}
-        />
-      </div>
-
-      <section className={styles.section}>
-        <div className={styles.sectionHeader}>
-          <div>
-            <span className={styles.eyebrow}>Decomposition</span>
-            <h3>Track evidence</h3>
-          </div>
-          <span>{report.tracks.length} tracks</span>
+      {isDiagnostic ? (
+        <div className={styles.claimNotice} role="status">
+          <strong>Promotion summary withheld — diagnostic E0</strong>
+          <span>
+            Measured diagnostics below remain valid for debugging. They do not reproduce each native
+            benchmark reducer or carry the receipts required for a promotion claim.
+          </span>
         </div>
-        <div className={styles.trackList}>
-          {report.tracks.map((track) => (
-            <details
-              key={track.track_id}
-              className={styles.track}
-              open={track.status === 'failed' || track.status === 'unavailable'}
-            >
-              <summary>
-                <div>
-                  <strong>{TRACK_PRESENTATION[track.track_id].label}</strong>
-                  <span>{track.summary}</span>
-                </div>
-                <div>
-                  <span>{track.evidence_level}</span>
-                  <RunStatusBadge status={track.status} />
-                </div>
-              </summary>
-              <div className={styles.trackBody}>
-                <CoverageBar coverage={track.coverage} />
-                {track.error ? (
-                  <div className={styles.error} role="alert">
-                    {track.error}
-                  </div>
-                ) : null}
-                <MetricGrid metrics={track.metrics} />
-                <EvaluationGateList gates={track.gates} />
-              </div>
-            </details>
-          ))}
-        </div>
-      </section>
+      ) : null}
 
-      <section className={styles.section}>
+      <section className={styles.section} aria-labelledby="report-decision-title">
         <div className={styles.sectionHeader}>
           <div>
             <span className={styles.eyebrow}>Decision boundary</span>
-            <h3>Promotion gates</h3>
+            <h3 id="report-decision-title">
+              {requiredBlockers.length ? 'Promotion needs attention' : 'Required gates satisfied'}
+            </h3>
+            <p>
+              {requiredPassed}/{requiredGates.length} required gates passed · {requiredFailed}{' '}
+              blocked · {requiredUnavailable} need evidence
+            </p>
           </div>
-          <GateVerdictBadge verdict={promotionVerdict} />
+          <GateVerdictBadge verdict={promotionVerdict} disposition="required" />
         </div>
-        <EvaluationGateList gates={report.gates} />
+        {headlines.length ? (
+          <dl className={styles.headlineStrip}>
+            {headlines.map((metric) => (
+              <div key={`${metric.track_id || 'system'}-${metric.id}`}>
+                <dt>{metric.name}</dt>
+                <dd>{formatMetric(metric)}</dd>
+                <span>
+                  {metric.track_id ? TRACK_PRESENTATION[metric.track_id].label : 'System'}
+                </span>
+              </div>
+            ))}
+          </dl>
+        ) : (
+          <p className={styles.empty}>No measured headline aggregate applies to this run scope.</p>
+        )}
       </section>
 
-      <section className={styles.section}>
-        <div className={styles.sectionHeader}>
-          <div>
-            <span className={styles.eyebrow}>All aggregates</span>
-            <h3>Metrics</h3>
-          </div>
-          <span>{report.metrics.length} metrics</span>
-        </div>
-        <MetricGrid metrics={report.metrics} />
-      </section>
-
-      <section className={styles.section}>
-        <div className={styles.sectionHeader}>
-          <div>
-            <span className={styles.eyebrow}>Three ledgers</span>
-            <h3>Cost accounting</h3>
-          </div>
-        </div>
-        <div className={styles.ledgerGrid}>
-          {Object.entries(report.costs).map(([name, ledger]) => (
-            <article key={name}>
-              <span>{name.replace('_', ' ')}</span>
-              <strong>
-                {formatMetric({ value: ledger.amount, unit: ledger.currency.toLowerCase() })}
-              </strong>
-              <small>
-                {ledger.input_tokens || ledger.output_tokens
-                  ? `${ledger.input_tokens || 0} input · ${ledger.output_tokens || 0} output tokens`
-                  : 'Token accounting unavailable'}
-                {ledger.gpu_seconds ? ` · ${ledger.gpu_seconds.toFixed(1)} GPU seconds` : ''}
-                {ledger.energy_kwh ? ` · ${ledger.energy_kwh.toFixed(2)} kWh` : ''}
-              </small>
-            </article>
-          ))}
-        </div>
-      </section>
-
-      <section className={styles.twoColumn}>
-        <div className={styles.section}>
+      {requiredBlockers.length ? (
+        <section className={styles.section} aria-labelledby="report-blockers-title">
           <div className={styles.sectionHeader}>
             <div>
-              <span className={styles.eyebrow}>Architecture feedback</span>
-              <h3>Recommendations</h3>
+              <span className={styles.eyebrow}>Next evidence required</span>
+              <h3 id="report-blockers-title">Required blockers</h3>
+              <p>Specific rationale is shown first; generic gate descriptions remain secondary.</p>
             </div>
+            <span>{requiredBlockers.length} blockers</span>
           </div>
+          <EvaluationGateList gates={requiredBlockers} />
+        </section>
+      ) : null}
+
+      <section className={styles.section} aria-labelledby="report-metrics-title">
+        <div className={styles.sectionHeader}>
+          <div>
+            <span className={styles.eyebrow}>Measured outcomes</span>
+            <h3 id="report-metrics-title">Metric explorer</h3>
+            <p>
+              Search by metric ID or track; direction, paired delta, interval, and sample size stay
+              visible.
+            </p>
+          </div>
+          <span>{report.metrics.length} aggregates</span>
+        </div>
+        <EvaluationMetricTable metrics={report.metrics} />
+      </section>
+
+      <section className={styles.section} aria-labelledby="report-diagnostics-title">
+        <div className={styles.sectionHeader}>
+          <div>
+            <span className={styles.eyebrow}>Verified artifacts</span>
+            <h3 id="report-diagnostics-title">Execution diagnostics</h3>
+            <p>Outcome accounting and bounded capacity observations load independently.</p>
+          </div>
+        </div>
+        <EvaluationReportDiagnostics {...diagnostics} />
+      </section>
+
+      <section className={styles.section} aria-labelledby="report-tracks-title">
+        <div className={styles.sectionHeader}>
+          <div>
+            <span className={styles.eyebrow}>Scope decomposition</span>
+            <h3 id="report-tracks-title">Track observations</h3>
+          </div>
+          <span>{report.tracks.length} selected tracks</span>
+        </div>
+        <div className={styles.tableScroll}>
+          <table className={styles.compactTable}>
+            <caption>Observation state and coverage by selected evaluation track</caption>
+            <thead>
+              <tr>
+                <th scope="col">Track</th>
+                <th scope="col">Observation</th>
+                <th scope="col">Coverage</th>
+                <th scope="col">Evidence</th>
+                <th scope="col">Summary</th>
+              </tr>
+            </thead>
+            <tbody>
+              {report.tracks.map((track) => (
+                <tr key={track.track_id}>
+                  <th scope="row">{TRACK_PRESENTATION[track.track_id].label}</th>
+                  <td>
+                    <RunStatusBadge status={track.status} />
+                  </td>
+                  <td>{Math.round(track.coverage.fraction * 100)}%</td>
+                  <td>{track.evidence_level}</td>
+                  <td>{track.error || track.summary}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <details className={styles.disclosure}>
+        <summary>
+          All promotion gates <span>{report.gates.length}</span>
+        </summary>
+        <div className={styles.disclosureBody}>
+          <EvaluationGateList gates={report.gates} />
+        </div>
+      </details>
+
+      <details className={styles.disclosure}>
+        <summary>
+          Cost ledgers <span>3 ledgers</span>
+        </summary>
+        <div className={styles.disclosureBody}>
+          <div className={styles.ledgerGrid}>
+            {Object.entries(report.costs).map(([name, ledger]) => (
+              <article key={name}>
+                <span>{name.replace(/_/g, ' ')}</span>
+                <strong>
+                  {formatMetric({ value: ledger.amount, unit: ledger.currency.toLowerCase() })}
+                </strong>
+                <small>
+                  {presentCount(ledger.input_tokens, 'input tokens')} ·{' '}
+                  {presentCount(ledger.output_tokens, 'output tokens')}
+                  {typeof ledger.gpu_seconds === 'number'
+                    ? ` · ${ledger.gpu_seconds.toFixed(1)} GPU seconds`
+                    : ''}
+                  {typeof ledger.energy_kwh === 'number'
+                    ? ` · ${ledger.energy_kwh.toFixed(2)} kWh`
+                    : ''}
+                </small>
+              </article>
+            ))}
+          </div>
+        </div>
+      </details>
+
+      <details className={styles.disclosure}>
+        <summary>
+          Diagnostic findings <span>{report.recommendations.length}</span>
+        </summary>
+        <div className={styles.disclosureBody}>
+          <p className={styles.scopeCopy}>
+            These are rule-derived diagnostic findings, not benchmark-native causal conclusions.
+          </p>
           {report.recommendations.length ? (
             <ol className={styles.recommendations}>
               {report.recommendations.map((item, index) => (
@@ -181,16 +222,16 @@ export default function EvaluationReportView({ report }: { report: EvaluationRep
               ))}
             </ol>
           ) : (
-            <p className={styles.empty}>No architecture recommendations were generated.</p>
+            <p className={styles.empty}>No diagnostic findings were generated.</p>
           )}
         </div>
-        <div className={styles.section}>
-          <div className={styles.sectionHeader}>
-            <div>
-              <span className={styles.eyebrow}>Reproducibility</span>
-              <h3>Provenance</h3>
-            </div>
-          </div>
+      </details>
+
+      <details className={styles.disclosure}>
+        <summary>
+          Provenance and reproducibility <span>{gateContractVersion}</span>
+        </summary>
+        <div className={styles.disclosureBody}>
           <dl className={styles.provenance}>
             <div>
               <dt>Generated</dt>
@@ -198,13 +239,13 @@ export default function EvaluationReportView({ report }: { report: EvaluationRep
             </div>
             <div>
               <dt>Target</dt>
-              <dd>{report.provenance.target_id}</dd>
+              <dd>
+                <code>{report.provenance.target_id}</code>
+              </dd>
             </div>
             <div>
-              <dt>Change profile</dt>
-              <dd>
-                <code>{report.run.change_profile}</code>
-              </dd>
+              <dt>Seed</dt>
+              <dd>{report.provenance.seed}</dd>
             </div>
             <div>
               <dt>Gate contract</dt>
@@ -213,104 +254,96 @@ export default function EvaluationReportView({ report }: { report: EvaluationRep
               </dd>
             </div>
             <div>
-              <dt>Seed</dt>
-              <dd>{report.provenance.seed}</dd>
-            </div>
-            <div>
               <dt>Code revision</dt>
               <dd>
-                <code>{report.provenance.code_revision || '-'}</code>
-              </dd>
-            </div>
-            <div>
-              <dt>Benchmark revisions</dt>
-              <dd>
-                {Object.entries(report.provenance.benchmark_revisions || {}).length ? (
-                  Object.entries(report.provenance.benchmark_revisions || {}).map(
-                    ([benchmark, revision]) => (
-                      <span key={benchmark}>
-                        {benchmark}: <code>{revision}</code>
-                      </span>
-                    ),
-                  )
-                ) : (
-                  <code>-</code>
-                )}
+                <code>{report.provenance.code_revision || 'Not recorded'}</code>
               </dd>
             </div>
             <div>
               <dt>Workload snapshot</dt>
               <dd>
-                <code>{report.provenance.workload_snapshot_digest || '-'}</code>
+                <code>{report.provenance.workload_snapshot_digest || 'Not recorded'}</code>
               </dd>
             </div>
             <div>
               <dt>Policy snapshot</dt>
               <dd>
-                <code>{report.provenance.policy_snapshot_digest || '-'}</code>
+                <code>{report.provenance.policy_snapshot_digest || 'Not recorded'}</code>
               </dd>
             </div>
             <div>
               <dt>Policy binding</dt>
               <dd>
-                <code>{report.provenance.binding_snapshot_digest || '-'}</code>
+                <code>{report.provenance.binding_snapshot_digest || 'Not recorded'}</code>
               </dd>
             </div>
             <div>
               <dt>Pool snapshot</dt>
               <dd>
-                <code>{report.provenance.pool_snapshot_digest || '-'}</code>
+                <code>{report.provenance.pool_snapshot_digest || 'Not recorded'}</code>
               </dd>
             </div>
             <div>
               <dt>Environment</dt>
               <dd>
-                <code>{report.provenance.environment_snapshot_digest || '-'}</code>
+                <code>{report.provenance.environment_snapshot_digest || 'Not recorded'}</code>
               </dd>
             </div>
             <div>
               <dt>Redaction</dt>
-              <dd>{report.provenance.redaction_policy || '-'}</dd>
+              <dd>{report.provenance.redaction_policy || 'Not recorded'}</dd>
+            </div>
+            <div className={styles.provenanceWide}>
+              <dt>Benchmark revisions</dt>
+              <dd>
+                {Object.entries(report.provenance.benchmark_revisions || {}).length
+                  ? Object.entries(report.provenance.benchmark_revisions || {}).map(
+                      ([name, revision]) => (
+                        <span key={name}>
+                          {name}: <code>{revision}</code>
+                        </span>
+                      ),
+                    )
+                  : 'Not recorded'}
+              </dd>
             </div>
           </dl>
         </div>
-      </section>
+      </details>
 
-      <section className={styles.section}>
-        <div className={styles.sectionHeader}>
-          <div>
-            <span className={styles.eyebrow}>Evidence outputs</span>
-            <h3>Artifacts</h3>
-          </div>
-          <span>{report.artifacts.length} objects</span>
+      <details className={styles.disclosure}>
+        <summary>
+          Evidence artifacts <span>{report.artifacts.length}</span>
+        </summary>
+        <div className={styles.disclosureBody}>
+          {report.artifacts.length ? (
+            <div className={styles.artifactList}>
+              {report.artifacts.map((artifact) => (
+                <article key={artifact.id}>
+                  <div>
+                    <strong>{artifact.name}</strong>
+                    <span>
+                      {artifact.kind} · {artifact.media_type || 'media type not recorded'}
+                    </span>
+                  </div>
+                  {isDownloadableEvaluationArtifact(artifact) ? (
+                    <a
+                      href={getEvaluationArtifactURL(report.run.id, artifact.id)}
+                      aria-label={`Download ${artifact.name}`}
+                    >
+                      Download
+                    </a>
+                  ) : (
+                    <code>{artifact.digest || artifact.id}</code>
+                  )}
+                </article>
+              ))}
+            </div>
+          ) : (
+            <p className={styles.empty}>No report artifacts were recorded.</p>
+          )}
         </div>
-        {report.artifacts.length ? (
-          <div className={styles.artifactList}>
-            {report.artifacts.map((artifact) => (
-              <article key={artifact.id}>
-                <div>
-                  <strong>{artifact.name}</strong>
-                  <span>
-                    {artifact.kind} · {artifact.media_type || 'unknown media type'}
-                  </span>
-                </div>
-                {isDownloadableEvaluationArtifact(artifact) ? (
-                  <a
-                    href={getEvaluationArtifactURL(report.run.id, artifact.id)}
-                    aria-label={`Download ${artifact.name}`}
-                  >
-                    Download
-                  </a>
-                ) : (
-                  <code>{artifact.digest || artifact.id}</code>
-                )}
-              </article>
-            ))}
-          </div>
-        ) : (
-          <p className={styles.empty}>No report artifacts were recorded.</p>
-        )}
-      </section>
-    </div>
+      </details>
+    </article>
   )
 }

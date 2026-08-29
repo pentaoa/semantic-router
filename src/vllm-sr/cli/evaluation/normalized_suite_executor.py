@@ -736,14 +736,12 @@ def execute_normalized_suites(
         evidence = evidence_by_suite[case.manifest.id]
         for track_id in track_ids:
             if track_id not in case.manifest.track_ids:
-                if track_id != "multimodal" or case.source_visible.modality != "text":
-                    records.append(
-                        _unavailable(
-                            case,
-                            track_id,
-                            "normalized suite does not declare this track for the case",
-                        )
-                    )
+                # A run can compose heterogeneous suites.  A case from a suite
+                # that does not declare this track is outside that track's
+                # applicable universe, not a missing observation.  Emitting an
+                # unavailable record here inflates the denominator for every
+                # suite-by-track cross-product and makes coverage worse merely
+                # because another independent benchmark was selected.
                 continue
             records.extend(_TRACK_EXECUTORS[track_id](case, evidence))
     inputs = _build_inputs(manifests, selected, evidence_by_suite, track_ids)

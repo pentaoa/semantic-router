@@ -89,10 +89,8 @@ func decodeReportStrict(runID string, data []byte) (Report, error) {
 			}
 		}
 	}
-	for _, metric := range report.Metrics {
-		if !validMetricDirection(metric.Direction) {
-			return Report{}, fmt.Errorf("evaluation metric %q has invalid direction", metric.ID)
-		}
+	if err := validateReportMetrics(report.Metrics, report.Run.TrackIDs); err != nil {
+		return Report{}, err
 	}
 	for _, gate := range report.Gates {
 		if err := validateReportGate(gate, report.Run.ChangeProfile); err != nil {

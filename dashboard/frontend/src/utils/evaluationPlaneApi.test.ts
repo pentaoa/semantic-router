@@ -233,6 +233,14 @@ describe('Evaluation Plane API', () => {
     ).toThrow(/change profile.*server evaluation catalog/i)
   })
 
+  it('preserves the client idempotency token in the create payload', () => {
+    const payload = buildCreateRunPayload(
+      { ...request, client_request_id: '4d0b4f2c-1fc5-40b0-b04e-876ad9d4d8e2' },
+      catalog,
+    )
+    expect(payload.client_request_id).toBe('4d0b4f2c-1fc5-40b0-b04e-876ad9d4d8e2')
+  })
+
   it('rejects partially supported suites and tracks before creating a run', () => {
     const expandedCatalog: EvaluationCatalog = {
       ...catalog,

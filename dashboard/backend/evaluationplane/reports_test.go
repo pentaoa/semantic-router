@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,6 +22,11 @@ func TestReportJSONIsStrictVersionedIdentityCheckedAndRaw(t *testing.T) {
 	}
 	reportPath := filepath.Join(root, "runs", run.ID, reportFileName)
 	valid := reportForRun(run, []Artifact{})
+	valid.Metrics = []Metric{{
+		ID: "routing.accuracy", Name: "Routing accuracy", TrackID: "routing",
+		Value: float64Pointer(0.75), Unit: "fraction", Direction: "higher_is_better",
+		ConfidenceInterval: []float64{0.5, 0.9}, SampleCount: 4,
+	}}
 	valid.Gates = []Gate{{
 		ID: "G0", Name: "Reproducibility", Disposition: "required", Verdict: "pass",
 		ChangeProfile: run.ChangeProfile, ContractVersion: GateContractVersion,
@@ -58,6 +64,24 @@ func TestReportJSONIsStrictVersionedIdentityCheckedAndRaw(t *testing.T) {
 		{name: "gate evidence missing", mutate: func(value map[string]any) {
 			value["gates"].([]any)[0].(map[string]any)["evidence_refs"] = []any{}
 		}, match: "evidence_refs"},
+		{name: "blank metric name", mutate: func(value map[string]any) {
+			value["metrics"].([]any)[0].(map[string]any)["name"] = "  "
+		}, match: "blank name"},
+		{name: "blank metric unit", mutate: func(value map[string]any) {
+			value["metrics"].([]any)[0].(map[string]any)["unit"] = ""
+		}, match: "blank unit"},
+		{name: "metric outside selected tracks", mutate: func(value map[string]any) {
+			value["metrics"].([]any)[0].(map[string]any)["track_id"] = "joint"
+		}, match: "not selected by the run"},
+		{name: "negative metric sample count", mutate: func(value map[string]any) {
+			value["metrics"].([]any)[0].(map[string]any)["sample_count"] = -1
+		}, match: "sample_count cannot be negative"},
+		{name: "malformed metric confidence interval", mutate: func(value map[string]any) {
+			value["metrics"].([]any)[0].(map[string]any)["confidence_interval"] = []any{0.5}
+		}, match: "exactly two bounds"},
+		{name: "reversed metric confidence interval", mutate: func(value map[string]any) {
+			value["metrics"].([]any)[0].(map[string]any)["confidence_interval"] = []any{0.9, 0.5}
+		}, match: "bounds are reversed"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -73,6 +97,97 @@ func TestReportJSONIsStrictVersionedIdentityCheckedAndRaw(t *testing.T) {
 				t.Fatalf("ReportJSON error=%v, want match %q", err, test.match)
 			}
 		})
+	}
+}
+
+func TestValidateReportMetricsRejectsMisleadingNumericEvidence(t *testing.T) {
+	validMetric := func() Metric {
+		value := 0.8
+		return Metric{
+			ID: "routing.accuracy", Name: "Routing accuracy", TrackID: "routing",
+			Value: &value, Unit: "fraction", Direction: "higher_is_better",
+			ConfidenceInterval: []float64{0.7, 0.9}, SampleCount: 10,
+		}
+	}
+	if err := validateReportMetrics([]Metric{validMetric()}, []TrackID{"routing"}); err != nil {
+		t.Fatalf("valid metric rejected: %v", err)
+	}
+	systemMetric := validMetric()
+	systemMetric.ID = "system.total_cost"
+	systemMetric.Name = "Total cost"
+	systemMetric.TrackID = ""
+	if err := validateReportMetrics([]Metric{systemMetric}, []TrackID{"routing"}); err != nil {
+		t.Fatalf("valid system-level metric rejected: %v", err)
+	}
+	unavailable := validMetric()
+	unavailable.Value = nil
+	unavailable.ConfidenceInterval = nil
+	unavailable.SampleCount = 0
+	if err := validateReportMetrics([]Metric{unavailable}, []TrackID{"routing"}); err != nil {
+		t.Fatalf("unavailable metric without statistical claims rejected: %v", err)
+	}
+	compared := validMetric()
+	compared.BaselineValue = float64Pointer(0.7)
+	compared.Delta = float64Pointer(*compared.Value - *compared.BaselineValue)
+	if err := validateReportMetrics([]Metric{compared}, []TrackID{"routing"}); err != nil {
+		t.Fatalf("consistent comparison metric rejected: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*Metric)
+		match  string
+	}{
+		{name: "blank id", mutate: func(metric *Metric) { metric.ID = " " }, match: "blank metric id"},
+		{name: "blank name", mutate: func(metric *Metric) { metric.Name = "\t" }, match: "blank name"},
+		{name: "blank unit", mutate: func(metric *Metric) { metric.Unit = " " }, match: "blank unit"},
+		{name: "unselected track", mutate: func(metric *Metric) { metric.TrackID = "joint" }, match: "not selected by the run"},
+		{name: "invalid direction", mutate: func(metric *Metric) { metric.Direction = "maximize" }, match: "invalid direction"},
+		{name: "negative sample count", mutate: func(metric *Metric) { metric.SampleCount = -1 }, match: "sample_count cannot be negative"},
+		{name: "empty confidence interval", mutate: func(metric *Metric) { metric.ConfidenceInterval = []float64{} }, match: "exactly two bounds"},
+		{name: "short confidence interval", mutate: func(metric *Metric) { metric.ConfidenceInterval = []float64{0.7} }, match: "exactly two bounds"},
+		{name: "long confidence interval", mutate: func(metric *Metric) { metric.ConfidenceInterval = []float64{0.6, 0.8, 0.9} }, match: "exactly two bounds"},
+		{name: "reversed confidence interval", mutate: func(metric *Metric) { metric.ConfidenceInterval = []float64{0.9, 0.7} }, match: "bounds are reversed"},
+		{name: "non-finite confidence lower bound", mutate: func(metric *Metric) { metric.ConfidenceInterval = []float64{math.NaN(), 0.9} }, match: "bounds must be finite"},
+		{name: "non-finite confidence upper bound", mutate: func(metric *Metric) { metric.ConfidenceInterval = []float64{0.7, math.Inf(1)} }, match: "bounds must be finite"},
+		{name: "confidence interval without value", mutate: func(metric *Metric) { metric.Value = nil }, match: "requires an estimate and samples"},
+		{name: "confidence interval without samples", mutate: func(metric *Metric) { metric.SampleCount = 0 }, match: "requires an estimate and samples"},
+		{name: "non-finite value", mutate: func(metric *Metric) { metric.Value = float64Pointer(math.NaN()) }, match: "value must be finite"},
+		{name: "non-finite baseline", mutate: func(metric *Metric) {
+			metric.BaselineValue = float64Pointer(math.Inf(1))
+			metric.Delta = float64Pointer(0)
+		}, match: "baseline_value must be finite"},
+		{name: "non-finite delta", mutate: func(metric *Metric) {
+			metric.BaselineValue = float64Pointer(0.7)
+			metric.Delta = float64Pointer(math.Inf(-1))
+		}, match: "delta must be finite"},
+		{name: "baseline without delta", mutate: func(metric *Metric) { metric.BaselineValue = float64Pointer(0.7) }, match: "must be published together"},
+		{name: "delta without baseline", mutate: func(metric *Metric) { metric.Delta = float64Pointer(0.1) }, match: "must be published together"},
+		{name: "comparison without candidate value", mutate: func(metric *Metric) {
+			metric.Value = nil
+			metric.ConfidenceInterval = nil
+			metric.BaselineValue = float64Pointer(0.7)
+			metric.Delta = float64Pointer(0.1)
+		}, match: "requires a candidate value"},
+		{name: "inconsistent delta", mutate: func(metric *Metric) {
+			metric.BaselineValue = float64Pointer(0.7)
+			metric.Delta = float64Pointer(0.2)
+		}, match: "does not match value minus baseline_value"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			metric := validMetric()
+			test.mutate(&metric)
+			err := validateReportMetrics([]Metric{metric}, []TrackID{"routing"})
+			if err == nil || !strings.Contains(err.Error(), test.match) {
+				t.Fatalf("validateReportMetrics error=%v, want match %q", err, test.match)
+			}
+		})
+	}
+
+	first, second := validMetric(), validMetric()
+	if err := validateReportMetrics([]Metric{first, second}, []TrackID{"routing"}); err == nil || !strings.Contains(err.Error(), "duplicate metric id") {
+		t.Fatalf("duplicate metric validation error=%v", err)
 	}
 }
 
@@ -107,18 +222,18 @@ func newPairedComparisonFixture(t *testing.T) *pairedComparisonFixture {
 	}
 	baseline := reportForRun(baselineRun, nil)
 	baseline.Metrics = []Metric{
-		{ID: "routing.accuracy", Name: "Quality", Value: float64Pointer(0.8), Unit: "score", Direction: "higher_is_better"},
-		{ID: "routing.latency_p95_ms", Name: "Latency", Value: float64Pointer(100), Unit: "ms", Direction: "lower_is_better"},
-		{ID: "missing", Name: "Missing", Value: nil, Unit: "score", Direction: "higher_is_better"},
+		{ID: "routing.accuracy", Name: "Quality", TrackID: "routing", Value: float64Pointer(0.8), Unit: "score", Direction: "higher_is_better"},
+		{ID: "routing.latency_p95_ms", Name: "Latency", TrackID: "routing", Value: float64Pointer(100), Unit: "ms", Direction: "lower_is_better"},
+		{ID: "missing", Name: "Missing", TrackID: "routing", Value: nil, Unit: "score", Direction: "higher_is_better"},
 	}
 	candidate := reportForRun(candidateRun, nil)
 	candidate.Provenance.PolicySnapshotDigest = "sha256:candidate-policy"
 	candidate.Provenance.BindingSnapshotDigest = "sha256:candidate-binding"
 	candidate.Metrics = []Metric{
-		{ID: "routing.accuracy", Name: "Quality", Value: float64Pointer(0.9), Unit: "score", Direction: "higher_is_better"},
-		{ID: "routing.latency_p95_ms", Name: "Latency", Value: float64Pointer(104), Unit: "ms", Direction: "lower_is_better"},
-		{ID: "missing", Name: "Missing", Value: float64Pointer(1), Unit: "score", Direction: "higher_is_better"},
-		{ID: "candidate-only", Name: "Candidate only", Value: float64Pointer(7), Unit: "count", Direction: "higher_is_better"},
+		{ID: "routing.accuracy", Name: "Quality", TrackID: "routing", Value: float64Pointer(0.9), Unit: "score", Direction: "higher_is_better"},
+		{ID: "routing.latency_p95_ms", Name: "Latency", TrackID: "routing", Value: float64Pointer(104), Unit: "ms", Direction: "lower_is_better"},
+		{ID: "missing", Name: "Missing", TrackID: "routing", Value: float64Pointer(1), Unit: "score", Direction: "higher_is_better"},
+		{ID: "candidate-only", Name: "Candidate only", TrackID: "routing", Value: float64Pointer(7), Unit: "count", Direction: "higher_is_better"},
 	}
 	return &pairedComparisonFixture{
 		service: service, baselineRun: baselineRun, candidateRun: candidateRun,
@@ -257,6 +372,49 @@ func TestCompareRequiredGateAndPairingAvailabilityPrecedence(t *testing.T) {
 	candidate.Provenance.PolicySnapshotDigest = ""
 	if _, err := comparePairedReports(baseline, candidate); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("missing policy digest error=%v, want ErrInvalid", err)
+	}
+}
+
+func TestPairedMetricEvidenceRequiresMatchingMetricSchema(t *testing.T) {
+	value := float64Pointer(0.8)
+	baseline := Metric{
+		ID: "routing.accuracy", Name: "Accuracy", TrackID: "routing",
+		Value: value, Unit: "ratio", Direction: "higher_is_better",
+	}
+	tests := []struct {
+		name   string
+		mutate func(*Metric)
+	}{
+		{name: "unit", mutate: func(metric *Metric) { metric.Unit = "percent" }},
+		{name: "track", mutate: func(metric *Metric) { metric.TrackID = "joint" }},
+		{name: "direction", mutate: func(metric *Metric) { metric.Direction = "" }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := baseline
+			candidate.Value = float64Pointer(0.9)
+			candidate.BaselineValue = float64Pointer(0.7)
+			candidate.Delta = float64Pointer(0.2)
+			test.mutate(&candidate)
+
+			metrics, evidence := pairedMetricEvidence([]Metric{baseline}, []Metric{candidate})
+			if evidence.matched != 0 || evidence.improvements != 0 || evidence.regressions != 0 {
+				t.Fatalf("schema-mismatched metric produced comparison evidence: %+v", evidence)
+			}
+			if len(metrics) != 1 || metrics[0].BaselineValue != nil || metrics[0].Delta != nil {
+				t.Fatalf("schema-mismatched metric produced a paired delta: %+v", metrics)
+			}
+		})
+	}
+
+	candidate := baseline
+	candidate.Value = float64Pointer(0.9)
+	metrics, evidence := pairedMetricEvidence([]Metric{baseline}, []Metric{candidate})
+	if evidence.matched != 1 || evidence.improvements != 1 || evidence.regressions != 0 {
+		t.Fatalf("matching metric schema did not produce comparison evidence: %+v", evidence)
+	}
+	if len(metrics) != 1 || metrics[0].BaselineValue == nil || metrics[0].Delta == nil {
+		t.Fatalf("matching metric schema did not produce a paired delta: %+v", metrics)
 	}
 }
 
