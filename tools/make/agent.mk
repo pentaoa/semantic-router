@@ -285,10 +285,10 @@ agent-smoke-local: ## Validate local container, router, envoy, and dashboard hea
 	START_TIME="$$(date +%s)"; \
 	while true; do \
 		STATUS_OUTPUT="$$(VLLM_SR_STACK_NAME="$(AGENT_STACK_NAME)" VLLM_SR_PORT_OFFSET="$(AGENT_PORT_OFFSET)" vllm-sr status all 2>&1 || true)"; \
-		if echo "$$STATUS_OUTPUT" | grep -q "Container Status: Running" && \
-		   echo "$$STATUS_OUTPUT" | grep -q "Router: Running" && \
-		   echo "$$STATUS_OUTPUT" | grep -q "Envoy: Running" && \
-		   echo "$$STATUS_OUTPUT" | grep -q "Dashboard: Running"; then \
+		if echo "$$STATUS_OUTPUT" | grep -Eq 'Container Status: Running|^[[:space:]]*State[[:space:]]+Running[[:space:]]*$$' && \
+		   echo "$$STATUS_OUTPUT" | grep -Eq '^[[:space:]]*Router(:|[[:space:]])[[:space:]]+Running([[:space:]]|$$)' && \
+		   echo "$$STATUS_OUTPUT" | grep -Eq '^[[:space:]]*Envoy(:|[[:space:]])[[:space:]]+Running([[:space:]]|$$)' && \
+		   echo "$$STATUS_OUTPUT" | grep -Eq '^[[:space:]]*Dashboard(:|[[:space:]])[[:space:]]+Running([[:space:]]|$$)'; then \
 			echo "$$STATUS_OUTPUT"; \
 			break; \
 		fi; \

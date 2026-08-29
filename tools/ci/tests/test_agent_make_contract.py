@@ -141,6 +141,20 @@ class AgentMakeContractTests(unittest.TestCase):
     def test_security_scan_is_not_forced_for_docs_only_changes(self) -> None:
         self.assertNotIn("always_run", local_hook("supply-chain-security-scan"))
 
+    def test_local_smoke_accepts_current_and_legacy_runtime_status(self) -> None:
+        smoke = target_block("agent-smoke-local")
+
+        self.assertIn("Container Status: Running", smoke)
+        self.assertIn(
+            "State[[:space:]]+Running",
+            smoke,
+        )
+        for service in ("Router", "Envoy", "Dashboard"):
+            self.assertIn(
+                f"{service}(:|[[:space:]])[[:space:]]+Running",
+                smoke,
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
