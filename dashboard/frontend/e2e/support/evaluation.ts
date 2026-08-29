@@ -11,6 +11,7 @@ import type {
   EvaluationMode,
   EvaluationReport,
   EvaluationRun,
+  EvaluationRunLedgerWarning,
   EvaluationTrackId,
   EvidenceLevel,
 } from '../../src/types/evaluationPlane'
@@ -631,6 +632,11 @@ export const evaluationComparison: EvaluationComparison = {
 
 interface MockEvaluationPlaneOptions {
   mutationDelayMs?: number
+  ledgerWarnings?: EvaluationRunLedgerWarning[]
+  diagnosticArtifactBodies?: {
+    failureSummary?: string
+    capacityProfile?: string
+  }
 }
 
 function sameMembers(left: readonly string[], right: readonly string[]): boolean {
@@ -675,7 +681,7 @@ function failureSummary(run: EvaluationRun): EvaluationFailureSummary {
     total_records: run.track_ids.length * 4,
     failed: 0,
     unavailable: 0,
-    by_track: run.track_ids.map((track_id) => ({
+    by_track: [...run.track_ids].sort().map((track_id) => ({
       track_id,
       succeeded: 4,
       failed: 0,
@@ -710,6 +716,7 @@ export async function mockEvaluationPlane(
   let deleteCount = 0
   let startCount = 0
   let eventStreamCount = 0
+  const ledgerWarnings = options.ledgerWarnings || []
   const mutationDelay = () =>
     new Promise<void>((resolve) => setTimeout(resolve, options.mutationDelayMs || 0))
 
@@ -717,6 +724,14 @@ export async function mockEvaluationPlane(
     await fulfillJSON(route, 200, evaluationCatalog)
   })
   await page.route('**/api/evaluation/v1/compare?*', async (route) => {
+    if (ledgerWarnings.length) {
+      await fulfillError(
+        route,
+        409,
+        'conflict: evaluation run ledger is incomplete; repair quarantined evidence before comparing runs',
+      )
+      return
+    }
     const url = new URL(route.request().url())
     const baselineRunID = url.searchParams.get('baseline_run_id') || ''
     const candidateRunID = url.searchParams.get('candidate_run_id') || ''
@@ -794,7 +809,22 @@ export async function mockEvaluationPlane(
       )
       return
     }
-    await fulfillJSON(route, 200, evaluationReport(run))
+    const report = evaluationReport(run)
+    if (typeof options.diagnosticArtifactBodies?.capacityProfile === 'string') {
+      report.artifacts = [
+        ...report.artifacts,
+        {
+          id: 'capacity-profile-json',
+          name: 'capacity-profile.json',
+          kind: 'json',
+          uri: 'capacity-profile.json',
+          digest: report.artifacts[0]?.digest,
+          media_type: 'application/json',
+          size_bytes: options.diagnosticArtifactBodies.capacityProfile.length,
+        },
+      ]
+    }
+    await fulfillJSON(route, 200, report)
   })
   await page.route('**/api/evaluation/v1/runs/*/artifacts/*', async (route) => {
     const parts = new URL(route.request().url()).pathname.split('/')
@@ -810,7 +840,26 @@ export async function mockEvaluationPlane(
       return
     }
     if (artifactID === 'failure-summary-json') {
+      if (typeof options.diagnosticArtifactBodies?.failureSummary === 'string') {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: options.diagnosticArtifactBodies.failureSummary,
+        })
+        return
+      }
       await fulfillJSON(route, 200, failureSummary(run))
+      return
+    }
+    if (
+      artifactID === 'capacity-profile-json' &&
+      typeof options.diagnosticArtifactBodies?.capacityProfile === 'string'
+    ) {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: options.diagnosticArtifactBodies.capacityProfile,
+      })
       return
     }
     if (['metrics-json', 'gates-json', 'provenance-json'].includes(artifactID)) {
@@ -950,6 +999,14 @@ export async function mockEvaluationPlane(
         await fulfillError(route, 400, 'invalid evaluation request: create contract rejected')
         return
       }
+      if (request.baseline_run_id && ledgerWarnings.length) {
+        await fulfillError(
+          route,
+          409,
+          'conflict: evaluation run ledger is incomplete; repair quarantined evidence before selecting a baseline',
+        )
+        return
+      }
       const baseline = request.baseline_run_id
         ? runs.find((run) => run.id === request.baseline_run_id)
         : null
@@ -1015,7 +1072,12 @@ export async function mockEvaluationPlane(
       await fulfillJSON(route, 201, created)
       return
     }
-    await fulfillJSON(route, 200, runs)
+    await fulfillJSON(route, 200, {
+      schema_version: 'evaluation.v1',
+      runs,
+      ledger_complete: ledgerWarnings.length === 0,
+      warnings: ledgerWarnings,
+    })
   })
 
   return {

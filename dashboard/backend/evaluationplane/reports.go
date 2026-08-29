@@ -106,6 +106,9 @@ func (s *Service) Compare(baselineRunID, candidateRunID string) (Comparison, err
 		return Comparison{}, err
 	}
 	defer release()
+	if ledgerErr := s.RequireCompleteRunLedger(); ledgerErr != nil {
+		return Comparison{}, ledgerErr
+	}
 	if baselineRunID == candidateRunID {
 		return Comparison{}, fmt.Errorf("%w: baseline and candidate runs must be distinct", ErrInvalid)
 	}

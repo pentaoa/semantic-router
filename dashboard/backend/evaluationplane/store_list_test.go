@@ -32,12 +32,22 @@ func TestListRunsIsolatesCorruptBundleAndRetainsWarning(t *testing.T) {
 	log.SetOutput(&logged)
 	t.Cleanup(func() { log.SetOutput(previousLogOutput) })
 
-	runs, listErr := service.ListRuns()
+	ledger, listErr := service.ListRunLedger()
 	if listErr != nil {
-		t.Fatalf("ListRuns with one corrupt bundle: %v", listErr)
+		t.Fatalf("ListRunLedger with one corrupt bundle: %v", listErr)
 	}
+	runs := ledger.Runs
 	if len(runs) != 1 || runs[0].ID != first.ID {
-		t.Fatalf("ListRuns returned runs=%+v, want only intact run %s", runs, first.ID)
+		t.Fatalf("ListRunLedger returned runs=%+v, want only intact run %s", runs, first.ID)
+	}
+	if ledger.LedgerComplete || ledger.SchemaVersion != SchemaVersion || len(ledger.Warnings) != 1 {
+		t.Fatalf("corrupt ledger integrity metadata=%+v", ledger)
+	}
+	publicWarning := ledger.Warnings[0]
+	if publicWarning.Code != corruptRunBundleWarningCode || publicWarning.RunID != second.ID ||
+		publicWarning.EvidenceFile != runFileName || publicWarning.Message != quarantinedRunMessage ||
+		strings.Contains(publicWarning.Message, root) || strings.Contains(publicWarning.Message, "decode evaluation bundle") {
+		t.Fatalf("public quarantine warning is missing or leaks diagnostics: %+v", publicWarning)
 	}
 	if _, getErr := service.GetRun(second.ID); getErr == nil {
 		t.Fatal("GetRun silently accepted the corrupt bundle")
@@ -57,9 +67,9 @@ func TestListRunsIsolatesCorruptBundleAndRetainsWarning(t *testing.T) {
 	if repairErr := writeJSONAtomic(statusPath, second); repairErr != nil {
 		t.Fatalf("repair second run status: %v", repairErr)
 	}
-	runs, listErr = service.ListRuns()
-	if listErr != nil || len(runs) != 2 {
-		t.Fatalf("ListRuns after repair returned %d runs, err=%v", len(runs), listErr)
+	ledger, listErr = service.ListRunLedger()
+	if listErr != nil || len(ledger.Runs) != 2 || !ledger.LedgerComplete || len(ledger.Warnings) != 0 {
+		t.Fatalf("ListRunLedger after repair returned %+v, err=%v", ledger, listErr)
 	}
 	if warnings := service.store.activeRunListWarnings(); len(warnings) != 0 {
 		t.Fatalf("warning did not clear after bundle repair: %+v", warnings)

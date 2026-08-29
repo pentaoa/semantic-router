@@ -117,11 +117,19 @@ func (s *Store) GetRun(id string) (Run, error) {
 }
 
 func (s *Store) ListRuns() ([]Run, error) {
+	ledger, err := s.ListRunLedger()
+	if err != nil {
+		return nil, err
+	}
+	return ledger.Runs, nil
+}
+
+func (s *Store) ListRunLedger() (RunLedger, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	entries, err := os.ReadDir(s.runsRoot)
 	if err != nil {
-		return nil, fmt.Errorf("list evaluation runs: %w", err)
+		return RunLedger{}, fmt.Errorf("list evaluation runs: %w", err)
 	}
 	runs := make([]Run, 0, len(entries))
 	warnings := make(map[string]runListWarning)
@@ -140,7 +148,15 @@ func (s *Store) ListRuns() ([]Run, error) {
 	}
 	s.updateRunListWarnings(warnings)
 	sort.Slice(runs, func(i, j int) bool { return runs[i].CreatedAt.After(runs[j].CreatedAt) })
-	return runs, nil
+	publicWarnings := make([]RunLedgerWarning, 0, len(warnings))
+	for _, warning := range warnings {
+		publicWarnings = append(publicWarnings, publicRunLedgerWarning(warning))
+	}
+	sort.Slice(publicWarnings, func(i, j int) bool { return publicWarnings[i].RunID < publicWarnings[j].RunID })
+	return RunLedger{
+		SchemaVersion: SchemaVersion, Runs: runs,
+		LedgerComplete: len(publicWarnings) == 0, Warnings: publicWarnings,
+	}, nil
 }
 
 func validateStoredRun(bundleID string, run Run) error {

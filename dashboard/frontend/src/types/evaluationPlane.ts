@@ -128,6 +128,20 @@ export interface EvaluationRun {
   error?: string
 }
 
+export interface EvaluationRunLedgerWarning {
+  code: string
+  run_id: string
+  evidence_file: string
+  message: string
+}
+
+export interface EvaluationRunLedger {
+  schema_version: EvaluationSchemaVersion
+  runs: EvaluationRun[]
+  ledger_complete: boolean
+  warnings: EvaluationRunLedgerWarning[]
+}
+
 export interface EvaluationCoverage {
   evaluated: number
   total: number

@@ -1,5 +1,6 @@
 .readonlyBanner,
 .staleBanner,
+.ledgerBanner,
 .errorBanner {
   display: flex;
   align-items: center;
@@ -12,6 +13,44 @@
   background: var(--surface-panel);
   color: var(--text-secondary);
   font-size: var(--text-sm);
+}
+
+.ledgerBanner {
+  align-items: flex-start;
+  border-color: color-mix(in srgb, var(--color-danger) 44%, transparent);
+  background: color-mix(in srgb, var(--color-danger) 10%, var(--surface-panel));
+  color: #ffc2c4;
+}
+
+.ledgerBanner > div {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.ledgerBanner strong {
+  color: var(--text-primary);
+  font-size: var(--text-md);
+}
+
+.ledgerBanner ul {
+  display: grid;
+  gap: 0.25rem;
+  min-width: min(32rem, 100%);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ledgerBanner li {
+  display: grid;
+  grid-template-columns: minmax(8rem, 0.5fr) minmax(14rem, 1fr);
+  gap: 0.65rem;
+}
+
+.ledgerBanner code {
+  overflow: hidden;
+  color: var(--text-primary);
+  text-overflow: ellipsis;
 }
 
 .staleBanner {
@@ -93,8 +132,13 @@
 @media (max-width: 640px) {
   .readonlyBanner,
   .staleBanner,
+  .ledgerBanner,
   .errorBanner {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .ledgerBanner li {
+    grid-template-columns: 1fr;
   }
 }

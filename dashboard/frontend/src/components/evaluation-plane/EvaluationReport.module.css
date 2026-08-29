@@ -187,6 +187,18 @@
   min-width: 0;
 }
 
+.diagnosticArtifact {
+  min-width: 0;
+  padding: 0.9rem;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: rgba(255, 255, 255, 0.015);
+}
+
+.diagnosticArtifact .subsectionHeader {
+  margin: 0 0 0.7rem;
+}
+
 .metricToolbar {
   display: grid;
   grid-template-columns: minmax(220px, 1fr) minmax(160px, 0.35fr) auto;

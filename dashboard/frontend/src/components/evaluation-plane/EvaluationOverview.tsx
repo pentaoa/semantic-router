@@ -14,6 +14,7 @@ import styles from './EvaluationPlane.module.css'
 interface EvaluationOverviewProps {
   catalog: EvaluationCatalog
   runs: EvaluationRun[]
+  runLedgerComplete: boolean
   latestReport: EvaluationReport | null
   reportLoading: boolean
   reportError: string | null
@@ -24,6 +25,7 @@ interface EvaluationOverviewProps {
 export default function EvaluationOverview({
   catalog,
   runs,
+  runLedgerComplete,
   latestReport,
   reportLoading,
   reportError,
@@ -81,9 +83,9 @@ export default function EvaluationOverview({
 
       <dl className={styles.statusStrip} aria-label="Evaluation plane status">
         <div>
-          <dt>Runs</dt>
+          <dt>{runLedgerComplete ? 'Runs' : 'Visible runs'}</dt>
           <dd>{runs.length}</dd>
-          <span>{running} active</span>
+          <span>{runLedgerComplete ? `${running} active` : 'Ledger incomplete'}</span>
         </div>
         <div>
           <dt>Completed</dt>
@@ -105,7 +107,9 @@ export default function EvaluationOverview({
       <section className={styles.surface} aria-labelledby="latest-evidence-title">
         <header className={styles.surfaceHeader}>
           <div>
-            <span className={styles.eyebrow}>Latest completed evidence</span>
+            <span className={styles.eyebrow}>
+              {runLedgerComplete ? 'Latest completed evidence' : 'Latest readable evidence'}
+            </span>
             <h2 id="latest-evidence-title">
               {latestReport?.run.name || 'No completed report yet'}
             </h2>

@@ -6,6 +6,7 @@ import type {
   EvaluationComparison,
   EvaluationReport,
   EvaluationRun,
+  EvaluationRunLedgerWarning,
   EvaluationRunEvent,
 } from '../types/evaluationPlane'
 import {
@@ -33,6 +34,8 @@ export function useEvaluationPlane() {
   const [catalog, setCatalog] = useState<EvaluationCatalog | null>(null)
   const [runs, setRuns] = useState<EvaluationRun[]>([])
   const [runsLoaded, setRunsLoaded] = useState(false)
+  const [runLedgerComplete, setRunLedgerComplete] = useState(false)
+  const [runLedgerWarnings, setRunLedgerWarnings] = useState<EvaluationRunLedgerWarning[]>([])
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [catalogError, setCatalogError] = useState<string | null>(null)
@@ -80,15 +83,18 @@ export function useEvaluationPlane() {
         if (catalogVersion === catalogRequestVersion.current) setLoading(false)
       })
     const runsRequest = listEvaluationRuns(nextRunsController.signal)
-      .then((nextRuns) => {
+      .then((ledger) => {
         if (nextRunsController.signal.aborted || runsVersion !== runsRequestVersion.current) return
-        setRuns(sortRuns(nextRuns))
+        setRuns(sortRuns(ledger.runs))
         setRunsLoaded(true)
+        setRunLedgerComplete(ledger.ledger_complete)
+        setRunLedgerWarnings(ledger.warnings)
         setRunsError(null)
         setLastUpdatedAt(new Date())
       })
       .catch((reason: unknown) => {
         if (nextRunsController.signal.aborted || runsVersion !== runsRequestVersion.current) return
+        setRunLedgerComplete(false)
         setRunsError(messageFrom(reason, 'Failed to load evaluation runs.'))
       })
     await Promise.allSettled([catalogRequest, runsRequest])
@@ -104,14 +110,17 @@ export function useEvaluationPlane() {
     runsController.current = controller
     setRefreshing(true)
     try {
-      const nextRuns = await listEvaluationRuns(controller.signal)
+      const ledger = await listEvaluationRuns(controller.signal)
       if (controller.signal.aborted || version !== runsRequestVersion.current) return
-      setRuns(sortRuns(nextRuns))
+      setRuns(sortRuns(ledger.runs))
       setRunsLoaded(true)
+      setRunLedgerComplete(ledger.ledger_complete)
+      setRunLedgerWarnings(ledger.warnings)
       setRunsError(null)
       setLastUpdatedAt(new Date())
     } catch (refreshError) {
       if (controller.signal.aborted || version !== runsRequestVersion.current) return
+      setRunLedgerComplete(false)
       setRunsError(messageFrom(refreshError, 'Failed to refresh evaluation runs.'))
     } finally {
       if (version === runsRequestVersion.current) setRefreshing(false)
@@ -229,6 +238,8 @@ export function useEvaluationPlane() {
     catalog,
     runs,
     runsLoaded,
+    runLedgerComplete,
+    runLedgerWarnings,
     loading,
     refreshing,
     error: catalogError || runsError,
@@ -302,7 +313,11 @@ export function useEvaluationReport(runID: string | null) {
   return { report: report?.run.id === runID ? report : null, loading, error, refresh }
 }
 
-export function useEvaluationComparison(baselineID: string, candidateID: string) {
+export function useEvaluationComparison(
+  baselineID: string,
+  candidateID: string,
+  runLedgerComplete = true,
+) {
   const [comparison, setComparison] = useState<EvaluationComparison | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -310,7 +325,7 @@ export function useEvaluationComparison(baselineID: string, candidateID: string)
   const controller = useRef<AbortController | null>(null)
 
   const compare = useCallback(async () => {
-    if (!baselineID || !candidateID || baselineID === candidateID) return
+    if (!runLedgerComplete || !baselineID || !candidateID || baselineID === candidateID) return
     const version = ++requestVersion.current
     controller.current?.abort()
     const nextController = new AbortController()
@@ -332,7 +347,7 @@ export function useEvaluationComparison(baselineID: string, candidateID: string)
     } finally {
       if (version === requestVersion.current) setLoading(false)
     }
-  }, [baselineID, candidateID])
+  }, [baselineID, candidateID, runLedgerComplete])
 
   useEffect(() => {
     requestVersion.current += 1
@@ -340,7 +355,7 @@ export function useEvaluationComparison(baselineID: string, candidateID: string)
     setComparison(null)
     setError(null)
     setLoading(false)
-  }, [baselineID, candidateID])
+  }, [baselineID, candidateID, runLedgerComplete])
 
   useEffect(
     () => () => {

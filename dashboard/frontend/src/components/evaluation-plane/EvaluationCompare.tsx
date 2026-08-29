@@ -11,6 +11,7 @@ interface EvaluationCompareProps {
   baselineID: string
   candidateID: string
   comparison: EvaluationComparison | null
+  runLedgerComplete: boolean
   loading: boolean
   error: string | null
   onBaselineChange: (id: string) => void
@@ -24,6 +25,7 @@ export default function EvaluationCompare({
   baselineID,
   candidateID,
   comparison,
+  runLedgerComplete,
   loading,
   error,
   onBaselineChange,
@@ -34,12 +36,13 @@ export default function EvaluationCompare({
   const completed = new Map(
     runs.filter((run) => run.status === 'completed').map((run) => [run.id, run]),
   )
-  const candidates = eligibleComparisonCandidates(runs)
-  const candidate = completed.get(candidateID)
-  const baseline = completed.get(baselineID)
+  const candidates = runLedgerComplete ? eligibleComparisonCandidates(runs) : []
+  const candidate = runLedgerComplete ? completed.get(candidateID) : undefined
+  const baseline = runLedgerComplete ? completed.get(baselineID) : undefined
   const mismatches = baseline && candidate ? cohortMismatches(baseline, candidate) : []
   const lineageMismatch = Boolean(candidate && candidate.baseline_run_id !== baselineID)
-  const invalidPair = !baseline || !candidate || lineageMismatch || mismatches.length > 0
+  const invalidPair =
+    !runLedgerComplete || !baseline || !candidate || lineageMismatch || mismatches.length > 0
   const comparisonVerdict = comparison
     ? effectiveGateVerdict(comparison.verdict, comparison.gates)
     : null
@@ -66,7 +69,7 @@ export default function EvaluationCompare({
             Candidate
             <select
               value={candidateID}
-              disabled={loading || candidates.length === 0}
+              disabled={!runLedgerComplete || loading || candidates.length === 0}
               onChange={(event) => chooseCandidate(event.target.value)}
             >
               <option value="">Select a candidate with baseline lineage</option>
@@ -93,7 +96,13 @@ export default function EvaluationCompare({
         </div>
       </section>
 
-      {candidates.length === 0 ? (
+      {!runLedgerComplete ? (
+        <div className={styles.error} role="alert">
+          The durable run ledger is incomplete. Baseline selection and comparison conclusions are
+          blocked until every quarantined run bundle is repaired.
+        </div>
+      ) : null}
+      {runLedgerComplete && candidates.length === 0 ? (
         <div className={styles.emptyState}>
           <div>
             <strong>No comparable candidate exists.</strong>
@@ -106,7 +115,7 @@ export default function EvaluationCompare({
           ) : null}
         </div>
       ) : null}
-      {baseline && candidate ? (
+      {runLedgerComplete && baseline && candidate ? (
         <dl className={styles.comparabilityStrip} aria-label="Comparison cohort">
           <div>
             <dt>Profile</dt>
@@ -130,12 +139,12 @@ export default function EvaluationCompare({
           </div>
         </dl>
       ) : null}
-      {lineageMismatch ? (
+      {runLedgerComplete && lineageMismatch ? (
         <div className={styles.error} role="alert">
           The selected candidate is not pinned to this baseline.
         </div>
       ) : null}
-      {mismatches.length ? (
+      {runLedgerComplete && mismatches.length ? (
         <div className={styles.error} role="alert">
           Cohort mismatch: {mismatches.join(', ')}.
         </div>
@@ -151,7 +160,7 @@ export default function EvaluationCompare({
           Choose a candidate, then calculate its paired comparison.
         </div>
       ) : null}
-      {comparison ? (
+      {runLedgerComplete && comparison ? (
         <>
           <section className={styles.section}>
             <div className={styles.sectionHeader}>

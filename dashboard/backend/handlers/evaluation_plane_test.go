@@ -101,6 +101,80 @@ func TestEvaluationPlaneCreateIsStrictAndServerTargetAllowlisted(t *testing.T) {
 	}
 }
 
+func TestEvaluationPlaneRunLedgerSurfacesQuarantineAndBlocksDecisions(t *testing.T) {
+	root := t.TempDir()
+	service := newEvaluationHandlerService(t, root)
+	intact, err := service.CreateRun(context.Background(), evaluationplane.CreateRunRequest{
+		Name: "intact", SuiteIDs: []string{"evaluation-smoke"}, TrackIDs: []evaluationplane.TrackID{"routing"},
+		Mode: evaluationplane.ModeReplay, TargetID: "fixture", ChangeProfile: "schema_adapter",
+		SampleLimit: 4, Concurrency: 1, Seed: 17,
+	})
+	if err != nil {
+		t.Fatalf("create intact run: %v", err)
+	}
+	corruptRequest := evaluationplane.CreateRunRequest{
+		Name: "corrupt", SuiteIDs: []string{"evaluation-smoke"}, TrackIDs: []evaluationplane.TrackID{"routing"},
+		Mode: evaluationplane.ModeReplay, TargetID: "fixture", ChangeProfile: "schema_adapter",
+		SampleLimit: 4, Concurrency: 1, Seed: 18,
+	}
+	corrupt, err := service.CreateRun(context.Background(), corruptRequest)
+	if err != nil {
+		t.Fatalf("create corrupt candidate: %v", err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(root, "runs", corrupt.ID, "status.json"),
+		[]byte("{not-json\n"),
+		0o600,
+	); err != nil {
+		t.Fatalf("corrupt run status: %v", err)
+	}
+
+	handler := NewEvaluationPlaneHandler(service, false)
+	listResponse := httptest.NewRecorder()
+	handler.Runs(listResponse, httptest.NewRequest(http.MethodGet, evaluationAPIBase+"/runs", nil))
+	if listResponse.Code != http.StatusOK {
+		t.Fatalf("list status=%d body=%s", listResponse.Code, listResponse.Body.String())
+	}
+	var ledger evaluationplane.RunLedger
+	if err := json.NewDecoder(listResponse.Body).Decode(&ledger); err != nil {
+		t.Fatalf("decode run ledger: %v", err)
+	}
+	if ledger.LedgerComplete || len(ledger.Runs) != 1 || ledger.Runs[0].ID != intact.ID || len(ledger.Warnings) != 1 {
+		t.Fatalf("run ledger did not retain quarantine evidence: %+v", ledger)
+	}
+	warning := ledger.Warnings[0]
+	if warning.RunID != corrupt.ID || warning.EvidenceFile != "status.json" ||
+		strings.Contains(warning.Message, root) || strings.Contains(warning.Message, "not-json") {
+		t.Fatalf("unsafe or incomplete public warning: %+v", warning)
+	}
+
+	comparisonResponse := httptest.NewRecorder()
+	comparisonRequest := httptest.NewRequest(
+		http.MethodGet,
+		evaluationAPIBase+"/compare?baseline_run_id="+intact.ID+"&candidate_run_id=candidate",
+		nil,
+	)
+	handler.Compare(comparisonResponse, comparisonRequest)
+	if comparisonResponse.Code != http.StatusConflict || !strings.Contains(comparisonResponse.Body.String(), "ledger is incomplete") {
+		t.Fatalf("comparison status=%d body=%s", comparisonResponse.Code, comparisonResponse.Body.String())
+	}
+
+	baselineBody := strings.Replace(
+		validCreateRunJSON(false),
+		`"auto_start":false`,
+		fmt.Sprintf(`"baseline_run_id":%q,"auto_start":false`, intact.ID),
+		1,
+	)
+	baselineResponse := httptest.NewRecorder()
+	handler.Runs(
+		baselineResponse,
+		httptest.NewRequest(http.MethodPost, evaluationAPIBase+"/runs", strings.NewReader(baselineBody)),
+	)
+	if baselineResponse.Code != http.StatusConflict || !strings.Contains(baselineResponse.Body.String(), "ledger is incomplete") {
+		t.Fatalf("baseline create status=%d body=%s", baselineResponse.Code, baselineResponse.Body.String())
+	}
+}
+
 func TestEvaluationPlaneReadonlyDeniesEveryMutation(t *testing.T) {
 	service := newEvaluationHandlerService(t, "")
 	run, err := service.CreateRun(context.Background(), evaluationplane.CreateRunRequest{

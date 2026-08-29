@@ -189,6 +189,9 @@ func (s *Service) validateReportBundle(runID string, manifest RunManifest, repor
 	if err := s.validatePublicArtifacts(runID, report, checksums); err != nil {
 		return err
 	}
+	if err := validateCapacityProfileArtifact(runDir, manifest, report); err != nil {
+		return err
+	}
 	return validateReportProvenance(runDir, manifest, report, checksums)
 }
 

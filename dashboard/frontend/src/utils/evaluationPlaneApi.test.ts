@@ -338,7 +338,14 @@ describe('Evaluation Plane API', () => {
     const fetchMock = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(jsonResponse(catalog))
-      .mockResolvedValueOnce(jsonResponse({ runs: [run] }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          schema_version: 'evaluation.v1',
+          runs: [run],
+          ledger_complete: true,
+          warnings: [],
+        }),
+      )
       .mockResolvedValueOnce(jsonResponse({ run }))
       .mockResolvedValueOnce(jsonResponse({ run }, 201))
       .mockResolvedValueOnce(jsonResponse({ run: { ...run, status: 'running' } }))
@@ -351,7 +358,12 @@ describe('Evaluation Plane API', () => {
     vi.stubGlobal('fetch', fetchMock)
 
     await getEvaluationCatalog()
-    await listEvaluationRuns()
+    await expect(listEvaluationRuns()).resolves.toEqual({
+      schema_version: 'evaluation.v1',
+      runs: [run],
+      ledger_complete: true,
+      warnings: [],
+    })
     await getEvaluationRun('run 1')
     await createEvaluationRun(request, catalog)
     await startEvaluationRun('run 1')
@@ -378,5 +390,41 @@ describe('Evaluation Plane API', () => {
     })
     expect(fetchMock.mock.calls[5]?.[1]).toMatchObject({ method: 'POST' })
     expect(fetchMock.mock.calls[6]?.[1]).toMatchObject({ method: 'DELETE' })
+  })
+
+  it('requires explicit and internally consistent run-ledger integrity metadata', async () => {
+    const warning = {
+      code: 'corrupt_run_bundle',
+      run_id: 'quarantined-run',
+      evidence_file: 'status.json',
+      message: 'Durable run status evidence is unreadable or invalid and has been quarantined.',
+    }
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        jsonResponse({
+          schema_version: 'evaluation.v1',
+          runs: [run],
+          ledger_complete: false,
+          warnings: [warning],
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse([run]))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          schema_version: 'evaluation.v1',
+          runs: [run],
+          ledger_complete: true,
+          warnings: [warning],
+        }),
+      )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(listEvaluationRuns()).resolves.toMatchObject({
+      ledger_complete: false,
+      warnings: [warning],
+    })
+    await expect(listEvaluationRuns()).rejects.toThrow(/ledger response is invalid or incomplete/i)
+    await expect(listEvaluationRuns()).rejects.toThrow(/ledger response is invalid or incomplete/i)
   })
 })

@@ -34,6 +34,7 @@ interface EvaluationExperimentFormProps {
   runs: EvaluationRun[]
   canCreate: boolean
   canAutoStart: boolean
+  runLedgerComplete: boolean
   pending: boolean
   onSubmit: (request: CreateEvaluationRunRequest) => Promise<boolean>
 }
@@ -43,6 +44,7 @@ export default function EvaluationExperimentForm({
   runs,
   canCreate,
   canAutoStart,
+  runLedgerComplete,
   pending,
   onSubmit,
 }: EvaluationExperimentFormProps) {
@@ -77,7 +79,10 @@ export default function EvaluationExperimentForm({
     () => compatibleEvaluationSuites(catalog, targetID, mode),
     [catalog, mode, targetID],
   )
-  const completedRuns = useMemo(() => runs.filter((run) => run.status === 'completed'), [runs])
+  const completedRuns = useMemo(
+    () => (runLedgerComplete ? runs.filter((run) => run.status === 'completed') : []),
+    [runLedgerComplete, runs],
+  )
   const selectedBaseline = completedRuns.find((run) => run.id === baselineRunID) || null
   const baselineLocked = selectedBaseline !== null
   const selectableTrackIDs = useMemo(
@@ -128,6 +133,13 @@ export default function EvaluationExperimentForm({
   }, [catalog.change_profiles, changeProfile])
 
   useEffect(() => {
+    if (!runLedgerComplete && baselineRunID) {
+      setBaselineRunID('')
+      setValidationError(
+        'Baseline selection was cleared because the durable run ledger is incomplete.',
+      )
+      return
+    }
     if (!baselineRunID) return
     const baseline = completedRuns.find((run) => run.id === baselineRunID)
     const issue = baseline
@@ -137,7 +149,7 @@ export default function EvaluationExperimentForm({
       setBaselineRunID('')
       setValidationError(`Baseline selection was cleared. ${issue}`)
     }
-  }, [baselineRunID, catalog, completedRuns])
+  }, [baselineRunID, catalog, completedRuns, runLedgerComplete])
 
   useEffect(() => {
     if (!canAutoStart) setAutoStart(false)
@@ -359,6 +371,7 @@ export default function EvaluationExperimentForm({
               Baseline run
               <select
                 value={baselineRunID}
+                disabled={pending || !runLedgerComplete}
                 onChange={(event) => selectBaseline(event.target.value)}
               >
                 <option value="">No baseline</option>
@@ -373,9 +386,11 @@ export default function EvaluationExperimentForm({
                 })}
               </select>
               <small role={baselineLocked ? 'status' : undefined}>
-                {baselineLocked
-                  ? 'Exact cohort copied and locked: profile, mode, target, suites, tracks, sample limit, concurrency, and seed.'
-                  : 'Selecting a baseline copies and locks its exact comparable cohort.'}
+                {!runLedgerComplete
+                  ? 'Baseline selection is blocked until quarantined durable run evidence is repaired.'
+                  : baselineLocked
+                    ? 'Exact cohort copied and locked: profile, mode, target, suites, tracks, sample limit, concurrency, and seed.'
+                    : 'Selecting a baseline copies and locks its exact comparable cohort.'}
               </small>
             </label>
           </div>

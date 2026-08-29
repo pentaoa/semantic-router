@@ -39,12 +39,12 @@ func (h *EvaluationPlaneHandler) Runs(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodGet:
-		runs, err := h.service.ListRuns()
+		ledger, err := h.service.ListRunLedger()
 		if err != nil {
 			writeEvaluationError(w, err)
 			return
 		}
-		writeEvaluationJSON(w, http.StatusOK, runs)
+		writeEvaluationJSON(w, http.StatusOK, ledger)
 	case http.MethodPost:
 		if h.denyReadonly(w) {
 			return
@@ -53,6 +53,12 @@ func (h *EvaluationPlaneHandler) Runs(w http.ResponseWriter, r *http.Request) {
 		if err := decodeStrictJSON(r, &request); err != nil {
 			writeEvaluationError(w, fmt.Errorf("%w: %w", evaluationplane.ErrInvalid, err))
 			return
+		}
+		if strings.TrimSpace(request.BaselineRunID) != "" {
+			if err := h.service.RequireCompleteRunLedger(); err != nil {
+				writeEvaluationError(w, err)
+				return
+			}
 		}
 		run, err := h.service.CreateRun(r.Context(), request)
 		if err != nil {

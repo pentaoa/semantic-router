@@ -83,7 +83,11 @@ export function EvaluationPage() {
     activeView === 'overview' ? latestCompletedID : null,
   )
   const reportState = useEvaluationReport(reportRunID || null)
-  const comparisonState = useEvaluationComparison(baselineRunID, candidateRunID)
+  const comparisonState = useEvaluationComparison(
+    baselineRunID,
+    candidateRunID,
+    plane.runLedgerComplete,
+  )
   const selectedRun = plane.runs.find((run) => run.id === selectedRunID) || null
   const eventState = useEvaluationRunEvents(selectedRun, plane.refreshRuns)
 
@@ -102,6 +106,12 @@ export function EvaluationPage() {
 
   useEffect(() => {
     if (!plane.runsLoaded) return
+    if (!plane.runLedgerComplete) {
+      if (candidateRunID || baselineRunID) {
+        updateLocation({ baseline: null, candidate: null }, true)
+      }
+      return
+    }
     if (
       candidateRunID &&
       !eligibleComparisonCandidates(plane.runs).some(
@@ -114,7 +124,14 @@ export function EvaluationPage() {
     if (candidateRunID || baselineRunID) return
     const pair = defaultComparisonPair(plane.runs)
     if (pair) updateLocation({ baseline: pair.baselineID, candidate: pair.candidateID }, true)
-  }, [baselineRunID, candidateRunID, plane.runs, plane.runsLoaded, updateLocation])
+  }, [
+    baselineRunID,
+    candidateRunID,
+    plane.runLedgerComplete,
+    plane.runs,
+    plane.runsLoaded,
+    updateLocation,
+  ])
 
   useEffect(() => {
     if (!canRun) setCancelTarget(null)
@@ -208,6 +225,28 @@ export function EvaluationPage() {
           </button>
         </div>
       ) : null}
+      {plane.runsLoaded && !plane.runLedgerComplete && plane.runLedgerWarnings.length ? (
+        <div className={styles.ledgerBanner} role="alert">
+          <div>
+            <strong>Run ledger incomplete</strong>
+            <span>
+              {plane.runLedgerWarnings.length} durable run bundle
+              {plane.runLedgerWarnings.length === 1 ? ' is' : 's are'} quarantined. Visible runs
+              remain inspectable, but baseline selection and comparison conclusions are blocked.
+            </span>
+          </div>
+          <ul aria-label="Quarantined run evidence">
+            {plane.runLedgerWarnings.map((warning) => (
+              <li key={`${warning.code}-${warning.run_id}`}>
+                <code>{warning.run_id}</code>
+                <span>
+                  {warning.evidence_file}: {warning.message}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
       {plane.mutationError ? (
         <div className={styles.errorBanner} role="alert">
           <span>{plane.mutationError}</span>
@@ -247,6 +286,7 @@ export function EvaluationPage() {
               <EvaluationOverview
                 catalog={plane.catalog}
                 runs={plane.runs}
+                runLedgerComplete={plane.runLedgerComplete}
                 latestReport={latestReportState.report}
                 reportLoading={latestReportState.loading}
                 reportError={latestReportState.error}
@@ -260,6 +300,7 @@ export function EvaluationPage() {
                 runs={plane.runs}
                 canCreate={canWrite}
                 canAutoStart={canWrite && canRun}
+                runLedgerComplete={plane.runLedgerComplete}
                 pending={plane.mutationPending}
                 onSubmit={createRun}
               />
@@ -301,6 +342,7 @@ export function EvaluationPage() {
                 baselineID={baselineRunID}
                 candidateID={candidateRunID}
                 comparison={comparisonState.comparison}
+                runLedgerComplete={plane.runLedgerComplete}
                 loading={comparisonState.loading}
                 error={comparisonState.error}
                 onBaselineChange={(id) => updateLocation({ baseline: id }, true)}

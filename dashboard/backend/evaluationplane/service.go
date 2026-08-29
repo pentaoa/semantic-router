@@ -4,14 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"reflect"
 	"regexp"
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/google/uuid"
 )
 
 type Options struct {
@@ -105,6 +104,12 @@ func NewService(options Options) (*Service, error) {
 		commandProcess.envoyAPIKeyEnv = strings.TrimSpace(options.EnvoyAPIKeyEnv)
 		process = commandProcess
 	}
+	if hydrationErr := store.HydrateLegacyClientRequestIndices(); hydrationErr != nil {
+		log.Printf(
+			"evaluationplane: warning_code=client_request_index_migration_incomplete message=%q",
+			hydrationErr.Error(),
+		)
+	}
 	service := &Service{
 		store:              store,
 		registry:           registry,
@@ -155,95 +160,58 @@ func (s *Service) CreateRun(ctx context.Context, request CreateRunRequest) (Run,
 	if qualificationErr := requireQualifiedCodeRevision(evidenceLevel, s.codeRevision); qualificationErr != nil {
 		return Run{}, qualificationErr
 	}
-	// Serialize keyed creates before consulting mutable baseline state. A client
-	// retry after a lost response must return the run that was already persisted,
-	// even if its baseline was removed afterward.
+	// Serialize keyed creates in this process. The durable create-only index also
+	// arbitrates independent Store instances and survives process restarts.
+	var requestDigest string
 	if validated.ClientRequestID != "" {
 		s.createMu.Lock()
 		defer s.createMu.Unlock()
-		existing, listErr := s.store.ListRuns()
-		if listErr != nil {
-			return Run{}, listErr
+		if hydrationErr := s.store.HydrateLegacyClientRequestIndices(); hydrationErr != nil {
+			return Run{}, fmt.Errorf(
+				"%w: client_request_id creates are quarantined until the legacy index migration completes",
+				ErrConflict,
+			)
 		}
-		for _, candidate := range existing {
-			if candidate.ClientRequestID != validated.ClientRequestID {
-				continue
-			}
-			if !createRequestMatchesRun(validated, candidate) {
-				return Run{}, fmt.Errorf("%w: client_request_id was already used for a different evaluation run", ErrConflict)
-			}
-			return candidate, nil
+		requestDigest, err = createRequestDigest(validated)
+		if err != nil {
+			return Run{}, err
 		}
-	}
-	if validated.BaselineRunID != "" {
-		baseline, getErr := s.store.GetRun(validated.BaselineRunID)
-		if getErr != nil {
-			return Run{}, fmt.Errorf("%w: baseline run is unavailable", ErrInvalid)
+		indexed, found, indexErr := s.store.ClientRequestIndex(validated.ClientRequestID)
+		if indexErr != nil {
+			return Run{}, fmt.Errorf("%w: client_request_id index is unavailable", ErrConflict)
 		}
-		if baseline.Status != StatusCompleted {
-			return Run{}, fmt.Errorf("%w: baseline run must be completed", ErrInvalid)
-		}
-		if comparisonErr := validateComparableRunRequest(validated, baseline); comparisonErr != nil {
-			return Run{}, comparisonErr
-		}
-		if snapshotErr := s.validateComparableTargetSnapshot(validated.ChangeProfile, target, snapshot, baseline.ID); snapshotErr != nil {
-			return Run{}, snapshotErr
+		if found {
+			return s.resolveIndexedCreate(validated, requestDigest, indexed)
 		}
 	}
-	// Python datetime serialization is microsecond-precise. Freeze the shared
-	// timestamp at that precision so Go/Python evidence compares byte-stably.
-	now := time.Now().UTC().Truncate(time.Microsecond)
-	run := Run{
-		SchemaVersion: SchemaVersion,
-		ID:            uuid.NewString(), ClientRequestID: validated.ClientRequestID,
-		Name: validated.Name, Description: validated.Description,
-		Status: StatusPending, Mode: validated.Mode, EvidenceLevel: evidenceLevel,
-		TargetID: validated.TargetID, ChangeProfile: validated.ChangeProfile,
-		SuiteIDs: validated.SuiteIDs, TrackIDs: validated.TrackIDs,
-		SampleLimit: validated.SampleLimit, Concurrency: validated.Concurrency, Seed: validated.Seed,
-		BaselineRunID: validated.BaselineRunID,
-		Progress:      RunProgress{Total: len(validated.TrackIDs), Message: "Run created"},
-		CreatedAt:     now,
+	if baselineErr := s.validateCreateBaseline(validated, target, snapshot); baselineErr != nil {
+		return Run{}, baselineErr
 	}
-	manifest := RunManifest{
-		SchemaVersion: SchemaVersion, RunID: run.ID, Mode: run.Mode,
-		Target: ManifestTarget{
-			SchemaVersion: SchemaVersion, ID: target.Public.ID, Kind: target.Public.Kind,
-			RouterAPIURL: target.RouterAPIURL, EnvoyURL: target.EnvoyURL,
-			RouterAPIKey: copySecretRef(target.RouterAPIKey), EnvoyAPIKey: copySecretRef(target.EnvoyAPIKey),
-			ModelArms:             copyModelArms(target.ModelArms),
-			BackendTopologyDigest: target.BackendTopologyDigest,
-		},
-		ChangeProfile:       run.ChangeProfile,
-		GateContractVersion: GateContractVersion,
-		SuiteIDs:            run.SuiteIDs, SuiteRevisions: suiteRevisionSnapshot(registry, run.SuiteIDs),
-		TrackIDs: run.TrackIDs, SampleLimit: run.SampleLimit,
-		Concurrency: run.Concurrency, Seed: run.Seed, BaselineRunID: run.BaselineRunID,
-		CreatedAt: now, CodeRevision: s.codeRevision, ConfigDigest: snapshot.ConfigDigest,
-		PolicySnapshotDigest: manifestPolicySnapshotDigest(target, snapshot),
-		RedactionPolicy:      "evaluation-default-v1",
-	}
-	manifest.ManifestDigest, err = manifestSemanticDigest(manifest)
+	run, manifest, err := s.newPendingRunManifest(
+		registry,
+		validated,
+		target,
+		snapshot,
+		evidenceLevel,
+	)
 	if err != nil {
-		return Run{}, fmt.Errorf("%w: compute immutable evaluation manifest identity: %w", ErrInvalid, err)
+		return Run{}, err
+	}
+	indexedRun, err := s.reserveIndexedCreate(validated, run, requestDigest)
+	if err != nil {
+		return Run{}, err
+	}
+	if indexedRun != nil {
+		return *indexedRun, nil
 	}
 	if _, err := s.store.CreateBundle(run, manifest); err != nil {
 		return Run{}, err
 	}
-	if _, err := s.appendEvent(Event{RunID: run.ID, Type: "snapshot", Timestamp: now, Message: "Immutable run manifest created", Progress: &run.Progress}); err != nil {
+	if _, err := s.appendEvent(Event{RunID: run.ID, Type: "snapshot", Timestamp: run.CreatedAt, Message: "Immutable run manifest created", Progress: &run.Progress}); err != nil {
 		_ = s.store.DeleteRun(run.ID)
 		return Run{}, err
 	}
 	return run, nil
-}
-
-func createRequestMatchesRun(request CreateRunRequest, run Run) bool {
-	return request.Name == run.Name && request.Description == run.Description &&
-		request.Mode == run.Mode && request.TargetID == run.TargetID &&
-		request.ChangeProfile == run.ChangeProfile && request.SampleLimit == run.SampleLimit &&
-		request.Concurrency == run.Concurrency && request.Seed == run.Seed &&
-		request.BaselineRunID == run.BaselineRunID &&
-		sameStringSet(request.SuiteIDs, run.SuiteIDs) && sameTrackSet(request.TrackIDs, run.TrackIDs)
 }
 
 func requireQualifiedCodeRevision(_ EvidenceLevel, revision string) error {

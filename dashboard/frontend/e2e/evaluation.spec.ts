@@ -295,6 +295,36 @@ test.describe('Evaluation Plane', () => {
     await captureEvaluationSurface(page, 'report-gates-desktop')
   })
 
+  test('isolates an invalid capacity diagnostic artifact without collapsing the report', async ({
+    page,
+  }) => {
+    await mockEvaluationPlane(page, defaultEvaluationRuns, {
+      diagnosticArtifactBodies: {
+        capacityProfile:
+          '{"schema_version":"evaluation.v1","kind":"bounded-concurrency-sweep","levels":null,"slo":null}',
+      },
+    })
+    await page.goto('/evaluation?view=reports&report=candidate-run')
+
+    await expect(
+      page.getByText('Promotion summary withheld — diagnostic E0', { exact: true }),
+    ).toBeVisible()
+    await expect(page.getByRole('table', { name: 'Evaluation metrics' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Track observations' })).toBeVisible()
+
+    const diagnostics = page.locator('section[aria-labelledby="report-diagnostics-title"]')
+    await expect(
+      diagnostics.getByRole('alert', { name: 'Capacity profile diagnostic error' }),
+    ).toContainText('Invalid diagnostic artifact')
+    await expect(
+      diagnostics.getByRole('table', { name: 'Outcome accounting by evaluation track' }),
+    ).toBeVisible()
+    await expect(
+      diagnostics.getByRole('table', { name: 'Capacity observations by concurrency' }),
+    ).toHaveCount(0)
+    await expect(page.getByRole('heading', { name: 'Report unavailable' })).toHaveCount(0)
+  })
+
   test('pins comparison lineage and colors deltas according to metric direction', async ({
     page,
   }) => {
@@ -332,6 +362,44 @@ test.describe('Evaluation Plane', () => {
     await expect(page.getByText('Passed', { exact: true })).toHaveCount(0)
     await table.scrollIntoViewIfNeeded()
     await captureEvaluationSurface(page, 'comparison-results-desktop')
+  })
+
+  test('keeps quarantined run evidence visible and blocks partial-ledger decisions', async ({
+    page,
+  }) => {
+    const state = await mockEvaluationPlane(page, defaultEvaluationRuns, {
+      ledgerWarnings: [
+        {
+          code: 'corrupt_run_bundle',
+          run_id: 'quarantined-run',
+          evidence_file: 'status.json',
+          message: 'Durable run status evidence is unreadable or invalid and has been quarantined.',
+        },
+      ],
+    })
+    await page.goto('/evaluation?view=compare&baseline=baseline-run&candidate=candidate-run')
+
+    await expect(page.getByText('Run ledger incomplete', { exact: true })).toBeVisible()
+    await expect(page.getByText('quarantined-run', { exact: true })).toBeVisible()
+    await expect(page.getByText(/status\.json: Durable run status evidence/)).toBeVisible()
+    await expect(page.getByLabel('Candidate')).toBeDisabled()
+    await expect(page.getByRole('button', { name: 'Compare paired evidence' })).toBeDisabled()
+    await expect(
+      page.getByText(/Baseline selection and comparison conclusions are blocked/),
+    ).toBeVisible()
+    await expect.poll(() => new URL(page.url()).searchParams.get('baseline')).toBeNull()
+    await expect.poll(() => new URL(page.url()).searchParams.get('candidate')).toBeNull()
+    expect(state.comparisonRequests).toHaveLength(0)
+
+    await page.getByRole('tab', { name: 'New experiment', exact: true }).click()
+    await expect(page.getByText('Run ledger incomplete', { exact: true })).toBeVisible()
+    await expect(page.getByLabel('Baseline run')).toBeDisabled()
+    await expect(
+      page.getByText(
+        'Baseline selection is blocked until quarantined durable run evidence is repaired.',
+        { exact: true },
+      ),
+    ).toBeVisible()
   })
 
   test('keeps cancellation modal and controls pending until the server responds', async ({

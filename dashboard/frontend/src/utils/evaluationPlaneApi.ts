@@ -4,13 +4,14 @@ import type {
   EvaluationComparison,
   EvaluationReport,
   EvaluationRun,
+  EvaluationRunLedger,
   EvaluationRunEvent,
 } from '../types/evaluationPlane'
+import { EVALUATION_SCHEMA_VERSION } from '../types/evaluationPlane'
 
 export const EVALUATION_API_BASE = '/api/evaluation/v1'
 
 type RunEnvelope = { run: EvaluationRun }
-type RunsEnvelope = { runs: EvaluationRun[] }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -47,9 +48,27 @@ export function getEvaluationCatalog(signal?: AbortSignal): Promise<EvaluationCa
   return requestJson('/catalog', { signal })
 }
 
-export async function listEvaluationRuns(signal?: AbortSignal): Promise<EvaluationRun[]> {
-  const payload = await requestJson<EvaluationRun[] | RunsEnvelope>('/runs', { signal })
-  return Array.isArray(payload) ? payload : payload.runs
+export async function listEvaluationRuns(signal?: AbortSignal): Promise<EvaluationRunLedger> {
+  const payload = await requestJson<unknown>('/runs', { signal })
+  if (
+    !isRecord(payload) ||
+    payload.schema_version !== EVALUATION_SCHEMA_VERSION ||
+    !Array.isArray(payload.runs) ||
+    typeof payload.ledger_complete !== 'boolean' ||
+    !Array.isArray(payload.warnings) ||
+    payload.warnings.some(
+      (warning) =>
+        !isRecord(warning) ||
+        typeof warning.code !== 'string' ||
+        typeof warning.run_id !== 'string' ||
+        typeof warning.evidence_file !== 'string' ||
+        typeof warning.message !== 'string',
+    ) ||
+    payload.ledger_complete !== (payload.warnings.length === 0)
+  ) {
+    throw new Error('Evaluation run ledger response is invalid or incomplete.')
+  }
+  return payload as unknown as EvaluationRunLedger
 }
 
 export async function getEvaluationRun(id: string, signal?: AbortSignal): Promise<EvaluationRun> {

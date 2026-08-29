@@ -5,13 +5,20 @@ import type {
   EvaluationFailureSummary,
   EvaluationReport,
 } from '../types/evaluationPlane'
+import {
+  decodeEvaluationCapacityProfile,
+  decodeEvaluationFailureSummary,
+  evaluationDiagnosticArtifactIssue,
+  type EvaluationDiagnosticArtifactIssue,
+} from '../utils/evaluationDiagnosticArtifacts'
 import { getEvaluationArtifactJSON } from '../utils/evaluationPlaneApi'
 
 interface EvaluationReportDiagnosticsState {
   failureSummary: EvaluationFailureSummary | null
   capacityProfile: EvaluationCapacityProfile | null
+  failureSummaryIssue: EvaluationDiagnosticArtifactIssue | null
+  capacityProfileIssue: EvaluationDiagnosticArtifactIssue | null
   loading: boolean
-  errors: string[]
 }
 
 function artifactID(report: EvaluationReport, name: string): string | null {
@@ -21,8 +28,24 @@ function artifactID(report: EvaluationReport, name: string): string | null {
   )
 }
 
-function errorMessage(reason: unknown, fallback: string): string {
-  return reason instanceof Error ? reason.message : fallback
+interface DiagnosticArtifactResult<T> {
+  value: T | null
+  issue: EvaluationDiagnosticArtifactIssue | null
+}
+
+async function loadDiagnosticArtifact<T>(
+  runID: string,
+  artifactID: string,
+  artifactName: string,
+  decode: (value: unknown) => T,
+  signal: AbortSignal,
+): Promise<DiagnosticArtifactResult<T>> {
+  try {
+    const value = await getEvaluationArtifactJSON<unknown>(runID, artifactID, signal)
+    return { value: decode(value), issue: null }
+  } catch (reason) {
+    return { value: null, issue: evaluationDiagnosticArtifactIssue(artifactName, reason) }
+  }
 }
 
 export default function useEvaluationReportDiagnostics(
@@ -31,53 +54,66 @@ export default function useEvaluationReportDiagnostics(
   const [state, setState] = useState<EvaluationReportDiagnosticsState>({
     failureSummary: null,
     capacityProfile: null,
+    failureSummaryIssue: null,
+    capacityProfileIssue: null,
     loading: false,
-    errors: [],
   })
 
   useEffect(() => {
     const failureID = artifactID(report, 'failure-summary.json')
     const capacityID = artifactID(report, 'capacity-profile.json')
     if (!failureID && !capacityID) {
-      setState({ failureSummary: null, capacityProfile: null, loading: false, errors: [] })
+      setState({
+        failureSummary: null,
+        capacityProfile: null,
+        failureSummaryIssue: null,
+        capacityProfileIssue: null,
+        loading: false,
+      })
       return
     }
 
     const controller = new AbortController()
-    setState({ failureSummary: null, capacityProfile: null, loading: true, errors: [] })
+    setState({
+      failureSummary: null,
+      capacityProfile: null,
+      failureSummaryIssue: null,
+      capacityProfileIssue: null,
+      loading: true,
+    })
     const failure = failureID
-      ? getEvaluationArtifactJSON<EvaluationFailureSummary>(
+      ? loadDiagnosticArtifact(
           report.run.id,
           failureID,
+          'failure-summary.json',
+          decodeEvaluationFailureSummary,
           controller.signal,
         )
-      : Promise.resolve(null)
+      : Promise.resolve<DiagnosticArtifactResult<EvaluationFailureSummary>>({
+          value: null,
+          issue: null,
+        })
     const capacity = capacityID
-      ? getEvaluationArtifactJSON<EvaluationCapacityProfile>(
+      ? loadDiagnosticArtifact(
           report.run.id,
           capacityID,
+          'capacity-profile.json',
+          decodeEvaluationCapacityProfile,
           controller.signal,
         )
-      : Promise.resolve(null)
+      : Promise.resolve<DiagnosticArtifactResult<EvaluationCapacityProfile>>({
+          value: null,
+          issue: null,
+        })
 
-    void Promise.allSettled([failure, capacity]).then(([failureResult, capacityResult]) => {
+    void Promise.all([failure, capacity]).then(([failureResult, capacityResult]) => {
       if (controller.signal.aborted) return
-      const errors: string[] = []
-      if (failureResult.status === 'rejected') {
-        errors.push(
-          `Outcome accounting: ${errorMessage(failureResult.reason, 'artifact could not be loaded.')}`,
-        )
-      }
-      if (capacityResult.status === 'rejected') {
-        errors.push(
-          `Capacity profile: ${errorMessage(capacityResult.reason, 'artifact could not be loaded.')}`,
-        )
-      }
       setState({
-        failureSummary: failureResult.status === 'fulfilled' ? failureResult.value : null,
-        capacityProfile: capacityResult.status === 'fulfilled' ? capacityResult.value : null,
+        failureSummary: failureResult.value,
+        capacityProfile: capacityResult.value,
+        failureSummaryIssue: failureResult.issue,
+        capacityProfileIssue: capacityResult.issue,
         loading: false,
-        errors,
       })
     })
 
