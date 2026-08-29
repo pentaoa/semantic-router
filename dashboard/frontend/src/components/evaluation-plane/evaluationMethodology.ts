@@ -44,7 +44,7 @@ export const EVALUATION_METHOD_FAMILIES: EvaluationMethodFamily[] = [
       'Normalized arm outcomes feed common E0 quality/oracle diagnostics. Stream order, split identity, budget and pool-size factors, grader revisions, and native Pareto reducers are not retained.',
     missingForQualification:
       'Native dense matrix and split parity, prequential ordering, grader/price receipts, pool factorials, budget curves, regret, and Pareto metrics.',
-    trackIDs: ['routing', 'model_pool', 'joint', 'multimodal'],
+    trackIDs: ['routing', 'model_pool', 'joint', 'agentic', 'multimodal'],
   },
   {
     id: 'scenario-session',

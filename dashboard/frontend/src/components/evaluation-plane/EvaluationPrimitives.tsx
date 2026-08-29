@@ -80,7 +80,7 @@ export function CoverageBar({ coverage }: { coverage: EvaluationCoverage }) {
         <span style={{ width: `${fraction * 100}%` }} />
       </div>
       <small>
-        {coverage.evaluated} of {coverage.total} cases observed
+        {coverage.evaluated} of {coverage.total} case-track observations
         {coverage.unavailable ? ` · ${coverage.unavailable} without an observation` : ''}
       </small>
     </div>

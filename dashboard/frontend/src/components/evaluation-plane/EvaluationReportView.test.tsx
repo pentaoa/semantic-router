@@ -77,11 +77,30 @@ const legacyReport: EvaluationReport = {
 
 describe('EvaluationReportView attestation language', () => {
   it('renders a legacy report without server-verified claims while preserving metrics', () => {
+    const claimedPass = {
+      ...legacyReport,
+      summary: { ...legacyReport.summary, verdict: 'pass' as const, passed_gates: 1 },
+      gates: [
+        {
+          id: 'G0',
+          name: 'Reproducibility',
+          description: 'Worker-reported pass without a current server attestation.',
+          disposition: 'required' as const,
+          verdict: 'pass' as const,
+          change_profile: 'recipe' as const,
+          contract_version: 'evaluation-release-gates.v1',
+          evidence_refs: [],
+        },
+      ],
+    }
     const markup = renderToStaticMarkup(
-      createElement(EvaluationReportView, { report: legacyReport }),
+      createElement(EvaluationReportView, { report: claimedPass }),
     )
 
     expect(markup).toContain('Legacy worker-derived E0 / integrity-only')
+    expect(markup).toContain('Current attestation required')
+    expect(markup).toContain('0/1 reported required gate verdicts are trusted')
+    expect(markup).toContain('Evidence needed')
     expect(markup).toContain('Safety violation rate')
     expect(markup).toContain('Legacy track scope · integrity-only')
     expect(markup).toContain('Legacy cost ledgers · integrity-only')
@@ -89,6 +108,8 @@ describe('EvaluationReportView attestation language', () => {
     expect(markup).not.toContain('Verified artifacts')
     expect(markup).not.toContain('Verified track scope')
     expect(markup).not.toContain('Verified cost ledgers')
+    expect(markup).not.toContain('Required gates satisfied')
+    expect(markup).not.toContain('>Passed<')
   })
 
   it('enables bounded server-reduced and verified labels only for exact v2 attestation', () => {

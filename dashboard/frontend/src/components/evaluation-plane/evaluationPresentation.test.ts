@@ -5,6 +5,8 @@ import { EVALUATION_TRACK_IDS } from '../../types/evaluationPlane'
 import {
   clampFraction,
   EVALUATION_SERVER_ATTESTATION_REVISION,
+  evaluationGatesForPresentation,
+  evaluationPromotionVerdict,
   evidenceRank,
   formatDelta,
   formatMetric,
@@ -153,5 +155,31 @@ describe('evaluation presentation', () => {
     expect(hasServerEvaluationAttestation({ attestation_revision: '' })).toBe(false)
     expect(legacyEvaluationEvidenceLabel('E0')).toBe('Legacy worker-derived E0 / integrity-only')
     expect(legacyEvaluationEvidenceLabel('E5')).toBe('Legacy unattested E5 / integrity-only')
+  })
+
+  it('fails reported gates and promotion verdicts closed without a current attestation', () => {
+    const report = {
+      summary: { verdict: 'pass' },
+      gates: [
+        {
+          id: 'G0',
+          disposition: 'required',
+          verdict: 'pass',
+          rationale: 'Worker-reported rationale.',
+        },
+        { id: 'G9', disposition: 'advisory', verdict: 'not_applicable' },
+      ],
+    } as EvaluationReport
+
+    expect(evaluationPromotionVerdict(report)).toBe('unavailable')
+    expect(evaluationGatesForPresentation(report, report.gates)).toMatchObject([
+      {
+        id: 'G0',
+        verdict: 'unavailable',
+        rationale:
+          'Current server attestation is required before the reported pass verdict can be trusted. Worker-reported rationale.',
+      },
+      { id: 'G9', verdict: 'not_applicable' },
+    ])
   })
 })

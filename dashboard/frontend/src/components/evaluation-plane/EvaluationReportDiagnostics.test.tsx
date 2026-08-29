@@ -122,6 +122,10 @@ describe('EvaluationReportDiagnostics', () => {
 
     expect(markup).toContain('Server-attested diagnostic artifacts')
     expect(markup).toContain('Server-attested bounded concurrency observations')
+    expect(markup).toContain('Errors')
+    expect(markup).toContain('Duration')
+    expect(markup).toContain('Tokens in / out')
+    expect(markup).toContain('40 / 20')
     expect(markup).not.toContain('integrity-only')
   })
 })

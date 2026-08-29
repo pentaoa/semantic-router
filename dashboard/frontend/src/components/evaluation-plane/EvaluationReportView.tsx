@@ -8,13 +8,14 @@ import {
 } from '../../utils/evaluationPlaneApi'
 import EvaluationGateList from './EvaluationGateList'
 import EvaluationMetricTable from './EvaluationMetricTable'
+import EvaluationReportDecision from './EvaluationReportDecision'
 import EvaluationReportDiagnostics from './EvaluationReportDiagnostics'
 import {
-  effectiveGateVerdict,
+  evaluationGatesForPresentation,
+  evaluationPromotionVerdict,
   formatMetric,
   hasServerEvaluationAttestation,
   legacyEvaluationEvidenceLabel,
-  selectHeadlineMetrics,
 } from './evaluationPresentation'
 import { CoverageBar, GateVerdictBadge, RunStatusBadge } from './EvaluationPrimitives'
 import styles from './EvaluationReport.module.css'
@@ -34,19 +35,12 @@ export default function EvaluationReportView({
 }) {
   const summary = report.summary
   const gateContractVersion = report.gates[0]?.contract_version || 'not recorded'
-  const requiredGates = report.gates.filter((gate) => gate.disposition === 'required')
-  const requiredPassed = requiredGates.filter((gate) => gate.verdict === 'pass').length
-  const requiredFailed = requiredGates.filter((gate) => gate.verdict === 'fail').length
-  const requiredUnavailable = requiredGates.filter((gate) => gate.verdict === 'unavailable').length
-  const requiredBlockers = requiredGates.filter(
-    (gate) => gate.verdict === 'fail' || gate.verdict === 'unavailable',
-  )
-  const promotionVerdict = effectiveGateVerdict(summary.verdict, report.gates)
-  const headlines = selectHeadlineMetrics(report)
-  const diagnostics = useEvaluationReportDiagnostics(report)
-  const isDiagnostic = report.run.evidence_level === 'E0'
   const serverAttested = hasServerEvaluationAttestation(report)
   const isLegacyReport = !serverAttested
+  const displayGates = evaluationGatesForPresentation(report, report.gates)
+  const promotionVerdict = evaluationPromotionVerdict(report)
+  const diagnostics = useEvaluationReportDiagnostics(report)
+  const isDiagnostic = report.run.evidence_level === 'E0'
   const legacyEvidenceLabel = legacyEvaluationEvidenceLabel(report.run.evidence_level)
 
   return (
@@ -92,57 +86,7 @@ export default function EvaluationReportView({
         </div>
       ) : null}
 
-      <section className={styles.section} aria-labelledby="report-decision-title">
-        <div className={styles.sectionHeader}>
-          <div>
-            <span className={styles.eyebrow}>Decision boundary</span>
-            <h3 id="report-decision-title">
-              {requiredBlockers.length ? 'Promotion needs attention' : 'Required gates satisfied'}
-            </h3>
-            <p>
-              {requiredPassed}/{requiredGates.length} required gates passed · {requiredFailed}{' '}
-              blocked · {requiredUnavailable} need evidence
-            </p>
-          </div>
-          <GateVerdictBadge verdict={promotionVerdict} disposition="required" />
-        </div>
-        {headlines.length ? (
-          <dl className={styles.headlineStrip}>
-            {headlines.map((metric) => (
-              <div key={`${metric.track_id || 'system'}-${metric.id}`}>
-                <dt>{metric.name}</dt>
-                <dd>{formatMetric(metric)}</dd>
-                <span>
-                  {serverAttested ? `Server-reduced ${report.run.evidence_level} · ` : ''}
-                  {metric.track_id ? TRACK_PRESENTATION[metric.track_id].label : 'System'}
-                </span>
-              </div>
-            ))}
-          </dl>
-        ) : (
-          <p className={styles.empty}>
-            {isLegacyReport
-              ? 'Headline elevation is withheld for this legacy integrity-only report; inspect the complete metric explorer for all reported observations.'
-              : isDiagnostic
-                ? 'No independently reduced diagnostic headline applies to this run scope; inspect the metric explorer for the complete E0 observations.'
-                : 'No measured headline aggregate applies to this run scope.'}
-          </p>
-        )}
-      </section>
-
-      {requiredBlockers.length ? (
-        <section className={styles.section} aria-labelledby="report-blockers-title">
-          <div className={styles.sectionHeader}>
-            <div>
-              <span className={styles.eyebrow}>Next evidence required</span>
-              <h3 id="report-blockers-title">Required blockers</h3>
-              <p>Specific rationale is shown first; generic gate descriptions remain secondary.</p>
-            </div>
-            <span>{requiredBlockers.length} blockers</span>
-          </div>
-          <EvaluationGateList gates={requiredBlockers} />
-        </section>
-      ) : null}
+      <EvaluationReportDecision report={report} />
 
       <section className={styles.section} aria-labelledby="report-metrics-title">
         <div className={styles.sectionHeader}>
@@ -230,7 +174,13 @@ export default function EvaluationReportView({
                   <td>
                     <RunStatusBadge status={track.status} />
                   </td>
-                  <td>{Math.round(track.coverage.fraction * 100)}%</td>
+                  <td>
+                    {track.coverage.evaluated}/{track.coverage.total} ·{' '}
+                    {Math.round(track.coverage.fraction * 100)}%
+                    {track.coverage.unavailable
+                      ? ` · ${track.coverage.unavailable} not measured`
+                      : ''}
+                  </td>
                   <td>{track.evidence_level}</td>
                   <td>{track.error || track.summary}</td>
                 </tr>
@@ -245,7 +195,7 @@ export default function EvaluationReportView({
           All promotion gates <span>{report.gates.length}</span>
         </summary>
         <div className={styles.disclosureBody}>
-          <EvaluationGateList gates={report.gates} />
+          <EvaluationGateList gates={displayGates} />
         </div>
       </details>
 
@@ -293,7 +243,8 @@ export default function EvaluationReportView({
         </summary>
         <div className={styles.disclosureBody}>
           <p className={styles.scopeCopy}>
-            These are rule-derived diagnostic findings, not benchmark-native causal conclusions.
+            These are worker-derived rule-based diagnostics, not server-reduced or benchmark-native
+            causal conclusions.
           </p>
           {report.recommendations.length ? (
             <ol className={styles.recommendations}>

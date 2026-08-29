@@ -15,4 +15,12 @@ describe('evaluation methodology inventory', () => {
       expect(family?.missingForQualification.length).toBeGreaterThan(20)
     }
   })
+
+  it('keeps CodeRouterBench visible in the agentic method filter', () => {
+    const denseOutcomes = EVALUATION_METHOD_FAMILIES.find(
+      (candidate) => candidate.id === 'dense-outcome',
+    )
+    expect(denseOutcomes?.benchmarks).toContain('CodeRouterBench')
+    expect(denseOutcomes?.trackIDs).toContain('agentic')
+  })
 })

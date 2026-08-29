@@ -634,8 +634,14 @@ export const evaluationComparison: EvaluationComparison = {
 
 interface MockEvaluationPlaneOptions {
   mutationDelayMs?: number
+  catalogDelayMs?: number
+  ledgerDelayMs?: number
   ledgerWarnings?: EvaluationRunLedgerWarning[]
   legacyReportRunIdentity?: boolean
+  unattestedPromotionClaim?: boolean
+  eventStreamCloseOnce?: boolean
+  reportFailureIDs?: string[]
+  reportFailureStatus?: number
   diagnosticArtifactBodies?: {
     failureSummary?: string
     capacityProfile?: string
@@ -724,6 +730,7 @@ export async function mockEvaluationPlane(
     new Promise<void>((resolve) => setTimeout(resolve, options.mutationDelayMs || 0))
 
   await page.route('**/api/evaluation/v1/catalog', async (route) => {
+    await new Promise<void>((resolve) => setTimeout(resolve, options.catalogDelayMs || 0))
     await fulfillJSON(route, 200, evaluationCatalog)
   })
   await page.route('**/api/evaluation/v1/run-ledger', async (route) => {
@@ -731,6 +738,7 @@ export async function mockEvaluationPlane(
       await fulfillError(route, 405, 'method not allowed')
       return
     }
+    await new Promise<void>((resolve) => setTimeout(resolve, options.ledgerDelayMs || 0))
     await fulfillJSON(route, 200, {
       schema_version: 'evaluation.v1',
       runs,
@@ -786,6 +794,10 @@ export async function mockEvaluationPlane(
   })
   await page.route('**/api/evaluation/v1/runs/*/events', async (route) => {
     eventStreamCount += 1
+    if (options.eventStreamCloseOnce && eventStreamCount === 1) {
+      await route.fulfill({ status: 204 })
+      return
+    }
     const parts = new URL(route.request().url()).pathname.split('/')
     const id = decodeURIComponent(parts[parts.length - 2] || '')
     const run = runs.find((candidate) => candidate.id === id)
@@ -811,6 +823,16 @@ export async function mockEvaluationPlane(
     const parts = new URL(route.request().url()).pathname.split('/')
     const id = decodeURIComponent(parts[parts.length - 2] || '')
     reportRequests.push(id)
+    if (options.reportFailureIDs?.includes(id)) {
+      await fulfillError(
+        route,
+        options.reportFailureStatus || 503,
+        options.reportFailureStatus === 404
+          ? 'not found: evaluation report'
+          : 'report storage is temporarily unavailable',
+      )
+      return
+    }
     const run = runs.find((candidate) => candidate.id === id)
     if (!run) {
       await fulfillError(route, 404, 'not found: evaluation run')
@@ -832,6 +854,19 @@ export async function mockEvaluationPlane(
         name: report.run.id,
         description: `Evaluation suites: ${report.run.suite_ids.join(', ')}`,
       }
+    }
+    if (options.unattestedPromotionClaim) {
+      delete report.attestation_revision
+      report.summary = {
+        ...report.summary,
+        verdict: 'pass',
+        passed_gates: report.gates.filter((gate) => gate.disposition === 'required').length,
+        failed_gates: 0,
+        unavailable_gates: 0,
+      }
+      report.gates = report.gates.map((gate) =>
+        gate.disposition === 'required' ? { ...gate, verdict: 'pass' as const } : gate,
+      )
     }
     if (typeof options.diagnosticArtifactBodies?.capacityProfile === 'string') {
       report.artifacts = [

@@ -167,6 +167,30 @@ export function effectiveGateVerdict(reported: GateVerdict, gates: EvaluationGat
   return reported
 }
 
+export function evaluationGatesForPresentation(
+  evidence: { attestation_revision?: string },
+  gates: EvaluationGate[],
+  attestationLabel = 'Current server attestation',
+): EvaluationGate[] {
+  if (hasServerEvaluationAttestation(evidence)) return gates
+
+  return gates.map((gate) =>
+    gate.verdict === 'not_applicable'
+      ? gate
+      : {
+          ...gate,
+          verdict: 'unavailable',
+          rationale: `${attestationLabel} is required before the reported ${gate.verdict} verdict can be trusted.${gate.rationale ? ` ${gate.rationale}` : ''}`,
+        },
+  )
+}
+
+export function evaluationPromotionVerdict(report: EvaluationReport): GateVerdict {
+  return hasServerEvaluationAttestation(report)
+    ? effectiveGateVerdict(report.summary.verdict, report.gates)
+    : 'unavailable'
+}
+
 const HEADLINE_METRIC_PRIORITY = [
   'joint.realized_quality',
   'routing.accuracy',

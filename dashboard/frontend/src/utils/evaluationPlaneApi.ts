@@ -13,6 +13,16 @@ export const EVALUATION_API_BASE = '/api/evaluation/v1'
 
 type RunEnvelope = { run: EvaluationRun }
 
+export class EvaluationRequestError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message)
+    this.name = 'EvaluationRequestError'
+  }
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
@@ -35,7 +45,7 @@ async function readError(response: Response): Promise<string> {
 
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${EVALUATION_API_BASE}${path}`, init)
-  if (!response.ok) throw new Error(await readError(response))
+  if (!response.ok) throw new EvaluationRequestError(await readError(response), response.status)
   if (response.status === 204) return undefined as T
   return response.json() as Promise<T>
 }

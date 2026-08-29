@@ -1,7 +1,12 @@
 import { expect, type Page, test } from '@playwright/test'
 
 import { mockAuthenticatedAppShell } from './support/auth'
-import { defaultEvaluationRuns, evaluationCatalog, mockEvaluationPlane } from './support/evaluation'
+import {
+  defaultEvaluationRuns,
+  evaluationCatalog,
+  evaluationRun,
+  mockEvaluationPlane,
+} from './support/evaluation'
 
 const evalUser = {
   id: 'user-eval-1',
@@ -63,9 +68,29 @@ test.describe('Evaluation Plane', () => {
         }),
       ).toBeVisible()
     }
+    await expect(
+      readiness.getByRole('row').filter({ has: page.getByText('Routing', { exact: true }) }),
+    ).toContainText('E3 contract')
     await expect(page.getByText('Schema evaluation.v1', { exact: true })).toBeVisible()
     await expect(page.getByText('evaluation-release-gates.v1', { exact: true })).toBeVisible()
+    await page.getByLabel('Filter by track').selectOption('agentic')
+    await expect(page.getByText(/CodeRouterBench/)).toBeVisible()
     await captureEvaluationSurface(page, 'overview-desktop')
+  })
+
+  test('keeps the initial loading boundary until catalog and durable ledger both settle', async ({
+    page,
+  }) => {
+    await mockEvaluationPlane(page, defaultEvaluationRuns, { ledgerDelayMs: 750 })
+    const catalogResponse = page.waitForResponse('**/api/evaluation/v1/catalog')
+    await page.goto('/evaluation')
+    await catalogResponse
+
+    await expect(page.getByText('Loading evaluation plane', { exact: true })).toBeVisible()
+    await expect(page.getByText('Decision readiness', { exact: true })).toHaveCount(0)
+
+    await expect(page.getByText('Loading evaluation plane', { exact: true })).toHaveCount(0)
+    await expect(page.getByText('Decision readiness', { exact: true })).toBeVisible()
   })
 
   test('supports keyboard navigation across the evaluation tabs', async ({ page }) => {
@@ -261,6 +286,96 @@ test.describe('Evaluation Plane', () => {
     await expect(page.getByText('Candidate recipe description')).toBeVisible()
   })
 
+  test('fails closed when an unattested report claims that required gates passed', async ({
+    page,
+  }) => {
+    await mockEvaluationPlane(page, defaultEvaluationRuns, { unattestedPromotionClaim: true })
+    await page.goto('/evaluation')
+
+    await expect(page.getByText('Evidence needed', { exact: true }).first()).toBeVisible()
+    await expect(page.getByText('Passed', { exact: true })).toHaveCount(0)
+
+    await page.getByRole('button', { name: 'Open full report' }).click()
+    await expect(page.getByRole('heading', { name: 'Current attestation required' })).toBeVisible()
+    await expect(page.getByText(/reported required gate verdicts are trusted/)).toBeVisible()
+    await expect(page.getByText('Required gates satisfied', { exact: true })).toHaveCount(0)
+    await expect(page.getByText('Passed', { exact: true })).toHaveCount(0)
+  })
+
+  test('opens the latest overview report instead of retaining a stale report deep-link', async ({
+    page,
+  }) => {
+    await mockEvaluationPlane(page)
+    await page.goto('/evaluation?report=unpaired-run')
+
+    await expect(page.locator('#latest-evidence-title')).toHaveText('Candidate recipe')
+    await page.getByRole('button', { name: 'Open full report' }).click()
+
+    await expect.poll(() => new URL(page.url()).searchParams.get('view')).toBe('reports')
+    await expect.poll(() => new URL(page.url()).searchParams.get('report')).toBe('candidate-run')
+    await expect(page.getByRole('heading', { name: 'Candidate recipe' })).toBeVisible()
+  })
+
+  test('falls back to the previous readable overview report when newer evidence is missing', async ({
+    page,
+  }) => {
+    await mockEvaluationPlane(page, defaultEvaluationRuns, {
+      reportFailureIDs: ['candidate-run'],
+      reportFailureStatus: 404,
+    })
+    await page.goto('/evaluation')
+
+    await expect(page.locator('#latest-evidence-title')).toHaveText('Production baseline')
+    await expect(page.getByText('Showing the previous readable report.')).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Retry newest' })).toBeVisible()
+  })
+
+  test('does not cascade through report history during a service outage', async ({ page }) => {
+    const state = await mockEvaluationPlane(page, defaultEvaluationRuns, {
+      reportFailureIDs: ['candidate-run'],
+      reportFailureStatus: 503,
+    })
+    await page.goto('/evaluation')
+
+    await expect(page.getByText('report storage is temporarily unavailable')).toBeVisible()
+    expect(state.reportRequests).toEqual(['candidate-run'])
+  })
+
+  test('changes a comparison candidate and its pinned baseline atomically', async ({ page }) => {
+    const secondBaseline = evaluationRun(
+      'second-baseline',
+      'Second baseline',
+      'completed',
+      '2026-08-26T00:00:00Z',
+    )
+    const secondCandidate = evaluationRun(
+      'second-candidate',
+      'Second candidate',
+      'completed',
+      '2026-08-29T12:00:00Z',
+      'recipe',
+      { baseline_run_id: secondBaseline.id },
+    )
+    await mockEvaluationPlane(page, [secondCandidate, secondBaseline, ...defaultEvaluationRuns])
+    await page.goto('/evaluation?view=compare&baseline=baseline-run&candidate=candidate-run')
+
+    await page.getByRole('button', { name: 'Compare paired evidence' }).click()
+    await expect(page.getByRole('table', { name: 'Paired comparison metrics' })).toBeVisible()
+    await page.getByLabel('Candidate').selectOption(secondCandidate.id)
+
+    await expect(page.getByRole('table', { name: 'Paired comparison metrics' })).toHaveCount(0)
+    await expect(
+      page.getByText('Choose a candidate, then calculate its paired comparison.'),
+    ).toBeVisible()
+    await expect
+      .poll(() => new URL(page.url()).searchParams.get('candidate'))
+      .toBe(secondCandidate.id)
+    await expect
+      .poll(() => new URL(page.url()).searchParams.get('baseline'))
+      .toBe(secondBaseline.id)
+    await expect(page.getByLabel('Pinned baseline')).toHaveValue(secondBaseline.name)
+  })
+
   test('withholds E0 promotion claims while retaining diagnostics and never fakes G2+ pass', async ({
     page,
   }) => {
@@ -273,6 +388,10 @@ test.describe('Evaluation Plane', () => {
       }),
     ).toBeVisible()
     await expect(page.getByRole('heading', { name: 'Promotion needs attention' })).toBeVisible()
+    await expect(page.getByText(/case-track observations/)).toBeVisible()
+    const findings = page.locator('details').filter({ hasText: 'Diagnostic findings' })
+    await findings.locator('summary').click()
+    await expect(findings.getByText(/worker-derived rule-based diagnostics/i)).toBeVisible()
 
     const metrics = page.getByRole('table', { name: 'Evaluation metrics' })
     await expect(
@@ -480,6 +599,22 @@ test.describe('Evaluation Plane', () => {
 
     expect(state.getEventStreamCount()).toBe(1)
     await expect(page.getByText('Executing routing track from SSE')).toHaveCount(1)
+  })
+
+  test('requires an explicit retry after a server-closed event stream', async ({ page }) => {
+    const state = await mockEvaluationPlane(page, defaultEvaluationRuns, {
+      eventStreamCloseOnce: true,
+    })
+    await page.goto('/evaluation?view=runs&run=live-run')
+
+    await expect.poll(state.getEventStreamCount).toBe(1)
+    await expect(page.getByText('Stream unavailable', { exact: true })).toBeVisible()
+    await page.getByRole('button', { name: 'Reconnect stream' }).click()
+    await expect.poll(state.getEventStreamCount).toBe(2)
+    await expect(page.getByText('Executing routing track from SSE')).toHaveCount(1)
+    await expect(
+      page.getByText('Evaluation event stream was closed by the server.', { exact: true }),
+    ).toHaveCount(0)
   })
 
   test('keeps the primary evaluation workflow usable on a narrow viewport', async ({ page }) => {

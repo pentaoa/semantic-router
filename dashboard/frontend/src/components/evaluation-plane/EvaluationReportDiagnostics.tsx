@@ -174,10 +174,13 @@ export default function EvaluationReportDiagnostics({
                     <th scope="col">Concurrency</th>
                     <th scope="col">Requests</th>
                     <th scope="col">Success</th>
+                    <th scope="col">Errors</th>
+                    <th scope="col">Duration</th>
                     <th scope="col">Throughput</th>
                     <th scope="col">P50</th>
                     <th scope="col">P95</th>
                     <th scope="col">P99</th>
+                    <th scope="col">Tokens in / out</th>
                     <th scope="col">Runtime cost</th>
                   </tr>
                 </thead>
@@ -189,10 +192,15 @@ export default function EvaluationReportDiagnostics({
                       <td>
                         {level.successes}/{level.requests}
                       </td>
+                      <td>{level.errors}</td>
+                      <td>{formatMetric({ value: level.elapsed_seconds, unit: 's' })}</td>
                       <td>{formatMetric({ value: level.throughput_rps, unit: 'requests/s' })}</td>
                       <td>{formatMetric({ value: level.latency_p50_ms, unit: 'ms' })}</td>
                       <td>{formatMetric({ value: level.latency_p95_ms, unit: 'ms' })}</td>
                       <td>{formatMetric({ value: level.latency_p99_ms, unit: 'ms' })}</td>
+                      <td>
+                        {level.input_tokens} / {level.output_tokens}
+                      </td>
                       <td>{formatMetric({ value: level.runtime_cost_usd, unit: 'usd' })}</td>
                     </tr>
                   ))}

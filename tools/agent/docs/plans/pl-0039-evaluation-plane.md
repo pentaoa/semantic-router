@@ -68,7 +68,7 @@ reproducible evidence and actionable reports.
   selection through the runtime Entrypoint, and Dashboard restart recovery.
   E0 evidence remains diagnostic and is never treated as promotion evidence.
 - [x] `TASK-09` Reconcile architecture findings, docs, and any durable debt before handoff.
-- [ ] `TASK-10` Harden the Evaluation product experience and evidence semantics.
+- [x] `TASK-10` Harden the Evaluation product experience and evidence semantics.
   Replace repeated card walls with decision-first overview, run ledger,
   metric explorer, and paired-comparison workflows; make every control,
   dialog, loading/error state, keyboard path, and responsive layout usable;
@@ -79,10 +79,10 @@ reproducible evidence and actionable reports.
 
 ## Next Action
 
-Finish TASK-10 with frontend, backend, contract, accessibility, local E2E, and
-real AMD validation. Keep TD-049 and TD-050 visible in the product as explicit
-native-method qualification gaps; do not claim E1-E5 or upstream leaderboard
-parity until those debt contracts are closed.
+Continue TASK-03 by closing TD-049 and TD-050 with repository-native benchmark
+adapters, direct-arm execution, native reducers and graders, assignment and
+execution receipts, repeated-seed qualification, and parity tests. Do not claim
+E1-E5 or upstream leaderboard parity until those debt contracts are closed.
 
 ## Operating Rules
 

@@ -8,6 +8,7 @@ import { formatDateTime } from '../../utils/dateTime'
 import EvaluationMethodCoverage from './EvaluationMethodCoverage'
 import {
   effectiveGateVerdict,
+  evidenceRank,
   formatMetric,
   hasServerEvaluationAttestation,
   legacyEvaluationEvidenceLabel,
@@ -24,8 +25,10 @@ interface EvaluationOverviewProps {
   latestReport: EvaluationReport | null
   reportLoading: boolean
   reportError: string | null
+  reportFallbackCount: number
   onRetryReport: () => void
   onNavigate: (view: EvaluationView) => void
+  onOpenReport: (runID: string) => void
 }
 
 export default function EvaluationOverview({
@@ -35,8 +38,10 @@ export default function EvaluationOverview({
   latestReport,
   reportLoading,
   reportError,
+  reportFallbackCount,
   onRetryReport,
   onNavigate,
+  onOpenReport,
 }: EvaluationOverviewProps) {
   const running = runs.filter((run) => run.status === 'running').length
   const completed = runs.filter((run) => run.status === 'completed').length
@@ -54,15 +59,19 @@ export default function EvaluationOverview({
     ? legacyEvaluationEvidenceLabel(latestReport.run.evidence_level)
     : null
   const latestVerdict = latestReport
-    ? effectiveGateVerdict(latestReport.summary.verdict, latestReport.gates)
+    ? serverAttested
+      ? effectiveGateVerdict(latestReport.summary.verdict, latestReport.gates)
+      : 'unavailable'
     : null
   const headlines = latestReport ? selectHeadlineMetrics(latestReport) : []
+  const requiredGates = latestReport
+    ? latestReport.gates.filter((gate) => gate.disposition === 'required')
+    : []
   const requiredBlockers = latestReport
-    ? latestReport.gates.filter(
-        (gate) =>
-          gate.disposition === 'required' &&
-          (gate.verdict === 'fail' || gate.verdict === 'unavailable'),
-      ).length
+    ? serverAttested
+      ? requiredGates.filter((gate) => gate.verdict === 'fail' || gate.verdict === 'unavailable')
+          .length
+      : Math.max(1, requiredGates.length)
     : 0
 
   return (
@@ -142,7 +151,7 @@ export default function EvaluationOverview({
             <button
               type="button"
               className={styles.secondaryButton}
-              onClick={() => onNavigate('reports')}
+              onClick={() => onOpenReport(latestReport.run.id)}
             >
               Open full report
             </button>
@@ -157,6 +166,19 @@ export default function EvaluationOverview({
             </div>
             <button type="button" onClick={onRetryReport}>
               Retry
+            </button>
+          </div>
+        ) : null}
+        {!reportError && reportFallbackCount > 0 && latestReport ? (
+          <div className={styles.scopeNotice} role="status">
+            <strong>Showing the previous readable report.</strong>
+            <span>
+              {reportFallbackCount} newer completed report
+              {reportFallbackCount === 1 ? ' is' : 's are'} temporarily unavailable. Retry to
+              inspect the newest evidence.
+            </span>
+            <button type="button" className={styles.secondaryButton} onClick={onRetryReport}>
+              Retry newest
             </button>
           </div>
         ) : null}
@@ -231,6 +253,12 @@ export default function EvaluationOverview({
               {EVALUATION_TRACK_IDS.map((trackID) => {
                 const contract = catalog.tracks.find((track) => track.id === trackID)
                 const observation = latestReport?.tracks.find((track) => track.track_id === trackID)
+                const evidenceLevels = contract?.evidence_levels || []
+                const claimCeiling = evidenceLevels[0]
+                  ? evidenceLevels.reduce((highest, level) =>
+                      evidenceRank(level) > evidenceRank(highest) ? level : highest,
+                    )
+                  : null
                 return (
                   <tr key={trackID}>
                     <th scope="row">
@@ -246,7 +274,12 @@ export default function EvaluationOverview({
                       {observation ? (
                         <span className={styles.inlineStatus}>
                           <RunStatusBadge status={observation.status} />
-                          {Math.round(observation.coverage.fraction * 100)}% observed
+                          {observation.evidence_level} · {observation.coverage.evaluated}/
+                          {observation.coverage.total} observations ·{' '}
+                          {Math.round(observation.coverage.fraction * 100)}%
+                          {observation.coverage.unavailable
+                            ? ` · ${observation.coverage.unavailable} not measured`
+                            : ''}
                           {serverAttested
                             ? ' · server-attested'
                             : isLegacyReport
@@ -257,11 +290,7 @@ export default function EvaluationOverview({
                         'No observation in latest run'
                       )}
                     </td>
-                    <td>
-                      {observation?.evidence_level ||
-                        contract?.evidence_levels?.[0] ||
-                        'E0 contract'}
-                    </td>
+                    <td>{claimCeiling ? `${claimCeiling} contract` : 'Not declared'}</td>
                   </tr>
                 )
               })}

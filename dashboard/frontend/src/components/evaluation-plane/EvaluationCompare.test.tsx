@@ -61,8 +61,7 @@ function renderComparison(value: EvaluationComparison): string {
       runLedgerComplete: true,
       loading: false,
       error: null,
-      onBaselineChange: () => undefined,
-      onCandidateChange: () => undefined,
+      onPairChange: () => undefined,
       onCompare: () => undefined,
     }),
   )

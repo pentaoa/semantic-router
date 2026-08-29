@@ -1,7 +1,11 @@
 import type { EvaluationComparison, EvaluationRun } from '../../types/evaluationPlane'
 import EvaluationGateList from './EvaluationGateList'
 import EvaluationMetricTable from './EvaluationMetricTable'
-import { effectiveGateVerdict, hasServerEvaluationAttestation } from './evaluationPresentation'
+import {
+  evaluationGatesForPresentation,
+  effectiveGateVerdict,
+  hasServerEvaluationAttestation,
+} from './evaluationPresentation'
 import { GateVerdictBadge } from './EvaluationPrimitives'
 import { cohortMismatches, eligibleComparisonCandidates } from './evaluationRunSupport'
 import styles from './EvaluationReport.module.css'
@@ -14,8 +18,7 @@ interface EvaluationCompareProps {
   runLedgerComplete: boolean
   loading: boolean
   error: string | null
-  onBaselineChange: (id: string) => void
-  onCandidateChange: (id: string) => void
+  onPairChange: (candidateID: string, baselineID: string) => void
   onCompare: () => void
   onCreateRun?: () => void
 }
@@ -28,8 +31,7 @@ export default function EvaluationCompare({
   runLedgerComplete,
   loading,
   error,
-  onBaselineChange,
-  onCandidateChange,
+  onPairChange,
   onCompare,
   onCreateRun,
 }: EvaluationCompareProps) {
@@ -43,14 +45,21 @@ export default function EvaluationCompare({
   const lineageMismatch = Boolean(candidate && candidate.baseline_run_id !== baselineID)
   const invalidPair =
     !runLedgerComplete || !baseline || !candidate || lineageMismatch || mismatches.length > 0
+  const comparisonAttested = comparison ? hasServerEvaluationAttestation(comparison) : false
+  const comparisonGates = evaluationGatesForPresentation(
+    comparison || {},
+    comparison?.gates || [],
+    'Current joint attestation',
+  )
   const comparisonVerdict = comparison
-    ? effectiveGateVerdict(comparison.verdict, comparison.gates)
+    ? comparisonAttested
+      ? effectiveGateVerdict(comparison.verdict, comparison.gates)
+      : 'unavailable'
     : null
 
   const chooseCandidate = (id: string) => {
     const next = completed.get(id)
-    onCandidateChange(id)
-    onBaselineChange(next?.baseline_run_id || '')
+    onPairChange(id, next?.baseline_run_id || '')
   }
 
   return (
@@ -162,13 +171,26 @@ export default function EvaluationCompare({
       ) : null}
       {runLedgerComplete && comparison ? (
         <>
+          {!comparisonAttested ? (
+            <div className={styles.claimNotice} role="status">
+              <strong>Current joint attestation required</strong>
+              <span>
+                The paired deltas remain readable as integrity-only diagnostics. No reported gate,
+                recommendation, or comparison verdict can support a promotion decision.
+              </span>
+            </div>
+          ) : null}
           <section className={styles.section}>
             <div className={styles.sectionHeader}>
               <div>
                 <span className={styles.eyebrow}>Comparison verdict</span>
-                <h3>{comparison.summary}</h3>
+                <h3>
+                  {comparisonAttested ? comparison.summary : 'Current joint attestation required'}
+                </h3>
                 <p>
-                  Improvement colors follow each metric direction; schema mismatches stay unmatched.
+                  {comparisonAttested
+                    ? 'Improvement colors follow each metric direction; schema mismatches stay unmatched.'
+                    : `Reported diagnostic summary: ${comparison.summary}`}
                 </p>
               </div>
               {comparisonVerdict ? (
@@ -180,7 +202,7 @@ export default function EvaluationCompare({
               caption="Paired comparison metrics"
               controls={comparison.metrics.length > 6}
               evidenceLevel={candidate?.evidence_level}
-              serverAttested={hasServerEvaluationAttestation(comparison)}
+              serverAttested={comparisonAttested}
             />
           </section>
           <section className={styles.section}>
@@ -190,7 +212,7 @@ export default function EvaluationCompare({
                 <h3>Comparison gates</h3>
               </div>
             </div>
-            <EvaluationGateList gates={comparison.gates} />
+            <EvaluationGateList gates={comparisonGates} />
           </section>
           <details className={styles.disclosure}>
             <summary>

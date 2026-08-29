@@ -11,6 +11,14 @@ const reportSource = readFileSync(
   new URL('../components/evaluation-plane/EvaluationReportView.tsx', import.meta.url),
   'utf8',
 )
+const reportDecisionSource = readFileSync(
+  new URL('../components/evaluation-plane/EvaluationReportDecision.tsx', import.meta.url),
+  'utf8',
+)
+const presentationSource = readFileSync(
+  new URL('../components/evaluation-plane/evaluationPresentation.ts', import.meta.url),
+  'utf8',
+)
 const navigationSource = readFileSync(
   new URL('../components/evaluation-plane/EvaluationNavigation.tsx', import.meta.url),
   'utf8',
@@ -66,7 +74,9 @@ describe('Evaluation Plane browser contract', () => {
     expect(reportSource).toContain('report.artifacts')
     expect(reportSource).toContain('getEvaluationArtifactURL')
     expect(reportSource).toContain('report.recommendations')
-    expect(reportSource).toContain('requiredUnavailable')
-    expect(reportSource).toContain('effectiveGateVerdict')
+    expect(reportDecisionSource).toContain('requiredUnavailable')
+    expect(reportDecisionSource).toContain('evaluationPromotionVerdict')
+    expect(presentationSource).toContain('effectiveGateVerdict')
+    expect(presentationSource).toContain('evaluationGatesForPresentation')
   })
 })

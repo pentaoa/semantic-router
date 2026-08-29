@@ -18,12 +18,11 @@ import {
 } from '../components/evaluation-plane/evaluationRunSupport'
 import { useAuth } from '../contexts/AuthContext'
 import { useReadonly } from '../contexts/ReadonlyContext'
-import {
-  useEvaluationComparison,
-  useEvaluationPlane,
-  useEvaluationReport,
-  useEvaluationRunEvents,
-} from '../hooks/useEvaluationPlane'
+import { useEvaluationComparison } from '../hooks/useEvaluationComparison'
+import { useEvaluationOverviewReport } from '../hooks/useEvaluationOverviewReport'
+import { useEvaluationPlane } from '../hooks/useEvaluationPlane'
+import { useEvaluationReport } from '../hooks/useEvaluationReport'
+import { useEvaluationRunEvents } from '../hooks/useEvaluationRunEvents'
 import type { CreateEvaluationRunRequest, EvaluationRun } from '../types/evaluationPlane'
 import { canRunEvaluation, canWriteEvaluation } from '../utils/accessControl'
 import styles from './EvaluationPage.module.css'
@@ -79,9 +78,7 @@ export function EvaluationPage() {
     [plane.runs],
   )
   const latestCompletedID = completedRuns[0]?.id || null
-  const latestReportState = useEvaluationReport(
-    activeView === 'overview' ? latestCompletedID : null,
-  )
+  const latestReportState = useEvaluationOverviewReport(completedRuns, activeView === 'overview')
   const reportState = useEvaluationReport(reportRunID || null)
   const comparisonState = useEvaluationComparison(
     baselineRunID,
@@ -290,8 +287,10 @@ export function EvaluationPage() {
                 latestReport={latestReportState.report}
                 reportLoading={latestReportState.loading}
                 reportError={latestReportState.error}
-                onRetryReport={() => void latestReportState.refresh()}
+                reportFallbackCount={latestReportState.fallbackCount}
+                onRetryReport={latestReportState.retry}
                 onNavigate={navigate}
+                onOpenReport={(id) => updateLocation({ view: 'reports', report: id }, true)}
               />
             ) : null}
             {activeView === 'new' ? (
@@ -312,6 +311,7 @@ export function EvaluationPage() {
                 events={eventState.events}
                 eventsConnected={eventState.connected}
                 eventsError={eventState.error}
+                onReconnectEvents={eventState.retry}
                 canRun={canRun}
                 canDelete={canWrite}
                 refreshing={plane.refreshing}
@@ -345,8 +345,9 @@ export function EvaluationPage() {
                 runLedgerComplete={plane.runLedgerComplete}
                 loading={comparisonState.loading}
                 error={comparisonState.error}
-                onBaselineChange={(id) => updateLocation({ baseline: id }, true)}
-                onCandidateChange={(id) => updateLocation({ candidate: id }, true)}
+                onPairChange={(candidate, baseline) =>
+                  updateLocation({ candidate, baseline }, true)
+                }
                 onCompare={() => void comparisonState.compare()}
                 onCreateRun={() => navigate('new')}
               />

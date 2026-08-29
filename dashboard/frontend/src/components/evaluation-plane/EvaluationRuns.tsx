@@ -10,6 +10,7 @@ import { EVALUATION_TRACK_IDS, TRACK_PRESENTATION } from '../../types/evaluation
 import { formatDateTime, formatDurationBetween } from '../../utils/dateTime'
 import ProductIcon from '../ProductIcon'
 import { RunStatusBadge, TrackChips } from './EvaluationPrimitives'
+import EvaluationRunTimeline from './EvaluationRunTimeline'
 import styles from './EvaluationPlane.module.css'
 
 const PAGE_SIZE = 10
@@ -20,6 +21,7 @@ interface EvaluationRunsProps {
   events: EvaluationRunEvent[]
   eventsConnected: boolean
   eventsError: string | null
+  onReconnectEvents: () => void
   canRun: boolean
   canDelete: boolean
   refreshing: boolean
@@ -39,6 +41,7 @@ export default function EvaluationRuns({
   events,
   eventsConnected,
   eventsError,
+  onReconnectEvents,
   canRun,
   canDelete,
   refreshing,
@@ -346,38 +349,13 @@ export default function EvaluationRuns({
                     lifecycle events instead.
                   </p>
                 ) : null}
-                <div className={styles.eventHeader}>
-                  <h4>Execution timeline</h4>
-                  <span className={eventsConnected ? styles.live : styles.offline}>
-                    {eventsConnected
-                      ? 'Stream connected'
-                      : selectedRun.status === 'running'
-                        ? 'Reconnecting'
-                        : 'Durable history'}
-                  </span>
-                </div>
-                {eventsError ? <p className={styles.inlineError}>{eventsError}</p> : null}
-                {events.length === 0 ? (
-                  <p className={styles.emptyCopy}>
-                    {selectedRun.status === 'running'
-                      ? 'Waiting for the first event…'
-                      : 'No durable lifecycle events were returned for this run.'}
-                  </p>
-                ) : (
-                  <ol className={styles.eventList}>
-                    {events.map((event, index) => (
-                      <li key={event.id || `${event.timestamp}-${index}`}>
-                        <time>{formatDateTime(event.timestamp)}</time>
-                        <div>
-                          <strong>
-                            {event.track_id ? TRACK_PRESENTATION[event.track_id].label : event.type}
-                          </strong>
-                          <span>{event.message}</span>
-                        </div>
-                      </li>
-                    ))}
-                  </ol>
-                )}
+                <EvaluationRunTimeline
+                  run={selectedRun}
+                  events={events}
+                  connected={eventsConnected}
+                  error={eventsError}
+                  onReconnect={onReconnectEvents}
+                />
               </>
             ) : (
               <div className={styles.inspectorEmpty}>
