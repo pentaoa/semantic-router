@@ -47,7 +47,7 @@ test.describe('Evaluation Plane', () => {
     await expect(heroMetadata.getByText('E0', { exact: true })).toBeVisible()
     await expect(
       page.getByText(
-        'This is diagnostic evidence. Measured observations remain useful, but the promotion summary is withheld until native benchmark and execution receipts qualify the claim.',
+        'This server-attested E0 report exposes a bounded set of independently reduced diagnostics. Promotion remains withheld until native benchmark and execution receipts qualify the claim.',
         { exact: true },
       ),
     ).toBeVisible()
@@ -252,6 +252,15 @@ test.describe('Evaluation Plane', () => {
     )
   })
 
+  test('uses the durable ledger identity when rendering a legacy report', async ({ page }) => {
+    await mockEvaluationPlane(page, defaultEvaluationRuns, { legacyReportRunIdentity: true })
+    await page.goto('/evaluation?view=reports&report=candidate-run')
+
+    await expect(page.getByRole('heading', { name: 'Candidate recipe' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'candidate-run' })).toHaveCount(0)
+    await expect(page.getByText('Candidate recipe description')).toBeVisible()
+  })
+
   test('withholds E0 promotion claims while retaining diagnostics and never fakes G2+ pass', async ({
     page,
   }) => {
@@ -259,7 +268,9 @@ test.describe('Evaluation Plane', () => {
     await page.goto('/evaluation?view=reports&report=candidate-run')
 
     await expect(
-      page.getByText('Promotion summary withheld — diagnostic E0', { exact: true }),
+      page.getByText('Promotion summary withheld — server-attested diagnostic E0', {
+        exact: true,
+      }),
     ).toBeVisible()
     await expect(page.getByRole('heading', { name: 'Promotion needs attention' })).toBeVisible()
 
@@ -307,7 +318,9 @@ test.describe('Evaluation Plane', () => {
     await page.goto('/evaluation?view=reports&report=candidate-run')
 
     await expect(
-      page.getByText('Promotion summary withheld — diagnostic E0', { exact: true }),
+      page.getByText('Promotion summary withheld — server-attested diagnostic E0', {
+        exact: true,
+      }),
     ).toBeVisible()
     await expect(page.getByRole('table', { name: 'Evaluation metrics' })).toBeVisible()
     await expect(page.getByRole('heading', { name: 'Track observations' })).toBeVisible()
@@ -476,9 +489,15 @@ test.describe('Evaluation Plane', () => {
 
     await expect(page.getByRole('heading', { name: 'Evaluation', exact: true })).toBeVisible()
     await expect(page.getByRole('tablist', { name: 'Evaluation plane views' })).toBeVisible()
+    await expect(page.getByText('More →')).toBeVisible()
     await page.getByRole('tab', { name: 'Runs', exact: true }).click()
     await expect(page.getByRole('heading', { name: 'Evaluation runs' })).toBeVisible()
     await expect(page.getByRole('button', { name: 'Inspect Candidate recipe' })).toBeVisible()
+    await page.getByRole('tab', { name: 'Compare', exact: true }).click()
+    await expect(
+      page.getByRole('heading', { name: 'Compare a candidate with its pinned baseline' }),
+    ).toBeVisible()
+    await expect(page.getByText('More →')).toHaveCount(0)
     await expect
       .poll(() =>
         page.evaluate(

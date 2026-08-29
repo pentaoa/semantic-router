@@ -15,10 +15,16 @@ func comparePairedReports(baseline, candidate Report) (Comparison, error) {
 		return Comparison{}, err
 	}
 	metrics, evidence := pairedMetricEvidence(baseline.Metrics, candidate.Metrics)
-	verdict, reason := comparisonVerdict(candidate, evidence, baseline.Summary, candidate.Summary)
+	verdict, reason := comparisonVerdict(baseline, candidate, evidence)
 	recommendations := comparisonRecommendations(verdict, evidence)
+	attestationRevision := ""
+	if baseline.AttestationRevision == ServerAttestationRevision &&
+		candidate.AttestationRevision == ServerAttestationRevision {
+		attestationRevision = ServerAttestationRevision
+	}
 	return Comparison{
-		SchemaVersion: SchemaVersion, BaselineRunID: baseline.Run.ID, CandidateRunID: candidate.Run.ID,
+		SchemaVersion: SchemaVersion, AttestationRevision: attestationRevision,
+		BaselineRunID: baseline.Run.ID, CandidateRunID: candidate.Run.ID,
 		Verdict: verdict,
 		Summary: fmt.Sprintf(
 			"Compared %d metrics (%d matched aggregate deltas): %d improved, %d regressed. %s",
@@ -165,7 +171,23 @@ func pairedMetricEvidence(baseline, candidate []Metric) ([]Metric, comparisonEvi
 	return metrics, evidence
 }
 
-func comparisonVerdict(candidate Report, evidence comparisonEvidence, baseline, current ReportSummary) (GateVerdict, string) {
+func comparisonVerdict(baseline, candidate Report, evidence comparisonEvidence) (GateVerdict, string) {
+	// Reports sealed before the current server attestation contract remain
+	// readable for diagnostics, but none of their claimed evidence levels may
+	// drive a release decision. Keep the paired deltas available for inspection
+	// while failing closed on the verdict.
+	if baseline.AttestationRevision != ServerAttestationRevision ||
+		candidate.AttestationRevision != ServerAttestationRevision {
+		return "unavailable", "A current server attestation is required on both reports before comparison evidence can support a release decision."
+	}
+	// E0 values are useful descriptive diagnostics, but neither side has the
+	// typed observation and comparison qualification needed to make a release
+	// decision. Check this before gates or aggregate regression heuristics so a
+	// worker-derived point delta can never turn an E0 comparison into pass/fail.
+	if baseline.Run.EvidenceLevel == "E0" || candidate.Run.EvidenceLevel == "E0" {
+		return "unavailable", "E0 aggregate deltas are descriptive only; qualified paired evidence is unavailable."
+	}
+	baselineSummary, current := baseline.Summary, candidate.Summary
 	requiredUnavailable := false
 	for _, gate := range candidate.Gates {
 		if gate.Disposition != "required" {
@@ -184,10 +206,10 @@ func comparisonVerdict(candidate Report, evidence comparisonEvidence, baseline, 
 	if evidence.primaryRegression {
 		return "fail", "A primary quality or joint-system metric regressed."
 	}
-	if summaryQualityRegressed(baseline, current) {
+	if summaryQualityRegressed(baselineSummary, current) {
 		return "fail", "A primary quality or joint-system metric regressed."
 	}
-	if evidence.latencyOverBudget || summaryLatencyOverBudget(baseline, current) {
+	if evidence.latencyOverBudget || summaryLatencyOverBudget(baselineSummary, current) {
 		return "fail", "Tail latency exceeded the 5% aggregate regression budget."
 	}
 	if current.Verdict == "unavailable" || requiredUnavailable {

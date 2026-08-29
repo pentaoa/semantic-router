@@ -1,7 +1,7 @@
 import type { EvaluationComparison, EvaluationRun } from '../../types/evaluationPlane'
 import EvaluationGateList from './EvaluationGateList'
 import EvaluationMetricTable from './EvaluationMetricTable'
-import { effectiveGateVerdict } from './evaluationPresentation'
+import { effectiveGateVerdict, hasServerEvaluationAttestation } from './evaluationPresentation'
 import { GateVerdictBadge } from './EvaluationPrimitives'
 import { cohortMismatches, eligibleComparisonCandidates } from './evaluationRunSupport'
 import styles from './EvaluationReport.module.css'
@@ -179,6 +179,8 @@ export default function EvaluationCompare({
               metrics={comparison.metrics}
               caption="Paired comparison metrics"
               controls={comparison.metrics.length > 6}
+              evidenceLevel={candidate?.evidence_level}
+              serverAttested={hasServerEvaluationAttestation(comparison)}
             />
           </section>
           <section className={styles.section}>

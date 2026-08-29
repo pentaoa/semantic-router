@@ -203,6 +203,7 @@ func TestRequiredPermission(t *testing.T) {
 		{method: http.MethodPost, path: "/api/router/api/v1/context-compression/recovery/invalidate", expected: PermConfigWrite},
 		{method: http.MethodGet, path: "/api/evaluation/v1/catalog", expected: PermEvalRead},
 		{method: http.MethodPost, path: "/api/evaluation/v1/runs", expected: PermEvalWrite},
+		{method: http.MethodGet, path: "/api/evaluation/v1/run-ledger", expected: PermEvalRead},
 		{method: http.MethodDelete, path: "/api/evaluation/v1/runs/task-1", expected: PermEvalWrite},
 		{method: http.MethodPost, path: "/api/evaluation/v1/runs/task-1/start", expected: PermEvalRun},
 		{method: http.MethodPost, path: "/api/evaluation/v1/runs/task-1/start/", expected: PermEvalRun},

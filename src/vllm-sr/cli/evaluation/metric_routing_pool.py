@@ -7,7 +7,12 @@ from dataclasses import dataclass
 from math import log2
 
 from cli.evaluation.evidence import ExecutionRecord
-from cli.evaluation.metric_core import _mean, _metric, percentile
+from cli.evaluation.metric_core import (
+    _canonical_ordered_float_sum,
+    _mean,
+    _metric,
+    percentile,
+)
 from cli.evaluation.reporting import EvaluationMetric
 
 
@@ -338,7 +343,8 @@ def _joint(
             "Normalized pool-oracle regret",
             "joint",
             (
-                sum(normalized_regrets) / len(normalized_regrets)
+                _canonical_ordered_float_sum(normalized_regrets)
+                / len(normalized_regrets)
                 if normalized_regrets
                 else None
             ),

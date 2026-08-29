@@ -94,6 +94,18 @@ func sealTestReport(t *testing.T, service *Service, runID string) {
 	if updateErr := service.store.UpdateRun(run); updateErr != nil {
 		t.Fatalf("complete test run: %v", updateErr)
 	}
+	reportBytes, reportErr := service.store.ReadReport(runID)
+	if reportErr != nil {
+		t.Fatalf("read report before test seal: %v", reportErr)
+	}
+	reportValue, decodeErr := decodeReportStrict(runID, reportBytes)
+	if decodeErr != nil {
+		t.Fatalf("decode report before test seal: %v", decodeErr)
+	}
+	canonicalizeReportRun(run, &reportValue, now)
+	if writeErr := service.store.WriteReport(runID, reportValue); writeErr != nil {
+		t.Fatalf("canonicalize report before test seal: %v", writeErr)
+	}
 	privateDigest := writeTestPrivateReceipt(t, service, runID)
 	checksums, err := service.validatePrivateReceipt(runID)
 	if err != nil {
@@ -115,7 +127,8 @@ func sealTestReport(t *testing.T, service *Service, runID string) {
 	manifestDigest, _ := digestAndSize(manifest)
 	_ = os.Remove(filepath.Join(service.store.runsRoot, runID, reportAnchorFileName))
 	if err := service.store.writeReportAnchor(runID, reportAnchor{
-		SchemaVersion: SchemaVersion, RunID: runID, ReportDigest: reportDigest, ReportSize: reportSize,
+		SchemaVersion: SchemaVersion, AttestationRevision: reportValue.AttestationRevision,
+		RunID: runID, ReportDigest: reportDigest, ReportSize: reportSize,
 		ManifestDigest: manifestDigest, PrivateReceiptDigest: privateDigest, EvidenceFiles: evidenceFiles, CreatedAt: now,
 	}); err != nil {
 		t.Fatalf("seal test report: %v", err)
@@ -131,8 +144,13 @@ func writeAnchoredTestReport(t *testing.T, service *Service, runID string, repor
 }
 
 func artifactForBytes(id, name, mediaType string, content []byte) Artifact {
+	kind := strings.TrimPrefix(filepath.Ext(name), ".")
+	if contract, ok := publicArtifactContracts[name]; ok {
+		kind = contract.Kind
+		mediaType = contract.MediaType
+	}
 	return Artifact{
-		ID: id, Name: name, Kind: filepath.Ext(name), URI: name,
+		ID: id, Name: name, Kind: kind, URI: name,
 		Digest: digestBytes(content), MediaType: mediaType, SizeBytes: int64(len(content)),
 	}
 }
@@ -310,8 +328,10 @@ func TestArtifactSensitivityAllowlistExcludesCasesGradingAndConnectivity(t *test
 		t.Fatalf("CreateRun: %v", err)
 	}
 	runDir := filepath.Join(root, "runs", run.ID)
+	traceBytes := []byte(`{"schema_version":"evaluation.v1","case_id":"case-1","plugins":[],"recommended_models":[],"traces":[],"signals":[]}` + "\n")
+	caseBytes := []byte(`{"schema_version":"evaluation.v1","id":"case-1","messages":[{"role":"user","content":"test"}],"modality":"text","tags":[]}` + "\n")
 	artifacts := []Artifact{
-		artifactForBytes("traces", "routing-traces.jsonl", "application/x-ndjson", []byte("{}\n")),
+		artifactForBytes("traces", "routing-traces.jsonl", "application/x-ndjson", traceBytes),
 		artifactForBytes("capacity", "capacity-profile.json", "application/json", []byte("{}\n")),
 		artifactForBytes("summary", "failure-summary.json", "application/json", []byte("{}\n")),
 		artifactForBytes("records", "records.jsonl", "application/x-ndjson", []byte("{}\n")),
@@ -321,7 +341,14 @@ func TestArtifactSensitivityAllowlistExcludesCasesGradingAndConnectivity(t *test
 		artifactForBytes("private-checksums", "private-checksums.sha256", "text/plain", []byte("{}\n")),
 	}
 	for _, artifact := range artifacts {
-		if err := os.WriteFile(filepath.Join(runDir, artifact.URI), []byte("{}\n"), 0o600); err != nil {
+		data := []byte("{}\n")
+		switch artifact.URI {
+		case "routing-traces.jsonl":
+			data = traceBytes
+		case "cases.jsonl":
+			data = caseBytes
+		}
+		if err := os.WriteFile(filepath.Join(runDir, artifact.URI), data, 0o600); err != nil {
 			t.Fatalf("write %s: %v", artifact.URI, err)
 		}
 	}

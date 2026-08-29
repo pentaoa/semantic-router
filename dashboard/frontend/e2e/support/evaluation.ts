@@ -484,6 +484,7 @@ export function evaluationReport(run = defaultEvaluationRuns[0]): EvaluationRepo
   const digest = 'sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
   return {
     schema_version: 'evaluation.v1',
+    attestation_revision: 'evaluation-server-attestation.v2',
     run,
     summary: {
       verdict: gates.some(
@@ -598,6 +599,7 @@ export function evaluationReport(run = defaultEvaluationRuns[0]): EvaluationRepo
 
 export const evaluationComparison: EvaluationComparison = {
   schema_version: 'evaluation.v1',
+  attestation_revision: 'evaluation-server-attestation.v2',
   baseline_run_id: 'baseline-run',
   candidate_run_id: 'candidate-run',
   verdict: 'unavailable',
@@ -633,6 +635,7 @@ export const evaluationComparison: EvaluationComparison = {
 interface MockEvaluationPlaneOptions {
   mutationDelayMs?: number
   ledgerWarnings?: EvaluationRunLedgerWarning[]
+  legacyReportRunIdentity?: boolean
   diagnosticArtifactBodies?: {
     failureSummary?: string
     capacityProfile?: string
@@ -723,6 +726,18 @@ export async function mockEvaluationPlane(
   await page.route('**/api/evaluation/v1/catalog', async (route) => {
     await fulfillJSON(route, 200, evaluationCatalog)
   })
+  await page.route('**/api/evaluation/v1/run-ledger', async (route) => {
+    if (route.request().method() !== 'GET') {
+      await fulfillError(route, 405, 'method not allowed')
+      return
+    }
+    await fulfillJSON(route, 200, {
+      schema_version: 'evaluation.v1',
+      runs,
+      ledger_complete: ledgerWarnings.length === 0,
+      warnings: ledgerWarnings,
+    })
+  })
   await page.route('**/api/evaluation/v1/compare?*', async (route) => {
     if (ledgerWarnings.length) {
       await fulfillError(
@@ -810,6 +825,14 @@ export async function mockEvaluationPlane(
       return
     }
     const report = evaluationReport(run)
+    if (options.legacyReportRunIdentity) {
+      delete report.attestation_revision
+      report.run = {
+        ...report.run,
+        name: report.run.id,
+        description: `Evaluation suites: ${report.run.suite_ids.join(', ')}`,
+      }
+    }
     if (typeof options.diagnosticArtifactBodies?.capacityProfile === 'string') {
       report.artifacts = [
         ...report.artifacts,
@@ -1072,12 +1095,7 @@ export async function mockEvaluationPlane(
       await fulfillJSON(route, 201, created)
       return
     }
-    await fulfillJSON(route, 200, {
-      schema_version: 'evaluation.v1',
-      runs,
-      ledger_complete: ledgerWarnings.length === 0,
-      warnings: ledgerWarnings,
-    })
+    await fulfillJSON(route, 200, runs)
   })
 
   return {

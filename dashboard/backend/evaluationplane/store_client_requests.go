@@ -144,6 +144,75 @@ func (s *Store) ClientRequestIndex(clientRequestID string) (clientRequestIndexEn
 	return readClientRequestIndex(path, clientRequestID)
 }
 
+// ReconcileClientRequestIndex repairs an anomalously missing per-key index from
+// the durable run bundles. The migration marker proves that the initial scan
+// completed, but it cannot prove that an individual index file was not later
+// lost. A missing key therefore needs this targeted, fail-closed reconciliation
+// before CreateRun may reserve a fresh run identity.
+func (s *Store) ReconcileClientRequestIndex(
+	clientRequestID string,
+) (clientRequestIndexEntry, bool, error) {
+	if _, err := s.clientRequestIndexPath(clientRequestID); err != nil {
+		return clientRequestIndexEntry{}, false, err
+	}
+	entries, err := os.ReadDir(s.runsRoot)
+	if err != nil {
+		return clientRequestIndexEntry{}, false, fmt.Errorf("read evaluation runs for client request reconciliation: %w", err)
+	}
+
+	var desired *clientRequestIndexEntry
+	for _, directory := range entries {
+		if !directory.IsDir() || !safeIDPattern.MatchString(directory.Name()) {
+			continue
+		}
+		run, readErr := s.GetRun(directory.Name())
+		if readErr != nil {
+			return clientRequestIndexEntry{}, false, fmt.Errorf(
+				"%w: client request index reconciliation cannot classify run %s",
+				ErrConflict,
+				directory.Name(),
+			)
+		}
+		if run.ClientRequestID != clientRequestID {
+			continue
+		}
+		requestDigest, digestErr := createRequestDigest(createRequestFromRun(run))
+		if digestErr != nil {
+			return clientRequestIndexEntry{}, false, digestErr
+		}
+		candidate := clientRequestIndexEntry{
+			SchemaVersion: SchemaVersion, ClientRequestID: run.ClientRequestID,
+			RunID: run.ID, RequestDigest: requestDigest,
+		}
+		if desired != nil && *desired != candidate {
+			return clientRequestIndexEntry{}, false, fmt.Errorf(
+				"%w: ambiguous durable client_request_id %s",
+				ErrConflict,
+				clientRequestID,
+			)
+		}
+		desired = &candidate
+	}
+	if desired == nil {
+		return clientRequestIndexEntry{}, false, nil
+	}
+
+	indexed, created, reserveErr := s.ReserveClientRequestIndex(*desired)
+	if reserveErr != nil {
+		return clientRequestIndexEntry{}, false, fmt.Errorf(
+			"%w: client request index reconciliation could not reserve durable key",
+			ErrConflict,
+		)
+	}
+	if !created && indexed != *desired {
+		return clientRequestIndexEntry{}, false, fmt.Errorf(
+			"%w: client request index reconciliation found an ambiguous reservation",
+			ErrConflict,
+		)
+	}
+	return indexed, true, nil
+}
+
 func (s *Store) ReserveClientRequestIndex(
 	entry clientRequestIndexEntry,
 ) (clientRequestIndexEntry, bool, error) {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"path/filepath"
+	"sort"
 )
 
 const capacityProfileArtifactName = "capacity-profile.json"
@@ -32,9 +33,17 @@ type capacityProfileLevel struct {
 	RuntimeCost  *float64        `json:"runtime_cost_usd"`
 }
 
-func validateCapacityProfileArtifact(runDir string, manifest RunManifest, report Report) error {
+func validateCapacityProfileArtifact(
+	runDir string,
+	manifest RunManifest,
+	report Report,
+	records recordAttestation,
+) error {
 	artifact, present := findArtifactByName(report, capacityProfileArtifactName)
 	if !present {
+		if manifest.Mode == ModeLive && containsTrack(manifest.TrackIDs, "capacity") {
+			return fmt.Errorf("%w: live capacity evidence requires a capacity profile", ErrInvalid)
+		}
 		return nil
 	}
 	if manifest.Mode != ModeLive || !containsTrack(manifest.TrackIDs, "capacity") {
@@ -50,7 +59,171 @@ func validateCapacityProfileArtifact(runDir string, manifest RunManifest, report
 	if err := validateCapacityProfile(profile); err != nil {
 		return fmt.Errorf("%w: invalid capacity profile: %w", ErrInvalid, err)
 	}
+	if err := validateCapacityProfileAgainstRecords(runDir, profile, records); err != nil {
+		return fmt.Errorf("%w: capacity profile does not match validated records: %w", ErrInvalid, err)
+	}
 	return nil
+}
+
+type capacityRecordLevel struct {
+	Concurrency  int64
+	Requests     int64
+	Successes    int64
+	Elapsed      float64
+	Throughput   float64
+	Latencies    []float64
+	InputTokens  int64
+	OutputTokens int64
+	RuntimeCost  float64
+}
+
+func validateCapacityProfileAgainstRecords(
+	runDir string,
+	profile capacityProfileEvidence,
+	records recordAttestation,
+) error {
+	if !records.validated {
+		return fmt.Errorf("records attestation is unavailable")
+	}
+	levels := make(map[int64]*capacityRecordLevel)
+	capacityRows := 0
+	err := scanEvidenceJSONLines(
+		filepath.Join(runDir, "records.jsonl"),
+		maxWorkerArtifactBytes,
+		maxRecordLineBytes,
+		maxRecordsPerRun,
+		func(line []byte, lineNumber int) error {
+			var record executionRecordEvidence
+			if err := decodeStrictJSONLine(line, &record); err != nil {
+				return fmt.Errorf("records.jsonl line %d is invalid: %w", lineNumber, err)
+			}
+			if record.TrackID != "capacity" {
+				return nil
+			}
+			capacityRows++
+			if record.Concurrency == nil {
+				return nil
+			}
+			level := levels[*record.Concurrency]
+			if level == nil {
+				level = &capacityRecordLevel{Concurrency: *record.Concurrency}
+				levels[*record.Concurrency] = level
+			}
+			level.Requests++
+			if record.Success != nil && *record.Success {
+				level.Successes++
+			}
+			if record.LoadElapsedSeconds != nil && *record.LoadElapsedSeconds > level.Elapsed {
+				level.Elapsed = *record.LoadElapsedSeconds
+			}
+			if record.ThroughputRPS != nil && *record.ThroughputRPS > level.Throughput {
+				level.Throughput = *record.ThroughputRPS
+			}
+			if record.LatencyMS != nil {
+				level.Latencies = append(level.Latencies, *record.LatencyMS)
+			}
+			if err := addCapacityCount(&level.InputTokens, record.InputTokens); err != nil {
+				return fmt.Errorf("records.jsonl line %d input_tokens: %w", lineNumber, err)
+			}
+			if err := addCapacityCount(&level.OutputTokens, record.OutputTokens); err != nil {
+				return fmt.Errorf("records.jsonl line %d output_tokens: %w", lineNumber, err)
+			}
+			if record.RuntimeCost != nil {
+				level.RuntimeCost += *record.RuntimeCost
+				if !finiteFloat(level.RuntimeCost) {
+					return fmt.Errorf("records.jsonl line %d runtime_cost aggregate is not finite", lineNumber)
+				}
+			}
+			return nil
+		},
+	)
+	if err != nil {
+		return err
+	}
+	expectedCapacityRows := records.ByTrack["capacity"].total()
+	if capacityRows != expectedCapacityRows {
+		return fmt.Errorf("capacity record count changed after records attestation")
+	}
+	concurrencyLevels := make([]int64, 0, len(levels))
+	for concurrency := range levels {
+		concurrencyLevels = append(concurrencyLevels, concurrency)
+	}
+	sort.Slice(concurrencyLevels, func(left, right int) bool {
+		return concurrencyLevels[left] < concurrencyLevels[right]
+	})
+	if len(profile.Levels) != len(concurrencyLevels) {
+		return fmt.Errorf("level set differs from capacity records")
+	}
+	for index, concurrency := range concurrencyLevels {
+		if err := validateCapacityLevelAgainstRecords(profile.Levels[index], *levels[concurrency]); err != nil {
+			return fmt.Errorf("level %d: %w", index+1, err)
+		}
+	}
+	return nil
+}
+
+func addCapacityCount(total *int64, value *int64) error {
+	if value == nil {
+		return nil
+	}
+	if *value < 0 || *total > math.MaxInt64-*value {
+		return fmt.Errorf("aggregate overflows its non-negative integer budget")
+	}
+	*total += *value
+	return nil
+}
+
+func validateCapacityLevelAgainstRecords(actual capacityProfileLevel, expected capacityRecordLevel) error {
+	if actual.Concurrency == nil || actual.Requests == nil || actual.Successes == nil || actual.Errors == nil ||
+		actual.Elapsed == nil || actual.Throughput == nil || actual.InputTokens == nil ||
+		actual.OutputTokens == nil || actual.RuntimeCost == nil {
+		return fmt.Errorf("required profile values are unavailable")
+	}
+	if *actual.Concurrency != expected.Concurrency || *actual.Requests != expected.Requests ||
+		*actual.Successes != expected.Successes || *actual.Errors != expected.Requests-expected.Successes ||
+		*actual.Elapsed != expected.Elapsed || *actual.Throughput != expected.Throughput ||
+		*actual.InputTokens != expected.InputTokens || *actual.OutputTokens != expected.OutputTokens ||
+		*actual.RuntimeCost != expected.RuntimeCost {
+		return fmt.Errorf("counts, load, tokens, or cost differ from capacity records")
+	}
+	for _, quantile := range []struct {
+		name string
+		raw  json.RawMessage
+		q    float64
+	}{
+		{name: "latency_p50_ms", raw: actual.LatencyP50, q: 0.50},
+		{name: "latency_p95_ms", raw: actual.LatencyP95, q: 0.95},
+		{name: "latency_p99_ms", raw: actual.LatencyP99, q: 0.99},
+	} {
+		value, present, err := decodeCapacityLatency(quantile.name, quantile.raw)
+		if err != nil {
+			return err
+		}
+		expectedValue, expectedPresent := capacityPercentile(expected.Latencies, quantile.q)
+		if present != expectedPresent || (present && value != expectedValue) {
+			return fmt.Errorf("%s differs from capacity records", quantile.name)
+		}
+	}
+	return nil
+}
+
+func capacityPercentile(values []float64, quantile float64) (float64, bool) {
+	if len(values) == 0 {
+		return 0, false
+	}
+	ordered := append([]float64(nil), values...)
+	sort.Float64s(ordered)
+	if len(ordered) == 1 {
+		return ordered[0], true
+	}
+	position := float64(len(ordered)-1) * quantile
+	lower := int(position)
+	upper := lower + 1
+	if upper >= len(ordered) {
+		upper = len(ordered) - 1
+	}
+	fraction := position - float64(lower)
+	return ordered[lower] + (ordered[upper]-ordered[lower])*fraction, true
 }
 
 func validateCapacityProfile(profile capacityProfileEvidence) error {
@@ -84,11 +257,7 @@ func validateCapacitySLO(raw json.RawMessage) error {
 	if bytes.Equal(trimmed, []byte("null")) {
 		return nil
 	}
-	var object map[string]json.RawMessage
-	if err := json.Unmarshal(trimmed, &object); err != nil || object == nil {
-		return fmt.Errorf("slo must be null or an object")
-	}
-	return nil
+	return fmt.Errorf("slo must be null in the evaluation.v1 capacity contract")
 }
 
 func validateCapacityLevel(level capacityProfileLevel) error {

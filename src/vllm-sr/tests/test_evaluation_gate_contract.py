@@ -98,8 +98,15 @@ def test_missing_qualification_evidence_never_becomes_a_pass() -> None:
         "G9": "unavailable",
     }
 
+    for gate_id in ("G2", "G3", "G7"):
+        gate = next(gate for gate in gates if gate.id == gate_id)
+        assert gate.observed is None
+        assert gate.threshold is None
 
-def test_observed_hard_policy_violation_fails_even_without_static_proof() -> None:
+
+def test_observed_hard_policy_violation_remains_diagnostic_without_static_proof() -> (
+    None
+):
     metrics = _qualified_metrics()
     metrics[0] = metrics[0].model_copy(update={"value": 0.05})
     gates = compute_gates(
@@ -109,8 +116,26 @@ def test_observed_hard_policy_violation_fails_even_without_static_proof() -> Non
         change_profile="recipe",
     )
     hard_policy = next(gate for gate in gates if gate.id == "G2")
-    assert hard_policy.verdict == "fail"
-    assert hard_policy.observed == 0.05
+    assert hard_policy.verdict == "unavailable"
+    assert hard_policy.observed is None
+    assert hard_policy.threshold is None
+    assert metrics[0].value == 0.05
+
+
+def test_low_capacity_success_remains_diagnostic_without_slo_qualification() -> None:
+    metrics = _qualified_metrics()
+    metrics[-1] = metrics[-1].model_copy(update={"value": 0.5})
+    gates = compute_gates(
+        metrics,
+        has_records=True,
+        cost_accounted=True,
+        change_profile="runtime_capacity",
+    )
+    capacity = next(gate for gate in gates if gate.id == "G7")
+    assert capacity.verdict == "unavailable"
+    assert capacity.observed is None
+    assert capacity.threshold is None
+    assert metrics[-1].value == 0.5
 
 
 def test_full_qualified_online_context_can_pass_all_required_gates() -> None:

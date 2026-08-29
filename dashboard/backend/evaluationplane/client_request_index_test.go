@@ -51,6 +51,135 @@ func TestCreateRunClientRequestIndexSurvivesRestartAndRejectsChangedPayload(t *t
 	}
 }
 
+func TestCreateRunReconcilesDeletedClientRequestIndexAfterCompletedMigration(t *testing.T) {
+	service, root := newTestService(t, &controlledProcess{}, 1)
+	request := validCreateRequest()
+	request.ClientRequestID = indexedClientRequestID
+	created, err := service.CreateRun(context.Background(), request)
+	if err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	indexPath, pathErr := service.store.clientRequestIndexPath(indexedClientRequestID)
+	if pathErr != nil {
+		t.Fatalf("clientRequestIndexPath: %v", pathErr)
+	}
+	if _, markerErr := os.Stat(service.store.clientRequestMigrationMarkerPath()); markerErr != nil {
+		t.Fatalf("completed migration marker is unavailable: %v", markerErr)
+	}
+	if closeErr := service.Close(); closeErr != nil {
+		t.Fatalf("Close original service: %v", closeErr)
+	}
+	if removeErr := os.Remove(indexPath); removeErr != nil {
+		t.Fatalf("remove per-key index: %v", removeErr)
+	}
+
+	restarted := reopenTestService(t, root)
+	replayed, replayErr := restarted.CreateRun(context.Background(), request)
+	if replayErr != nil || replayed.ID != created.ID {
+		t.Fatalf("reconciled retry returned run=%+v err=%v, want %s", replayed, replayErr, created.ID)
+	}
+	changed := request
+	changed.Description = "conflicting retry after index reconciliation"
+	if _, conflictErr := restarted.CreateRun(context.Background(), changed); !errors.Is(conflictErr, ErrConflict) {
+		t.Fatalf("conflicting reconciled retry error=%v, want ErrConflict", conflictErr)
+	}
+	entries, readErr := os.ReadDir(filepath.Join(root, "runs"))
+	if readErr != nil || len(entries) != 1 || entries[0].Name() != created.ID {
+		t.Fatalf("reconciled retries changed run bundles=%v err=%v", entries, readErr)
+	}
+}
+
+func TestCreateRunReconcilesDeletedClientRequestIndexAcrossStores(t *testing.T) {
+	service, root := newTestService(t, &controlledProcess{}, 1)
+	request := validCreateRequest()
+	request.ClientRequestID = indexedClientRequestID
+	created, err := service.CreateRun(context.Background(), request)
+	if err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	indexPath, pathErr := service.store.clientRequestIndexPath(indexedClientRequestID)
+	if pathErr != nil {
+		t.Fatalf("clientRequestIndexPath: %v", pathErr)
+	}
+	if closeErr := service.Close(); closeErr != nil {
+		t.Fatalf("Close original service: %v", closeErr)
+	}
+	if removeErr := os.Remove(indexPath); removeErr != nil {
+		t.Fatalf("remove per-key index: %v", removeErr)
+	}
+
+	first, firstErr := newServiceForExistingRoot(root)
+	if firstErr != nil {
+		t.Fatalf("open first service: %v", firstErr)
+	}
+	t.Cleanup(func() { _ = first.Close() })
+	second, secondErr := newServiceForExistingRoot(root)
+	if secondErr != nil {
+		t.Fatalf("open second service: %v", secondErr)
+	}
+	t.Cleanup(func() { _ = second.Close() })
+
+	type result struct {
+		run Run
+		err error
+	}
+	results := make(chan result, 2)
+	start := make(chan struct{})
+	var workers sync.WaitGroup
+	for _, candidate := range []*Service{first, second} {
+		workers.Add(1)
+		go func(candidate *Service) {
+			defer workers.Done()
+			<-start
+			run, createErr := candidate.CreateRun(context.Background(), request)
+			results <- result{run: run, err: createErr}
+		}(candidate)
+	}
+	close(start)
+	workers.Wait()
+	close(results)
+	for retry := range results {
+		if retry.err != nil || retry.run.ID != created.ID {
+			t.Fatalf("concurrent reconciled retry returned run=%+v err=%v, want %s", retry.run, retry.err, created.ID)
+		}
+	}
+	entries, readErr := os.ReadDir(filepath.Join(root, "runs"))
+	if readErr != nil || len(entries) != 1 || entries[0].Name() != created.ID {
+		t.Fatalf("concurrent reconciliation changed run bundles=%v err=%v", entries, readErr)
+	}
+}
+
+func TestCreateRunDeletedIndexFailsClosedForUnclassifiableBundle(t *testing.T) {
+	service, root := newTestService(t, &controlledProcess{}, 1)
+	request := validCreateRequest()
+	request.ClientRequestID = indexedClientRequestID
+	created, err := service.CreateRun(context.Background(), request)
+	if err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	indexPath, pathErr := service.store.clientRequestIndexPath(indexedClientRequestID)
+	if pathErr != nil {
+		t.Fatalf("clientRequestIndexPath: %v", pathErr)
+	}
+	if removeErr := os.Remove(indexPath); removeErr != nil {
+		t.Fatalf("remove per-key index: %v", removeErr)
+	}
+	if writeErr := os.WriteFile(
+		filepath.Join(root, "runs", created.ID, runFileName),
+		[]byte("{not-json\n"),
+		0o600,
+	); writeErr != nil {
+		t.Fatalf("corrupt run status: %v", writeErr)
+	}
+	if _, replayErr := service.CreateRun(context.Background(), request); !errors.Is(replayErr, ErrConflict) {
+		t.Fatalf("retry with deleted index and corrupt bundle error=%v, want ErrConflict", replayErr)
+	}
+	entries, readErr := os.ReadDir(filepath.Join(root, "runs"))
+	if readErr != nil || len(entries) != 1 || entries[0].Name() != created.ID {
+		t.Fatalf("failed reconciliation changed run bundles=%v err=%v", entries, readErr)
+	}
+}
+
 func TestHydrateLegacyClientRequestIndexSurvivesUpgrade(t *testing.T) {
 	service, root := newTestService(t, &controlledProcess{}, 1)
 	legacyRequest := validCreateRequest()

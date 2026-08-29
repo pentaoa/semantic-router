@@ -104,8 +104,40 @@ func (s *Service) reserveIndexedCreate(
 		return nil, nil
 	}
 	existing, err := s.resolveIndexedCreate(request, requestDigest, indexed)
+	if indexed.RunID != run.ID {
+		if cleanupErr := s.store.DeleteRun(run.ID); cleanupErr != nil {
+			return nil, fmt.Errorf(
+				"%w: client_request_id loser bundle could not be removed: %w",
+				ErrConflict,
+				cleanupErr,
+			)
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
 	return &existing, nil
+}
+
+// persistPendingRun publishes recoverable run data before reserving its
+// immutable client-request index. A bundle failure can therefore never leave a
+// dangling reservation, while a crash or reservation failure after publication
+// is repaired by the targeted bundle reconciliation on the next keyed retry.
+func (s *Service) persistPendingRun(
+	request CreateRunRequest,
+	run Run,
+	manifest RunManifest,
+	requestDigest string,
+) (Run, error) {
+	if _, err := s.store.CreateBundle(run, manifest); err != nil {
+		return Run{}, err
+	}
+	indexedRun, err := s.reserveIndexedCreate(request, run, requestDigest)
+	if err != nil {
+		return Run{}, err
+	}
+	if indexedRun != nil {
+		return *indexedRun, nil
+	}
+	return run, nil
 }

@@ -54,16 +54,22 @@ func (s *Service) validateAndAnchorReport(runID string) error {
 	if err != nil {
 		return err
 	}
+	if secretErr := s.rejectConfiguredSecretBytes(data); secretErr != nil {
+		return secretErr
+	}
 	report, err := decodeReportStrict(runID, data)
 	if err != nil {
 		return err
 	}
+	if report.Run.Status != StatusCompleted || report.Run.Error != "" {
+		return fmt.Errorf("%w: worker report must describe a successful completed run", ErrInvalid)
+	}
+	if report.AttestationRevision != "" {
+		return fmt.Errorf("%w: worker report cannot claim a server-owned attestation revision", ErrInvalid)
+	}
 	manifest, manifestBytes, err := s.readDurableManifest(runID)
 	if err != nil {
 		return err
-	}
-	if frozenFieldsErr := validateReportFrozenFields(run, manifest, report); frozenFieldsErr != nil {
-		return frozenFieldsErr
 	}
 	checksums, err := s.validatePrivateReceipt(runID)
 	if err != nil {
@@ -72,11 +78,23 @@ func (s *Service) validateAndAnchorReport(runID string) error {
 	if bundleErr := s.validateReportBundle(runID, manifest, report, checksums); bundleErr != nil {
 		return bundleErr
 	}
+	completedAt := time.Now().UTC()
+	canonicalizeReportRun(run, &report, completedAt)
+	run.CompletedAt = &completedAt
+	if frozenFieldsErr := validateReportFrozenFields(run, manifest, report); frozenFieldsErr != nil {
+		return frozenFieldsErr
+	}
+	canonicalData, err := json.Marshal(report)
+	if err != nil {
+		return fmt.Errorf("encode canonical evaluation report: %w", err)
+	}
+	if secretErr := s.rejectConfiguredSecretBytes(canonicalData); secretErr != nil {
+		return secretErr
+	}
 	evidenceFiles, err := s.buildSealedEvidenceSnapshot(runID, checksums)
 	if err != nil {
 		return err
 	}
-	reportDigest, reportSize := digestAndSize(data)
 	manifestDigest, _ := digestAndSize(manifestBytes)
 	privateReceipt, err := readEvidenceBytes(filepath.Join(s.store.runsRoot, runID, privateChecksumArtifactName), maxStructuredArtifactBytes)
 	if err != nil {
@@ -84,14 +102,29 @@ func (s *Service) validateAndAnchorReport(runID string) error {
 	}
 	privateReceiptDigest, _ := digestAndSize(privateReceipt)
 	sealedAt := time.Now().UTC()
-	if err := validateReportExecutionTimestamp(run, manifest, report.Provenance.GeneratedAt, sealedAt); err != nil {
+	if timestampErr := validateReportExecutionTimestamp(run, manifest, report.Provenance.GeneratedAt, sealedAt); timestampErr != nil {
+		return timestampErr
+	}
+	// The revision is exclusively server-owned and is published only after all
+	// worker bundle and canonical report validators have succeeded.
+	report.AttestationRevision = ServerAttestationRevision
+	if writeErr := s.store.WriteReport(runID, report); writeErr != nil {
+		return writeErr
+	}
+	data, err = s.store.ReadReport(runID)
+	if err != nil {
 		return err
 	}
-	return s.store.writeReportAnchor(runID, reportAnchor{
-		SchemaVersion: SchemaVersion, RunID: runID, ReportDigest: reportDigest,
+	reportDigest, reportSize := digestAndSize(data)
+	if err := s.store.writeReportAnchor(runID, reportAnchor{
+		SchemaVersion: SchemaVersion, AttestationRevision: ServerAttestationRevision,
+		RunID: runID, ReportDigest: reportDigest,
 		ReportSize: reportSize, ManifestDigest: manifestDigest, PrivateReceiptDigest: privateReceiptDigest,
 		EvidenceFiles: evidenceFiles, CreatedAt: sealedAt,
-	})
+	}); err != nil {
+		return err
+	}
+	return s.store.UpdateRun(run)
 }
 
 func validateReportExecutionTimestamp(run Run, manifest RunManifest, generatedAt, sealedAt time.Time) error {
@@ -137,6 +170,9 @@ func validateReportFrozenFields(run Run, manifest RunManifest, report Report) er
 		ok   bool
 	}{
 		{"identity", run.ID == manifest.RunID && report.Run.ID == run.ID},
+		{"name", reportRunNameMatches(run, report.Run)},
+		{"description", reportRunDescriptionMatches(run, report.Run)},
+		{"client_request_id", reportRunClientRequestIDMatches(run, report.Run)},
 		{"mode", run.Mode == manifest.Mode && report.Run.Mode == run.Mode},
 		{"target", run.TargetID == manifest.Target.ID && report.Run.TargetID == run.TargetID},
 		{"change_profile", run.ChangeProfile == manifest.ChangeProfile && report.Run.ChangeProfile == run.ChangeProfile},
@@ -148,6 +184,7 @@ func validateReportFrozenFields(run Run, manifest RunManifest, report Report) er
 		{"suites", reflect.DeepEqual(run.SuiteIDs, manifest.SuiteIDs) && reflect.DeepEqual(report.Run.SuiteIDs, run.SuiteIDs)},
 		{"tracks", reflect.DeepEqual(run.TrackIDs, manifest.TrackIDs) && reflect.DeepEqual(report.Run.TrackIDs, run.TrackIDs)},
 		{"created_at", run.CreatedAt.Equal(manifest.CreatedAt) && report.Run.CreatedAt.Equal(run.CreatedAt.Truncate(time.Microsecond))},
+		{"execution_times", reportRunTimesMatch(run, report.Run)},
 	}
 	for _, check := range checks {
 		if !check.ok {
@@ -186,10 +223,10 @@ func (s *Service) validateReportBundle(runID string, manifest RunManifest, repor
 	if err := validateReportGateEvidence(report, checksums); err != nil {
 		return err
 	}
-	if err := s.validatePublicArtifacts(runID, report, checksums); err != nil {
+	if err := s.validatePublicArtifacts(runID, manifest, report, checksums, records); err != nil {
 		return err
 	}
-	if err := validateCapacityProfileArtifact(runDir, manifest, report); err != nil {
+	if err := validateCapacityProfileArtifact(runDir, manifest, report, records); err != nil {
 		return err
 	}
 	return validateReportProvenance(runDir, manifest, report, checksums)
@@ -219,6 +256,15 @@ func validateReportMetricsAndGates(runDir string, report Report, records recordA
 	}
 	if err := validateReportMetrics(report.Metrics, report.Run.TrackIDs); err != nil {
 		return fmt.Errorf("%w: %w", ErrInvalid, err)
+	}
+	if err := validateWorkerSingleRunMetricOwnership(report.Metrics); err != nil {
+		return err
+	}
+	if err := validateServerReducedMetrics(report, records.Metrics); err != nil {
+		return err
+	}
+	if err := validateServerReducedCosts(report.Costs, records.Costs); err != nil {
+		return err
 	}
 	passed, failed, unavailable := 0, 0, 0
 	dispositions := gateDispositionMatrix[report.Run.ChangeProfile]
@@ -267,6 +313,16 @@ func validateReportMetricsAndGates(runDir string, report Report, records recordA
 	if len(report.Tracks) != len(report.Run.TrackIDs) {
 		return fmt.Errorf("%w: report track coverage does not match the run", ErrInvalid)
 	}
+	if err := validateTrackReportMirrors(report); err != nil {
+		return err
+	}
+	if err := validateServerOwnedReportPresentation(report, records); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateTrackReportMirrors(report Report) error {
 	for index, track := range report.Tracks {
 		if track.TrackID != report.Run.TrackIDs[index] {
 			return fmt.Errorf("%w: report track order does not match the run", ErrInvalid)
@@ -286,6 +342,54 @@ func validateReportMetricsAndGates(runDir string, report Report, records recordA
 		if !reflect.DeepEqual(track.Gates, expectedGates) || !reflect.DeepEqual(track.Metrics, expectedMetrics) {
 			return fmt.Errorf("%w: track report does not match top-level metrics and gates", ErrInvalid)
 		}
+	}
+	return nil
+}
+
+func validateWorkerSingleRunMetricOwnership(metrics []Metric) error {
+	for _, metric := range metrics {
+		if metric.BaselineValue != nil || metric.Delta != nil {
+			return fmt.Errorf("%w: single-run metric %s cannot publish worker-owned baseline_value or delta", ErrInvalid, metric.ID)
+		}
+	}
+	return nil
+}
+
+func validateServerOwnedReportPresentation(report Report, records recordAttestation) error {
+	if err := validateServerCoverage("report summary", report.Summary.Coverage, records.expectedSummaryCoverage()); err != nil {
+		return err
+	}
+	for _, track := range report.Tracks {
+		if err := validateServerCoverage("track "+string(track.TrackID), track.Coverage, records.expectedTrackCoverage(track.TrackID)); err != nil {
+			return err
+		}
+		counts := records.ByTrack[track.TrackID]
+		available := counts.Succeeded + counts.Failed
+		expectedStatus := "unavailable"
+		expectedSummary := "No qualified evidence was produced."
+		if available > 0 {
+			expectedStatus = "completed"
+			expectedSummary = fmt.Sprintf("Collected %d evidence records.", available)
+			if counts.Failed > 0 {
+				expectedSummary = fmt.Sprintf("Collected %d evidence records; %d executions failed and remain in the denominator.", available, counts.Failed)
+			}
+		}
+		if track.Status != expectedStatus || track.Summary != expectedSummary || track.Error != "" {
+			return fmt.Errorf("%w: track %s presentation does not match records", ErrInvalid, track.TrackID)
+		}
+		if report.Run.EvidenceLevel == "E0" && track.EvidenceLevel != "E0" {
+			return fmt.Errorf("%w: E0 run track %s cannot claim evidence level %s", ErrInvalid, track.TrackID, track.EvidenceLevel)
+		}
+	}
+	return nil
+}
+
+func validateServerCoverage(label string, actual, expected Coverage) error {
+	if actual.Evaluated != expected.Evaluated || actual.Total != expected.Total || actual.Unavailable != expected.Unavailable ||
+		!reducedFloatsEqual(actual.Fraction, expected.Fraction) ||
+		!reducedFloatsEqual(actual.ConfidenceLevel, expected.ConfidenceLevel) ||
+		!reducedIntervalsEqual(actual.ConfidenceInterval, expected.ConfidenceInterval) {
+		return fmt.Errorf("%w: %s coverage does not match records", ErrInvalid, label)
 	}
 	return nil
 }

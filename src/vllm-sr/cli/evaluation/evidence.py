@@ -122,6 +122,7 @@ class RoutingDiagnostic(StrictModel):
 
     schema_version: Literal[SCHEMA_VERSION] = SCHEMA_VERSION
     case_id: str
+    truncated: bool = False
     recipe: str | None = Field(default=None, max_length=160)
     decision_name: str | None = Field(default=None, max_length=160)
     algorithm: str | None = Field(default=None, max_length=160)

@@ -73,34 +73,6 @@ func NewStore(root string) (*Store, error) {
 
 func (s *Store) Root() string { return s.root }
 
-func (s *Store) CreateBundle(run Run, manifest RunManifest) (string, error) {
-	if err := validateResourceID(run.ID); err != nil {
-		return "", err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	runDir := filepath.Join(s.runsRoot, run.ID)
-	if err := os.Mkdir(runDir, 0o700); err != nil {
-		if os.IsExist(err) {
-			return "", fmt.Errorf("%w: run %s already exists", ErrConflict, run.ID)
-		}
-		return "", fmt.Errorf("create run bundle: %w", err)
-	}
-	if err := writeJSONAtomic(filepath.Join(runDir, runFileName), run); err != nil {
-		_ = os.RemoveAll(runDir)
-		return "", err
-	}
-	if err := writeJSONAtomic(filepath.Join(runDir, manifestFileName), manifest); err != nil {
-		_ = os.RemoveAll(runDir)
-		return "", err
-	}
-	if err := os.WriteFile(filepath.Join(runDir, eventsFileName), nil, 0o600); err != nil {
-		_ = os.RemoveAll(runDir)
-		return "", fmt.Errorf("initialize event log: %w", err)
-	}
-	return filepath.Join(runDir, manifestFileName), nil
-}
-
 func (s *Store) GetRun(id string) (Run, error) {
 	runDir, err := s.checkedRunDir(id)
 	if err != nil {
@@ -257,9 +229,9 @@ func (s *Store) AppendEvent(event Event) (Event, error) {
 	if err != nil {
 		return Event{}, err
 	}
-	sequence := s.sequences[event.RunID]
-	if sequence == 0 {
-		sequence, err = lastEventSequence(filepath.Join(runDir, eventsFileName))
+	sequence, loaded := s.sequences[event.RunID]
+	if !loaded {
+		sequence, err = lastEventSequence(filepath.Join(runDir, eventsFileName), event.RunID)
 		if err != nil {
 			return Event{}, err
 		}
@@ -326,6 +298,9 @@ func (s *Store) EventsAfter(id string, after uint64) ([]Event, error) {
 		sequence, err := strconv.ParseUint(event.ID, 10, 64)
 		if err != nil {
 			return nil, fmt.Errorf("decode evaluation event id: %w", err)
+		}
+		if event.RunID != id || sequence != scanned || event.ID != strconv.FormatUint(scanned, 10) {
+			return nil, fmt.Errorf("evaluation event history is not a strictly monotonic run-local sequence")
 		}
 		if sequence > after {
 			events = append(events, event)

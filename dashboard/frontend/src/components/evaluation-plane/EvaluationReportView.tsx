@@ -1,4 +1,4 @@
-import type { EvaluationReport } from '../../types/evaluationPlane'
+import type { EvaluationReport, EvaluationRun } from '../../types/evaluationPlane'
 import { TRACK_PRESENTATION } from '../../types/evaluationPlane'
 import useEvaluationReportDiagnostics from '../../hooks/useEvaluationReportDiagnostics'
 import { formatDateTime } from '../../utils/dateTime'
@@ -9,7 +9,13 @@ import {
 import EvaluationGateList from './EvaluationGateList'
 import EvaluationMetricTable from './EvaluationMetricTable'
 import EvaluationReportDiagnostics from './EvaluationReportDiagnostics'
-import { effectiveGateVerdict, formatMetric, selectHeadlineMetrics } from './evaluationPresentation'
+import {
+  effectiveGateVerdict,
+  formatMetric,
+  hasServerEvaluationAttestation,
+  legacyEvaluationEvidenceLabel,
+  selectHeadlineMetrics,
+} from './evaluationPresentation'
 import { CoverageBar, GateVerdictBadge, RunStatusBadge } from './EvaluationPrimitives'
 import styles from './EvaluationReport.module.css'
 
@@ -19,7 +25,13 @@ function presentCount(value: number | undefined, suffix: string): string {
     : 'Not recorded'
 }
 
-export default function EvaluationReportView({ report }: { report: EvaluationReport }) {
+export default function EvaluationReportView({
+  report,
+  displayRun,
+}: {
+  report: EvaluationReport
+  displayRun?: EvaluationRun
+}) {
   const summary = report.summary
   const gateContractVersion = report.gates[0]?.contract_version || 'not recorded'
   const requiredGates = report.gates.filter((gate) => gate.disposition === 'required')
@@ -33,31 +45,49 @@ export default function EvaluationReportView({ report }: { report: EvaluationRep
   const headlines = selectHeadlineMetrics(report)
   const diagnostics = useEvaluationReportDiagnostics(report)
   const isDiagnostic = report.run.evidence_level === 'E0'
+  const serverAttested = hasServerEvaluationAttestation(report)
+  const isLegacyReport = !serverAttested
+  const legacyEvidenceLabel = legacyEvaluationEvidenceLabel(report.run.evidence_level)
 
   return (
     <article className={styles.report} aria-labelledby="evaluation-report-title">
       <section className={styles.reportHero}>
         <div className={styles.reportHeroCopy}>
           <span className={styles.eyebrow}>Evidence report · {report.schema_version}</span>
-          <h2 id="evaluation-report-title">{report.run.name}</h2>
-          <p>{report.run.description || 'No experiment description was recorded.'}</p>
+          <h2 id="evaluation-report-title">{displayRun?.name || report.run.name}</h2>
+          <p>
+            {displayRun?.description ||
+              report.run.description ||
+              'No experiment description was recorded.'}
+          </p>
           <div className={styles.heroBadges}>
             <RunStatusBadge status={report.run.status} />
             <GateVerdictBadge verdict={promotionVerdict} disposition="required" />
             <span>{report.run.evidence_level} evidence</span>
             <span>{report.run.mode}</span>
             <span>{report.run.change_profile}</span>
+            <span>{serverAttested ? 'Server attestation v2' : legacyEvidenceLabel}</span>
           </div>
         </div>
-        <CoverageBar coverage={summary.coverage} />
+        <div>
+          <CoverageBar coverage={summary.coverage} />
+          <p className={styles.scopeCopy}>
+            {serverAttested ? 'Server-attested coverage.' : `${legacyEvidenceLabel} coverage.`}
+          </p>
+        </div>
       </section>
 
-      {isDiagnostic ? (
+      {isDiagnostic || isLegacyReport ? (
         <div className={styles.claimNotice} role="status">
-          <strong>Promotion summary withheld — diagnostic E0</strong>
+          <strong>
+            {isLegacyReport
+              ? legacyEvidenceLabel
+              : 'Promotion summary withheld — server-attested diagnostic E0'}
+          </strong>
           <span>
-            Measured diagnostics below remain valid for debugging. They do not reproduce each native
-            benchmark reducer or carry the receipts required for a promotion claim.
+            {isLegacyReport
+              ? 'This historical report remains readable for debugging. No metric is elevated, and its coverage, track, cost, capacity, and artifact data must not be treated as server-attested evidence.'
+              : 'Independently reduced diagnostics below remain valid for debugging. They do not reproduce each native benchmark reducer or carry the receipts required for a promotion claim.'}
           </span>
         </div>
       ) : null}
@@ -83,13 +113,20 @@ export default function EvaluationReportView({ report }: { report: EvaluationRep
                 <dt>{metric.name}</dt>
                 <dd>{formatMetric(metric)}</dd>
                 <span>
+                  {serverAttested ? `Server-reduced ${report.run.evidence_level} · ` : ''}
                   {metric.track_id ? TRACK_PRESENTATION[metric.track_id].label : 'System'}
                 </span>
               </div>
             ))}
           </dl>
         ) : (
-          <p className={styles.empty}>No measured headline aggregate applies to this run scope.</p>
+          <p className={styles.empty}>
+            {isLegacyReport
+              ? 'Headline elevation is withheld for this legacy integrity-only report; inspect the complete metric explorer for all reported observations.'
+              : isDiagnostic
+                ? 'No independently reduced diagnostic headline applies to this run scope; inspect the metric explorer for the complete E0 observations.'
+                : 'No measured headline aggregate applies to this run scope.'}
+          </p>
         )}
       </section>
 
@@ -113,31 +150,64 @@ export default function EvaluationReportView({ report }: { report: EvaluationRep
             <span className={styles.eyebrow}>Measured outcomes</span>
             <h3 id="report-metrics-title">Metric explorer</h3>
             <p>
-              Search by metric ID or track; direction, paired delta, interval, and sample size stay
-              visible.
+              {isLegacyReport
+                ? 'Every legacy aggregate remains inspectable as integrity-only evidence, including direction, paired delta, interval, and sample size.'
+                : serverAttested
+                  ? `Server-reduced ${report.run.evidence_level} metrics are identified explicitly; every other worker-derived aggregate remains inspectable as diagnostic evidence.`
+                  : 'Search by metric ID or track; direction, paired delta, interval, and sample size stay visible.'}
             </p>
           </div>
           <span>{report.metrics.length} aggregates</span>
         </div>
-        <EvaluationMetricTable metrics={report.metrics} />
+        <EvaluationMetricTable
+          metrics={report.metrics}
+          evidenceLevel={report.run.evidence_level}
+          serverAttested={serverAttested}
+        />
       </section>
 
       <section className={styles.section} aria-labelledby="report-diagnostics-title">
         <div className={styles.sectionHeader}>
           <div>
-            <span className={styles.eyebrow}>Verified artifacts</span>
+            <span className={styles.eyebrow}>
+              {serverAttested
+                ? 'Verified artifacts'
+                : isLegacyReport
+                  ? 'Legacy artifacts · integrity-only'
+                  : 'Reported artifacts · attestation not recorded'}
+            </span>
             <h3 id="report-diagnostics-title">Execution diagnostics</h3>
-            <p>Outcome accounting and bounded capacity observations load independently.</p>
+            <p>
+              {serverAttested
+                ? 'Server-attested outcome accounting and bounded capacity observations load independently.'
+                : 'Outcome accounting and bounded capacity observations remain readable diagnostics, not server-attested evidence.'}
+            </p>
           </div>
         </div>
-        <EvaluationReportDiagnostics {...diagnostics} />
+        <EvaluationReportDiagnostics
+          {...diagnostics}
+          serverAttested={serverAttested}
+          integrityOnly={isLegacyReport}
+          evidenceLevel={report.run.evidence_level}
+        />
       </section>
 
       <section className={styles.section} aria-labelledby="report-tracks-title">
         <div className={styles.sectionHeader}>
           <div>
-            <span className={styles.eyebrow}>Scope decomposition</span>
+            <span className={styles.eyebrow}>
+              {serverAttested
+                ? 'Verified track scope'
+                : isLegacyReport
+                  ? 'Legacy track scope · integrity-only'
+                  : 'Reported track scope · attestation not recorded'}
+            </span>
             <h3 id="report-tracks-title">Track observations</h3>
+            <p>
+              {serverAttested
+                ? 'Track status and coverage are bound to the server attestation.'
+                : 'Track status and coverage are report-declared diagnostics without a server attestation.'}
+            </p>
           </div>
           <span>{report.tracks.length} selected tracks</span>
         </div>
@@ -181,9 +251,19 @@ export default function EvaluationReportView({ report }: { report: EvaluationRep
 
       <details className={styles.disclosure}>
         <summary>
-          Cost ledgers <span>3 ledgers</span>
+          {serverAttested
+            ? 'Verified cost ledgers'
+            : isLegacyReport
+              ? 'Legacy cost ledgers · integrity-only'
+              : 'Reported cost ledgers'}{' '}
+          <span>3 ledgers</span>
         </summary>
         <div className={styles.disclosureBody}>
+          <p className={styles.scopeCopy}>
+            {serverAttested
+              ? 'Cost aggregates are bound to the server attestation.'
+              : 'Cost aggregates remain readable, but server attestation was not recorded.'}
+          </p>
           <div className={styles.ledgerGrid}>
             {Object.entries(report.costs).map(([name, ledger]) => (
               <article key={name}>
@@ -251,6 +331,12 @@ export default function EvaluationReportView({ report }: { report: EvaluationRep
               <dt>Gate contract</dt>
               <dd>
                 <code>{gateContractVersion}</code>
+              </dd>
+            </div>
+            <div>
+              <dt>Server attestation</dt>
+              <dd>
+                <code>{report.attestation_revision || 'Not recorded'}</code>
               </dd>
             </div>
             <div>

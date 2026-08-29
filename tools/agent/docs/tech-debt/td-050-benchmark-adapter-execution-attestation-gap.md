@@ -29,6 +29,61 @@ repository-owned normalizer or cryptographically bind every normalized row to
 the verified checkout. A caller could supply a schema-valid bundle unrelated to
 that checkout, so source verification alone is not adapter attestation.
 
+### Current worker and promotion trust boundary
+
+The Dashboard starts a worker only when the immutable manifest code revision
+matches the running Evaluation Plane revision. At seal time the Go control
+plane strictly validates schemas, artifact receipts, lineage, record identity,
+case joins, G0/G1 record coverage, and the four generic metrics that can inform
+G2/G3/G7 (`safety.violation_rate`, `safety.block_accuracy`,
+`joint.normalized_regret`, and `capacity.success_rate`). This establishes a
+same-revision execution, integrity, and generic-reduction boundary; it does not
+independently attest the observations or reproduce a native benchmark's
+scientific result.
+
+That server-owned reduction contract is present only when both the public
+report and its private server anchor carry the exact revision
+`evaluation-server-attestation.v2`. That revision attests the four reducers
+above, summary and per-track coverage, the three cost ledgers, E0 track
+presentation, and record-backed capacity profile fields. A report and anchor
+with no revision are a readable legacy integrity snapshot only; they do not
+attest those derived values. Unknown or mismatched revisions are invalid, and
+API clients must fail closed when a promotion, comparison, or trust label would
+otherwise depend on a missing or unrecognized revision.
+
+The same records scan also owns the three cost ledgers, per-track and summary
+coverage, and the E0 track presentation. Float aggregates use an explicit
+record-order binary64 sum in both Python and Go; binomial intervals use the same
+Wilson reducer. For sealed Dashboard runs, per-track coverage uses the
+server-validated visible case plan (with only non-text cases applicable to the
+multimodal track), so a worker cannot turn omitted rows into 100% coverage.
+The standalone normalizer derives heterogeneous external-suite denominators
+from each track's emitted succeeded, failed, and unavailable plan cells to avoid
+a suite-by-track Cartesian product. Generalizing the Dashboard's strong plan to
+heterogeneous adapters requires a server-owned suite applicability matrix or a
+typed adapter receipt; until then, external adapter applicability remains an
+E0 boundary.
+
+Other generic metrics, their confidence intervals, and all G2-G9 qualification
+claims remain worker-derived. The Go control plane checks their type, bounds,
+internal consistency, and provenance, but does not yet reproduce every metric,
+validate the source of each observation, or run a native benchmark reducer.
+Consequently they remain E0 diagnostics:
+
+- an E0 report cannot produce a promotion verdict or promotion headline;
+- G2-G9 cannot pass or fail without a typed server-owned qualification
+  attestation; applicable unqualified gates remain unavailable;
+- a server-reduced negative metric remains visible for diagnosis, but does not
+  become a gate failure because its underlying observation is not independently
+  attested; and
+- self-consistent hashes and receipts prove artifact integrity, not benchmark
+  parity or metric correctness.
+
+Closing this boundary requires a typed server reducer or independently
+qualified native reducer receipt for each promoted metric and gate. Until then,
+the public product contract must label these observations diagnostic and avoid
+upstream-parity or promotion claims.
+
 ## Evidence
 
 - `suite-install` reruns the system source verifier and ignores a caller-supplied

@@ -62,7 +62,9 @@ def test_fraction_metric_gets_wilson_not_zero_width_interval() -> None:
     assert interval[1] == 1.0
 
 
-def test_joint_regret_and_latency_use_case_evidence() -> None:
+def test_unattested_joint_regret_omits_interval_while_latency_uses_case_evidence() -> (
+    None
+):
     records = [
         _record(1, "model_pool", arm_id="fast", success=True, quality=0.5),
         _record(1, "model_pool", arm_id="strong", success=True, quality=1.0),
@@ -79,7 +81,7 @@ def test_joint_regret_and_latency_use_case_evidence() -> None:
         _metric("joint.latency_p95_ms", 290, 3, "joint", "ms"),
     ]
     decorated = attach_confidence_intervals(metrics, records, seed=3, resamples=400)
-    assert decorated[0].confidence_interval is not None
+    assert decorated[0].confidence_interval is None
     assert decorated[1].confidence_interval is not None
 
 

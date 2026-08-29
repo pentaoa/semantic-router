@@ -16,6 +16,7 @@ const (
 
 type reportAnchor struct {
 	SchemaVersion        string               `json:"schema_version"`
+	AttestationRevision  string               `json:"attestation_revision,omitempty"`
 	RunID                string               `json:"run_id"`
 	ReportDigest         string               `json:"report_digest"`
 	ReportSize           int64                `json:"report_size_bytes"`
@@ -31,6 +32,7 @@ func (s *Store) writeReportAnchor(runID string, anchor reportAnchor) error {
 		return err
 	}
 	if anchor.SchemaVersion != SchemaVersion || anchor.RunID != runID ||
+		!validServerAttestationRevision(anchor.AttestationRevision) ||
 		!digestPattern.MatchString(anchor.ReportDigest) || !digestPattern.MatchString(anchor.ManifestDigest) ||
 		!digestPattern.MatchString(anchor.PrivateReceiptDigest) || anchor.ReportSize < 0 || anchor.CreatedAt.IsZero() {
 		return fmt.Errorf("evaluation report anchor is invalid")
@@ -88,6 +90,7 @@ func (s *Store) readReportAnchor(runID string) (reportAnchor, error) {
 		return reportAnchor{}, err
 	}
 	if anchor.SchemaVersion != SchemaVersion || anchor.RunID != runID ||
+		!validServerAttestationRevision(anchor.AttestationRevision) ||
 		!digestPattern.MatchString(anchor.ReportDigest) || !digestPattern.MatchString(anchor.ManifestDigest) ||
 		!digestPattern.MatchString(anchor.PrivateReceiptDigest) ||
 		anchor.ReportSize < 0 || anchor.CreatedAt.IsZero() {
@@ -97,4 +100,8 @@ func (s *Store) readReportAnchor(runID string) (reportAnchor, error) {
 		return reportAnchor{}, err
 	}
 	return anchor, nil
+}
+
+func validServerAttestationRevision(revision string) bool {
+	return revision == "" || revision == ServerAttestationRevision
 }

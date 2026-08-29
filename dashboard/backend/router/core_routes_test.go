@@ -308,6 +308,18 @@ func TestRegisterEvaluationPlaneRoutesReplacesLegacyAPI(t *testing.T) {
 	if create.Code != http.StatusCreated {
 		t.Fatalf("create status=%d body=%s", create.Code, create.Body.String())
 	}
+	legacyRuns := httptest.NewRecorder()
+	mux.ServeHTTP(legacyRuns, httptest.NewRequest(http.MethodGet, "/api/evaluation/v1/runs", nil))
+	var runList []evaluationplane.Run
+	if legacyRuns.Code != http.StatusOK || json.NewDecoder(legacyRuns.Body).Decode(&runList) != nil || len(runList) != 1 {
+		t.Fatalf("legacy runs contract status=%d body=%s", legacyRuns.Code, legacyRuns.Body.String())
+	}
+	ledgerResponse := httptest.NewRecorder()
+	mux.ServeHTTP(ledgerResponse, httptest.NewRequest(http.MethodGet, "/api/evaluation/v1/run-ledger", nil))
+	var ledger evaluationplane.RunLedger
+	if ledgerResponse.Code != http.StatusOK || json.NewDecoder(ledgerResponse.Body).Decode(&ledger) != nil || !ledger.LedgerComplete || len(ledger.Runs) != 1 {
+		t.Fatalf("run ledger route status=%d body=%s", ledgerResponse.Code, ledgerResponse.Body.String())
+	}
 
 	proxyCalls := 0
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) {

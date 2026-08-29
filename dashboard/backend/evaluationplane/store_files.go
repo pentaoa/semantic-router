@@ -120,7 +120,7 @@ func ensureJSONEOF(decoder *json.Decoder) error {
 	return nil
 }
 
-func lastEventSequence(path string) (uint64, error) {
+func lastEventSequence(path, runID string) (uint64, error) {
 	file, err := openBundleFile(path, os.O_RDONLY)
 	if err != nil {
 		return 0, fmt.Errorf("open evaluation event log: %w", err)
@@ -150,9 +150,10 @@ func lastEventSequence(path string) (uint64, error) {
 		if err != nil {
 			return 0, fmt.Errorf("decode evaluation event id: %w", err)
 		}
-		if sequence > last {
-			last = sequence
+		if event.RunID != runID || sequence != count || event.ID != strconv.FormatUint(count, 10) {
+			return 0, fmt.Errorf("evaluation event history is not a strictly monotonic run-local sequence")
 		}
+		last = sequence
 	}
 	if err := scanner.Err(); err != nil {
 		return 0, fmt.Errorf("scan evaluation event log: %w", err)

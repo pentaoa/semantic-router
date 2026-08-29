@@ -1,10 +1,11 @@
 import type {
+  EvidenceLevel,
   EvaluationCapacityProfile,
   EvaluationFailureSummary,
 } from '../../types/evaluationPlane'
 import { TRACK_PRESENTATION } from '../../types/evaluationPlane'
 import type { EvaluationDiagnosticArtifactIssue } from '../../utils/evaluationDiagnosticArtifacts'
-import { formatMetric } from './evaluationPresentation'
+import { formatMetric, legacyEvaluationEvidenceLabel } from './evaluationPresentation'
 import styles from './EvaluationReport.module.css'
 
 interface EvaluationReportDiagnosticsProps {
@@ -13,6 +14,9 @@ interface EvaluationReportDiagnosticsProps {
   failureSummaryIssue: EvaluationDiagnosticArtifactIssue | null
   capacityProfileIssue: EvaluationDiagnosticArtifactIssue | null
   loading: boolean
+  serverAttested?: boolean
+  integrityOnly?: boolean
+  evidenceLevel?: EvidenceLevel
 }
 
 function DiagnosticArtifactIssue({
@@ -40,10 +44,34 @@ export default function EvaluationReportDiagnostics({
   failureSummaryIssue,
   capacityProfileIssue,
   loading,
+  serverAttested = false,
+  integrityOnly = false,
+  evidenceLevel,
 }: EvaluationReportDiagnosticsProps) {
-  if (loading) return <p className={styles.empty}>Loading verified diagnostics…</p>
+  const legacyEvidenceLabel = evidenceLevel
+    ? legacyEvaluationEvidenceLabel(evidenceLevel)
+    : 'Legacy unattested report / integrity-only'
+  const attestationCopy = serverAttested
+    ? 'Server-attested diagnostic artifacts.'
+    : integrityOnly
+      ? `${legacyEvidenceLabel}. These artifacts remain readable for debugging, not server verification.`
+      : 'Reported diagnostic artifacts; server attestation was not recorded.'
+
+  if (loading) {
+    return (
+      <div className={styles.diagnosticsStack}>
+        <p className={styles.scopeCopy}>{attestationCopy}</p>
+        <p className={styles.empty}>Loading diagnostic artifacts…</p>
+      </div>
+    )
+  }
   if (!failureSummary && !capacityProfile && !failureSummaryIssue && !capacityProfileIssue) {
-    return <p className={styles.empty}>This run did not publish aggregate diagnostics.</p>
+    return (
+      <div className={styles.diagnosticsStack}>
+        <p className={styles.scopeCopy}>{attestationCopy}</p>
+        <p className={styles.empty}>This run did not publish aggregate diagnostics.</p>
+      </div>
+    )
   }
 
   const succeeded = failureSummary
@@ -51,12 +79,19 @@ export default function EvaluationReportDiagnostics({
     : 0
   return (
     <div className={styles.diagnosticsStack}>
+      <p className={styles.scopeCopy}>{attestationCopy}</p>
       {failureSummary || failureSummaryIssue ? (
         <section className={styles.diagnosticArtifact} aria-labelledby="diagnostic-outcome-title">
           <div className={styles.subsectionHeader}>
             <div>
               <h4 id="diagnostic-outcome-title">Outcome accounting</h4>
-              <p>Aggregate completion states retained without case-level content.</p>
+              <p>
+                {serverAttested
+                  ? 'Server-attested aggregate completion states retained without case-level content.'
+                  : integrityOnly
+                    ? 'Legacy report-derived completion states retained as integrity-only diagnostics.'
+                    : 'Reported completion states retained without case-level content; attestation was not recorded.'}
+              </p>
             </div>
           </div>
           {failureSummaryIssue ? (
@@ -114,7 +149,13 @@ export default function EvaluationReportDiagnostics({
           <div className={styles.subsectionHeader}>
             <div>
               <h4 id="diagnostic-capacity-title">Capacity envelope</h4>
-              <p>Bounded concurrency observations retained by the live executor.</p>
+              <p>
+                {serverAttested
+                  ? 'Server-attested bounded concurrency observations retained by the live executor.'
+                  : integrityOnly
+                    ? 'Legacy report-derived capacity observations retained as integrity-only diagnostics.'
+                    : 'Reported capacity observations retained by the live executor; attestation was not recorded.'}
+              </p>
             </div>
             {capacityProfile ? (
               <span className={capacityProfile.slo ? styles.scopeReady : styles.scopeDiagnostic}>

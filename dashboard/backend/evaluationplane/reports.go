@@ -44,7 +44,10 @@ func (s *Service) reportJSONVerified(runID string) ([]byte, error) {
 	if err := validateReportFrozenFields(run, manifest, report); err != nil {
 		return nil, err
 	}
-	if err := s.verifyReportAnchor(runID, data); err != nil {
+	if err := s.verifyReportAnchor(runID, data, report.AttestationRevision); err != nil {
+		return nil, err
+	}
+	if err := s.rejectConfiguredSecretBytes(data); err != nil {
 		return nil, err
 	}
 	return data, nil
@@ -62,6 +65,9 @@ func decodeReportStrict(runID string, data []byte) (Report, error) {
 	}
 	if report.SchemaVersion != SchemaVersion {
 		return Report{}, fmt.Errorf("evaluation report schema_version must be %q", SchemaVersion)
+	}
+	if !validServerAttestationRevision(report.AttestationRevision) {
+		return Report{}, fmt.Errorf("evaluation report attestation_revision is invalid")
 	}
 	if report.Run.SchemaVersion != SchemaVersion || report.Provenance.SchemaVersion != SchemaVersion {
 		return Report{}, fmt.Errorf("evaluation report nested schema_version must be %q", SchemaVersion)
@@ -137,9 +143,16 @@ func (s *Service) OpenArtifact(runID, artifactID string) (*OpenedArtifact, error
 	if !ok || strings.TrimSpace(artifact.URI) == "" {
 		return nil, fmt.Errorf("%w: evaluation artifact", ErrNotFound)
 	}
-	if artifact.Name != artifact.URI || filepath.Base(artifact.URI) != artifact.URI ||
+	contract, known := publicArtifactContracts[artifact.Name]
+	if artifact.Name != artifact.URI || filepath.Base(artifact.URI) != artifact.URI || !known ||
+		artifact.Kind != contract.Kind || artifact.MediaType != contract.MediaType ||
 		!digestPattern.MatchString(artifact.Digest) || artifact.SizeBytes < 0 {
 		return nil, fmt.Errorf("%w: evaluation artifact metadata is invalid", ErrInvalid)
+	}
+	if artifact.Name == "routing-traces.jsonl" {
+		if traceErr := s.validateStoredRoutingTrace(runID); traceErr != nil {
+			return nil, traceErr
+		}
 	}
 	opened, err := s.store.OpenArtifact(runID, artifact.URI)
 	if err != nil {
@@ -153,10 +166,15 @@ func (s *Service) OpenArtifact(runID, artifactID string) (*OpenedArtifact, error
 		_ = opened.File.Close()
 		return nil, err
 	}
-	opened.MediaType = artifact.MediaType
-	if opened.MediaType == "" {
-		opened.MediaType = "application/octet-stream"
+	if err := s.rejectConfiguredSecretArtifact(opened.File, contract.MediaType); err != nil {
+		_ = opened.File.Close()
+		return nil, err
 	}
+	if _, err := opened.File.Seek(0, io.SeekStart); err != nil {
+		_ = opened.File.Close()
+		return nil, fmt.Errorf("rewind verified evaluation artifact: %w", err)
+	}
+	opened.MediaType = contract.MediaType
 	return opened, nil
 }
 
@@ -204,7 +222,7 @@ func (s *Service) verifyPublicChecksum(runID string, report Report, artifact Art
 	}
 	expected := make(map[string]string)
 	for _, reported := range reportArtifacts(report) {
-		if reported.Name != reported.URI || !downloadableArtifactNames[reported.Name] ||
+		if _, known := publicArtifactContracts[reported.Name]; reported.Name != reported.URI || !known ||
 			!digestPattern.MatchString(reported.Digest) || reported.SizeBytes < 0 {
 			return fmt.Errorf("%w: report contains an invalid public artifact", ErrInvalid)
 		}
@@ -237,8 +255,9 @@ func parsePublicChecksumReceipt(data []byte) (map[string]string, error) {
 	checksums := make(map[string]string)
 	for _, line := range strings.Split(strings.TrimSuffix(string(data), "\n"), "\n") {
 		digest, name, found := strings.Cut(line, "  ")
+		_, known := publicArtifactContracts[name]
 		if !found || !digestPattern.MatchString("sha256:"+digest) ||
-			!downloadableArtifactNames[name] || name == publicChecksumArtifactName || checksums[name] != "" {
+			!known || name == publicChecksumArtifactName || checksums[name] != "" {
 			return nil, fmt.Errorf("%w: public artifact checksum receipt is invalid", ErrInvalid)
 		}
 		checksums[name] = digest

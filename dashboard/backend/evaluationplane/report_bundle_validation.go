@@ -9,7 +9,17 @@ import (
 	"strings"
 )
 
-func (s *Service) validatePublicArtifacts(runID string, report Report, privateChecksums map[string]string) error {
+func (s *Service) validatePublicArtifacts(
+	runID string,
+	manifest RunManifest,
+	report Report,
+	privateChecksums map[string]string,
+	records recordAttestation,
+) error {
+	runDir, err := s.store.checkedRunDir(runID)
+	if err != nil {
+		return err
+	}
 	artifacts := reportArtifacts(report)
 	if len(artifacts) == 0 {
 		return fmt.Errorf("%w: report has no public evidence artifacts", ErrInvalid)
@@ -17,9 +27,11 @@ func (s *Service) validatePublicArtifacts(runID string, report Report, privateCh
 	seenIDs := make(map[string]bool, len(artifacts))
 	seenNames := make(map[string]bool, len(artifacts))
 	for _, artifact := range artifacts {
+		contract, known := publicArtifactContracts[artifact.Name]
 		if strings.TrimSpace(artifact.ID) == "" || seenIDs[artifact.ID] || seenNames[artifact.Name] ||
 			artifact.Name != artifact.URI || filepath.Base(artifact.Name) != artifact.Name ||
-			!downloadableArtifactNames[artifact.Name] || !digestPattern.MatchString(artifact.Digest) || artifact.SizeBytes < 0 {
+			!known || artifact.Kind != contract.Kind || artifact.MediaType != contract.MediaType ||
+			!digestPattern.MatchString(artifact.Digest) || artifact.SizeBytes < 0 {
 			return fmt.Errorf("%w: report contains invalid or duplicate public artifact metadata", ErrInvalid)
 		}
 		seenIDs[artifact.ID], seenNames[artifact.Name] = true, true
@@ -31,12 +43,23 @@ func (s *Service) validatePublicArtifacts(runID string, report Report, privateCh
 			return err
 		}
 		verifyErr := verifyOpenedArtifact(opened, artifact)
+		if verifyErr == nil {
+			verifyErr = s.rejectConfiguredSecretArtifact(opened.File, contract.MediaType)
+		}
 		closeErr := opened.File.Close()
 		if verifyErr != nil {
 			return verifyErr
 		}
 		if closeErr != nil {
 			return fmt.Errorf("close verified public artifact: %w", closeErr)
+		}
+	}
+	if _, present := seenNames["routing-traces.jsonl"]; present {
+		if manifest.Mode != ModeLive || !containsTrack(manifest.TrackIDs, "routing") {
+			return fmt.Errorf("%w: routing traces are valid only for a live routing run", ErrInvalid)
+		}
+		if err := validateRoutingTraceArtifact(runDir, records.CaseIDs); err != nil {
+			return err
 		}
 	}
 	receipt, ok := findArtifactByName(report, publicChecksumArtifactName)
@@ -153,7 +176,7 @@ func resolvedLineage(data []byte) (map[string]json.RawMessage, error) {
 	return root, nil
 }
 
-func (s *Service) verifyReportAnchor(runID string, report []byte) error {
+func (s *Service) verifyReportAnchor(runID string, report []byte, attestationRevision string) error {
 	anchor, err := s.store.readReportAnchor(runID)
 	if err != nil {
 		return err
@@ -172,6 +195,9 @@ func (s *Service) verifyReportAnchor(runID string, report []byte) error {
 	if anchor.ReportDigest != reportDigest || anchor.ReportSize != reportSize || anchor.ManifestDigest != manifestDigest ||
 		anchor.PrivateReceiptDigest != privateReceiptDigest {
 		return fmt.Errorf("%w: evaluation report no longer matches its server-owned anchor", ErrInvalid)
+	}
+	if anchor.AttestationRevision != attestationRevision {
+		return fmt.Errorf("%w: evaluation report attestation revision does not match its server-owned anchor", ErrInvalid)
 	}
 	return s.verifySealedEvidenceSnapshot(runID, anchor.EvidenceFiles, privateReceipt)
 }

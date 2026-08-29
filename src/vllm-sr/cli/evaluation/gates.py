@@ -269,6 +269,20 @@ def _g2(
 ) -> EvaluationGate:
     violation_rate = _metric_value(metrics, "safety.violation_rate")
     block_accuracy = _metric_value(metrics, "safety.block_accuracy")
+    if context.hard_policy_static_passed is not True:
+        return _gate(
+            definition,
+            disposition,
+            metadata,
+            verdict=(
+                "fail" if context.hard_policy_static_passed is False else "unavailable"
+            ),
+            rationale=(
+                "Static hard-policy enforcement failed."
+                if context.hard_policy_static_passed is False
+                else "No qualified static enforcement proof was attached; dynamic safety metrics remain E0 diagnostics."
+            ),
+        )
     if violation_rate is not None and violation_rate > 0:
         return _gate(
             definition,
@@ -288,20 +302,6 @@ def _g2(
             observed=block_accuracy,
             threshold=GateThreshold(operator=">=", value=1.0, unit="fraction"),
             rationale="A deterministic hard-policy blocking decision was incorrect.",
-        )
-    if context.hard_policy_static_passed is not True:
-        return _gate(
-            definition,
-            disposition,
-            metadata,
-            verdict=(
-                "fail" if context.hard_policy_static_passed is False else "unavailable"
-            ),
-            rationale=(
-                "Static hard-policy enforcement failed."
-                if context.hard_policy_static_passed is False
-                else "No qualified static enforcement proof was attached; finite 0/N observations cannot prove a zero violation rate."
-            ),
         )
     if violation_rate is None or block_accuracy is None:
         return _gate(
@@ -347,7 +347,6 @@ def _g3(
             metadata,
             verdict="unavailable",
             rationale="A paired incumbent/no-information frontier comparison is missing or pool-normalized regret is unavailable.",
-            observed=regret,
         )
     passed = regret <= _DEFAULT_NORMALIZED_REGRET_MAX
     return _gate(
@@ -377,7 +376,33 @@ def _g7(
     cost_accounted: bool,
 ) -> EvaluationGate:
     success_rate = _metric_value(metrics, "capacity.success_rate")
-    if success_rate is not None and success_rate < _DEFAULT_CAPACITY_SUCCESS_MIN:
+    if not cost_accounted:
+        return _gate(
+            definition,
+            disposition,
+            metadata,
+            verdict="unavailable",
+            rationale="Runtime, evaluation-overhead, and capacity-TCO ledgers are incomplete; missing cost was not inferred as zero.",
+        )
+    if context.capacity_slo_qualified is not True:
+        return _qualified_boolean_gate(
+            definition,
+            disposition,
+            metadata,
+            context.capacity_slo_qualified,
+            success="The declared capacity SLO qualification passed.",
+            missing="Cost ledgers exist, but no qualified latency/capacity SLO and headroom contract was attached; capacity metrics remain E0 diagnostics.",
+            failure="The declared latency/capacity SLO or headroom contract failed.",
+        )
+    if success_rate is None:
+        return _gate(
+            definition,
+            disposition,
+            metadata,
+            verdict="unavailable",
+            rationale="The qualified capacity contract is missing dynamic success-rate evidence.",
+        )
+    if success_rate < _DEFAULT_CAPACITY_SUCCESS_MIN:
         return _gate(
             definition,
             disposition,
@@ -388,14 +413,6 @@ def _g7(
                 operator=">=", value=_DEFAULT_CAPACITY_SUCCESS_MIN, unit="fraction"
             ),
             rationale="The bounded load sweep exceeded the default error budget.",
-        )
-    if not cost_accounted:
-        return _gate(
-            definition,
-            disposition,
-            metadata,
-            verdict="unavailable",
-            rationale="Runtime, evaluation-overhead, and capacity-TCO ledgers are incomplete; missing cost was not inferred as zero.",
         )
     return _qualified_boolean_gate(
         definition,
@@ -414,19 +431,28 @@ def _gate_metadata(
     records: list[ExecutionRecord] | None,
     evaluated_at: datetime | None,
 ) -> _GateRunMetadata:
-    rows: list[ExecutionRecord] | None = None
-    if records is not None:
-        track_id = _TRACK_BY_GATE.get(definition.id)
-        rows = (
-            records
-            if track_id is None and definition.id in {"G0", "G1", "G8"}
-            else [record for record in records if record.track_id == track_id]
-        )
     sample_count = None
     gate_coverage = None
-    if rows is not None:
-        sample_count = sum(record.status != "unavailable" for record in rows)
-        total = len(rows)
+    if records is not None:
+        track_id = _TRACK_BY_GATE.get(definition.id)
+        if track_id is None:
+            planned = {(record.track_id, record.case_id) for record in records}
+            evaluated = {
+                (record.track_id, record.case_id)
+                for record in records
+                if record.status != "unavailable"
+            }
+        else:
+            planned = {
+                record.case_id for record in records if record.track_id == track_id
+            }
+            evaluated = {
+                record.case_id
+                for record in records
+                if record.track_id == track_id and record.status != "unavailable"
+            }
+        sample_count = len(evaluated)
+        total = len(planned)
         unavailable = total - sample_count
         gate_coverage = EvaluationCoverage(
             evaluated=sample_count,

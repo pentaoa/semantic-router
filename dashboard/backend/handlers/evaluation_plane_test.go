@@ -131,7 +131,7 @@ func TestEvaluationPlaneRunLedgerSurfacesQuarantineAndBlocksDecisions(t *testing
 
 	handler := NewEvaluationPlaneHandler(service, false)
 	listResponse := httptest.NewRecorder()
-	handler.Runs(listResponse, httptest.NewRequest(http.MethodGet, evaluationAPIBase+"/runs", nil))
+	handler.RunLedger(listResponse, httptest.NewRequest(http.MethodGet, evaluationAPIBase+"/run-ledger", nil))
 	if listResponse.Code != http.StatusOK {
 		t.Fatalf("list status=%d body=%s", listResponse.Code, listResponse.Body.String())
 	}
@@ -146,6 +146,18 @@ func TestEvaluationPlaneRunLedgerSurfacesQuarantineAndBlocksDecisions(t *testing
 	if warning.RunID != corrupt.ID || warning.EvidenceFile != "status.json" ||
 		strings.Contains(warning.Message, root) || strings.Contains(warning.Message, "not-json") {
 		t.Fatalf("unsafe or incomplete public warning: %+v", warning)
+	}
+	legacyResponse := httptest.NewRecorder()
+	handler.Runs(legacyResponse, httptest.NewRequest(http.MethodGet, evaluationAPIBase+"/runs", nil))
+	if legacyResponse.Code != http.StatusOK {
+		t.Fatalf("legacy list status=%d body=%s", legacyResponse.Code, legacyResponse.Body.String())
+	}
+	var legacyRuns []evaluationplane.Run
+	if err := json.NewDecoder(legacyResponse.Body).Decode(&legacyRuns); err != nil {
+		t.Fatalf("decode legacy run array contract: %v", err)
+	}
+	if len(legacyRuns) != 1 || legacyRuns[0].ID != intact.ID {
+		t.Fatalf("legacy run array contract changed: %+v", legacyRuns)
 	}
 
 	comparisonResponse := httptest.NewRecorder()

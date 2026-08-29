@@ -211,6 +211,7 @@ func registerEvaluationRoutes(mux *http.ServeMux, cfg *config.Config, credential
 	}
 	handler := handlers.NewEvaluationPlaneHandler(service, cfg.ReadonlyMode)
 	mux.HandleFunc("/api/evaluation/v1/catalog", handler.Catalog)
+	mux.HandleFunc("/api/evaluation/v1/run-ledger", handler.RunLedger)
 	mux.HandleFunc("/api/evaluation/v1/runs", handler.Runs)
 	mux.HandleFunc("/api/evaluation/v1/runs/", handler.RunRoute)
 	mux.HandleFunc("/api/evaluation/v1/compare", handler.Compare)

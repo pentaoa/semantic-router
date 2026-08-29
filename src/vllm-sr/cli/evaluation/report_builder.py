@@ -8,7 +8,10 @@ from cli.evaluation.architecture_feedback import architecture_recommendations
 from cli.evaluation.contracts import RunManifest
 from cli.evaluation.evidence import ExecutionRecord
 from cli.evaluation.evidence_level import track_evidence_level
-from cli.evaluation.metric_core import aggregate_track_coverage
+from cli.evaluation.metric_core import (
+    _canonical_ordered_float_sum,
+    aggregate_track_coverage,
+)
 from cli.evaluation.metrics import coverage
 from cli.evaluation.reporting import (
     EvaluationArtifact,
@@ -31,7 +34,7 @@ def _value(metrics: list[EvaluationMetric], metric_id: str) -> float | None:
 
 def _sum_optional(values: list[float | None]) -> float | None:
     available = [value for value in values if value is not None]
-    return sum(available) if available else None
+    return _canonical_ordered_float_sum(available) if available else None
 
 
 def select_report_metrics(
@@ -40,6 +43,16 @@ def select_report_metrics(
     """Project computed metrics onto the immutable run track selection."""
 
     return [row for row in metrics if row.track_id in manifest.track_ids]
+
+
+def _track_plan_totals(
+    manifest: RunManifest, records: list[ExecutionRecord]
+) -> dict[str, int]:
+    """Count only suite-declared plan cells represented by normalized rows."""
+    return {
+        track_id: len({row.case_id for row in records if row.track_id == track_id})
+        for track_id in manifest.track_ids
+    }
 
 
 def build_costs(records: list[ExecutionRecord]) -> EvaluationCostLedgers:
@@ -98,8 +111,7 @@ def _track_reports(
                 summary += "."
         else:
             status = "unavailable"
-            reasons = sorted({row.error for row in track_records if row.error})
-            summary = reasons[0] if reasons else "No qualified evidence was produced."
+            summary = "No qualified evidence was produced."
         reports.append(
             EvaluationTrackReport(
                 track_id=track_id,
@@ -131,9 +143,7 @@ def build_report(
     metrics = select_report_metrics(manifest, metrics)
     selected_gates = list(gates)
     costs = build_costs(records)
-    totals = dict.fromkeys(manifest.track_ids, total_cases)
-    if "multimodal" in totals:
-        totals["multimodal"] = multimodal_cases
+    totals = _track_plan_totals(manifest, records)
     overall_coverage = aggregate_track_coverage(records, totals)
     quality = _value(metrics, "joint.realized_quality")
     if quality is None:

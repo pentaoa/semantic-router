@@ -32,25 +32,77 @@ func (counts recordStatusCounts) total() int {
 }
 
 type recordAttestation struct {
-	validated   bool
-	Total       int
-	Succeeded   int
-	Failed      int
-	Unavailable int
-	ByTrack     map[TrackID]recordStatusCounts
+	validated               bool
+	Total                   int
+	Succeeded               int
+	Failed                  int
+	Unavailable             int
+	ByTrack                 map[TrackID]recordStatusCounts
+	CaseIDs                 map[string]struct{}
+	PlannedCaseIDsByTrack   map[TrackID]map[string]struct{}
+	EvaluatedCaseIDsByTrack map[TrackID]map[string]struct{}
+	Metrics                 recordMetricAttestation
+	Costs                   recordCostAttestation
 }
 
 func (attestation recordAttestation) validatesGateCoverage(gate Gate) bool {
-	if !attestation.validated || attestation.Total < 1 || gate.SampleCount == nil || gate.Coverage == nil {
+	if !attestation.validated || gate.SampleCount == nil || gate.Coverage == nil {
 		return false
 	}
-	evaluated := attestation.Succeeded + attestation.Failed
-	expectedFraction := float64(evaluated) / float64(attestation.Total)
-	return *gate.SampleCount == evaluated &&
-		gate.Coverage.Evaluated == evaluated &&
-		gate.Coverage.Total == attestation.Total &&
-		gate.Coverage.Unavailable == attestation.Unavailable &&
-		finiteFloat(gate.Coverage.Fraction) && gate.Coverage.Fraction == expectedFraction
+	return validatesGatePlanCoverage(gate, attestation.expectedSummaryCoverage())
+}
+
+func (attestation recordAttestation) validatesTrackGateCoverage(gate Gate) bool {
+	if !attestation.validated || gate.TrackID == "" || gate.SampleCount == nil || gate.Coverage == nil {
+		return false
+	}
+	return validatesGatePlanCoverage(gate, attestation.expectedTrackCoverage(gate.TrackID))
+}
+
+func validatesGatePlanCoverage(gate Gate, expected Coverage) bool {
+	return *gate.SampleCount == expected.Evaluated &&
+		gate.Coverage.Evaluated == expected.Evaluated &&
+		gate.Coverage.Total == expected.Total &&
+		gate.Coverage.Unavailable == expected.Unavailable &&
+		finiteFloat(gate.Coverage.Fraction) && reducedFloatsEqual(gate.Coverage.Fraction, expected.Fraction) &&
+		gate.Coverage.ConfidenceLevel == 0 && gate.Coverage.ConfidenceInterval == nil
+}
+
+type visibleCaseSet struct {
+	IDs               map[string]struct{}
+	MultimodalCaseIDs map[string]struct{}
+}
+
+func (attestation recordAttestation) expectedTrackCoverage(trackID TrackID) Coverage {
+	total := len(attestation.PlannedCaseIDsByTrack[trackID])
+	evaluated := len(attestation.EvaluatedCaseIDsByTrack[trackID])
+	return serverCoverage(evaluated, total)
+}
+
+func (attestation recordAttestation) expectedSummaryCoverage() Coverage {
+	evaluated := 0
+	total := 0
+	for trackID, plannedCaseIDs := range attestation.PlannedCaseIDsByTrack {
+		evaluated += len(attestation.EvaluatedCaseIDsByTrack[trackID])
+		total += len(plannedCaseIDs)
+	}
+	return serverCoverage(evaluated, total)
+}
+
+func serverCoverage(evaluated, total int) Coverage {
+	fraction := 0.0
+	if total > 0 {
+		fraction = float64(evaluated) / float64(total)
+	}
+	coverage := Coverage{
+		Evaluated: evaluated, Total: total, Fraction: fraction,
+		Unavailable: total - evaluated,
+	}
+	if total > 0 {
+		coverage.ConfidenceLevel = 0.95
+		coverage.ConfidenceInterval = serverWilsonInterval(evaluated, total)
+	}
+	return coverage
 }
 
 type visibleCaseIdentity struct {
@@ -152,11 +204,11 @@ type recordSemanticKey struct {
 }
 
 func validateRecordsAndFailureSummary(runDir string, manifest RunManifest) (recordAttestation, error) {
-	caseIDs, err := validateVisibleCases(filepath.Join(runDir, "cases.jsonl"), manifest.SampleLimit)
+	cases, err := validateVisibleCaseSet(filepath.Join(runDir, "cases.jsonl"), manifest.SampleLimit)
 	if err != nil {
 		return recordAttestation{}, err
 	}
-	attestation, err := validateExecutionRecords(filepath.Join(runDir, "records.jsonl"), manifest.TrackIDs, caseIDs)
+	attestation, err := validateExecutionRecords(filepath.Join(runDir, "records.jsonl"), manifest.TrackIDs, cases)
 	if err != nil {
 		return recordAttestation{}, err
 	}
@@ -164,14 +216,20 @@ func validateRecordsAndFailureSummary(runDir string, manifest RunManifest) (reco
 		return recordAttestation{}, err
 	}
 	attestation.validated = true
+	attestation.CaseIDs = cases.IDs
 	return attestation, nil
 }
 
 func validateVisibleCases(path string, sampleLimit int) (map[string]struct{}, error) {
+	cases, err := validateVisibleCaseSet(path, sampleLimit)
+	return cases.IDs, err
+}
+
+func validateVisibleCaseSet(path string, sampleLimit int) (visibleCaseSet, error) {
 	if sampleLimit < 1 || sampleLimit > maxSampleLimit {
-		return nil, fmt.Errorf("%w: run manifest sample limit is invalid", ErrInvalid)
+		return visibleCaseSet{}, fmt.Errorf("%w: run manifest sample limit is invalid", ErrInvalid)
 	}
-	cases := make(map[string]struct{})
+	cases := visibleCaseSet{IDs: make(map[string]struct{}), MultimodalCaseIDs: make(map[string]struct{})}
 	err := scanEvidenceJSONLines(path, maxWorkerArtifactBytes, maxCaseLineBytes, sampleLimit, func(line []byte, lineNumber int) error {
 		var identity visibleCaseIdentity
 		if err := decodeStrictJSONLine(line, &identity); err != nil {
@@ -185,14 +243,17 @@ func validateVisibleCases(path string, sampleLimit int) (map[string]struct{}, er
 				return fmt.Errorf("%w: cases.jsonl line %d message %d is invalid: %w", ErrInvalid, lineNumber, index+1, err)
 			}
 		}
-		if _, duplicate := cases[identity.ID]; duplicate {
+		if _, duplicate := cases.IDs[identity.ID]; duplicate {
 			return fmt.Errorf("%w: cases.jsonl contains duplicate case id %q", ErrInvalid, identity.ID)
 		}
-		cases[identity.ID] = struct{}{}
+		cases.IDs[identity.ID] = struct{}{}
+		if identity.Modality != "text" {
+			cases.MultimodalCaseIDs[identity.ID] = struct{}{}
+		}
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return visibleCaseSet{}, err
 	}
 	return cases, nil
 }
@@ -257,12 +318,28 @@ func validCaseModality(modality string) bool {
 	}
 }
 
-func validateExecutionRecords(path string, selectedTracks []TrackID, caseIDs map[string]struct{}) (recordAttestation, error) {
+func validateExecutionRecords(path string, selectedTracks []TrackID, cases visibleCaseSet) (recordAttestation, error) {
 	selected := make(map[TrackID]bool, len(selectedTracks))
+	plannedCaseIDs := make(map[TrackID]map[string]struct{}, len(selectedTracks))
+	evaluatedCaseIDs := make(map[TrackID]map[string]struct{}, len(selectedTracks))
 	for _, trackID := range selectedTracks {
 		selected[trackID] = true
+		plan := cases.IDs
+		if trackID == "multimodal" {
+			plan = cases.MultimodalCaseIDs
+		}
+		plannedCaseIDs[trackID] = make(map[string]struct{}, len(plan))
+		for caseID := range plan {
+			plannedCaseIDs[trackID][caseID] = struct{}{}
+		}
+		evaluatedCaseIDs[trackID] = make(map[string]struct{})
 	}
-	attestation := recordAttestation{ByTrack: make(map[TrackID]recordStatusCounts, len(selectedTracks))}
+	attestation := recordAttestation{
+		ByTrack:               make(map[TrackID]recordStatusCounts, len(selectedTracks)),
+		PlannedCaseIDsByTrack: plannedCaseIDs, EvaluatedCaseIDsByTrack: evaluatedCaseIDs,
+	}
+	metricReducer := newRecordMetricReducer()
+	costReducer := recordCostReducer{}
 	recordIDs := make(map[string]struct{})
 	semanticKeys := make(map[recordSemanticKey]string)
 	err := scanEvidenceJSONLines(path, maxWorkerArtifactBytes, maxRecordLineBytes, maxRecordsPerRun, func(line []byte, lineNumber int) error {
@@ -270,8 +347,13 @@ func validateExecutionRecords(path string, selectedTracks []TrackID, caseIDs map
 		if err := decodeStrictJSONLine(line, &record); err != nil {
 			return fmt.Errorf("%w: records.jsonl line %d is invalid: %w", ErrInvalid, lineNumber, err)
 		}
-		if err := validateExecutionRecord(record, selected, caseIDs); err != nil {
+		if err := validateExecutionRecord(record, selected, cases.IDs); err != nil {
 			return fmt.Errorf("%w: records.jsonl line %d: %w", ErrInvalid, lineNumber, err)
+		}
+		if record.TrackID == "multimodal" {
+			if _, applicable := cases.MultimodalCaseIDs[record.CaseID]; !applicable {
+				return fmt.Errorf("%w: records.jsonl line %d: multimodal evidence references a text-only case", ErrInvalid, lineNumber)
+			}
 		}
 		if _, duplicate := recordIDs[record.ID]; duplicate {
 			return fmt.Errorf("%w: records.jsonl contains duplicate record id %q", ErrInvalid, record.ID)
@@ -282,6 +364,12 @@ func validateExecutionRecords(path string, selectedTracks []TrackID, caseIDs map
 		}
 		recordIDs[record.ID] = struct{}{}
 		semanticKeys[semanticKey] = record.ID
+		if err := metricReducer.observe(record); err != nil {
+			return fmt.Errorf("%w: records.jsonl line %d cannot be reduced: %w", ErrInvalid, lineNumber, err)
+		}
+		if err := costReducer.observe(record); err != nil {
+			return fmt.Errorf("%w: records.jsonl line %d costs cannot be reduced: %w", ErrInvalid, lineNumber, err)
+		}
 		counts := attestation.ByTrack[record.TrackID]
 		switch record.Status {
 		case "succeeded":
@@ -294,6 +382,9 @@ func validateExecutionRecords(path string, selectedTracks []TrackID, caseIDs map
 			counts.Unavailable++
 			attestation.Unavailable++
 		}
+		if record.Status != "unavailable" {
+			attestation.EvaluatedCaseIDsByTrack[record.TrackID][record.CaseID] = struct{}{}
+		}
 		attestation.ByTrack[record.TrackID] = counts
 		attestation.Total++
 		return nil
@@ -301,6 +392,12 @@ func validateExecutionRecords(path string, selectedTracks []TrackID, caseIDs map
 	if err != nil {
 		return recordAttestation{}, err
 	}
+	metrics, err := metricReducer.finalize()
+	if err != nil {
+		return recordAttestation{}, fmt.Errorf("%w: records.jsonl metric reduction failed: %w", ErrInvalid, err)
+	}
+	attestation.Metrics = metrics
+	attestation.Costs = costReducer.finalize()
 	for _, trackID := range selectedTracks {
 		if attestation.ByTrack[trackID].total() == 0 {
 			return recordAttestation{}, fmt.Errorf("%w: records.jsonl has no evidence for selected track %q", ErrInvalid, trackID)

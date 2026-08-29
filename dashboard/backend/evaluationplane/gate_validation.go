@@ -22,10 +22,12 @@ var gateOwners = []string{
 // unqualified observation into a promotion pass.
 //
 // G0/G1 are attested by the Go bundle validator itself. The current v1 bundle
-// has no server-owned attestation for G2-G9 qualifications, so those gates may
-// conservatively fail or remain unavailable, but may not pass. A future direct
-// arm, paired-statistics, canary, or online-assignment seam must add its typed
-// attestation here before it can produce a promotion pass.
+// has no typed qualification receipt for G2-G9. The server independently
+// reduces the gate-driving generic metrics, but that proves aggregation only;
+// it does not qualify the worker-originated observations. Therefore applicable
+// G2-G9 gates must remain unavailable. A future direct-arm, paired-statistics,
+// canary, or online-assignment seam must add its typed server attestation here
+// before it can produce either a pass or a fail.
 func validateServerOwnedGateSemantics(report Report, records recordAttestation) error {
 	metrics := make(map[string]Metric, len(report.Metrics))
 	for _, metric := range report.Metrics {
@@ -50,8 +52,18 @@ func validateServerOwnedGateSemantics(report Report, records recordAttestation) 
 				return fmt.Errorf("%w: gate %s contradicts the server-validated bundle", ErrInvalid, gate.ID)
 			}
 		default:
-			if gate.Verdict == "pass" {
-				return fmt.Errorf("%w: gate %s lacks a server-owned qualified evidence attestation", ErrInvalid, gate.ID)
+			coverageValid := records.validatesGateCoverage(gate)
+			if gate.TrackID != "" {
+				coverageValid = records.validatesTrackGateCoverage(gate)
+			}
+			if !coverageValid {
+				return fmt.Errorf("%w: gate %s lacks the server-owned plan coverage attestation", ErrInvalid, gate.ID)
+			}
+			if gate.Disposition == "not_applicable" {
+				continue
+			}
+			if gate.Verdict != "unavailable" || gate.Observed != nil || gate.Threshold != nil {
+				return fmt.Errorf("%w: gate %s lacks a typed server-owned qualification attestation", ErrInvalid, gate.ID)
 			}
 		}
 	}

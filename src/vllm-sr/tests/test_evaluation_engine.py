@@ -10,11 +10,14 @@ from cli.evaluation.canonical import digest_value
 from cli.evaluation.compare import compare_reports
 from cli.evaluation.constants import TRACK_IDS
 from cli.evaluation.contracts import EvaluationTarget, RunManifest
+from cli.evaluation.evidence import ExecutionRecord
 from cli.evaluation.fixture_executor import execute_fixture
 from cli.evaluation.fixtures import fixture_inputs
 from cli.evaluation.gates import compute_gates
+from cli.evaluation.metric_core import _canonical_ordered_float_sum
 from cli.evaluation.metrics import compute_metrics
 from cli.evaluation.orchestrator import run_evaluation, validate_manifest
+from cli.evaluation.report_builder import _track_plan_totals
 from cli.evaluation.resolution import resolve_snapshot
 from cli.evaluation.store import LocalArtifactStore, StoreError
 
@@ -188,6 +191,36 @@ def test_fixture_run_completes_all_tracks_with_rich_bundle(tmp_path: Path) -> No
     assert "private-checksums.sha256" not in names
 
 
+def test_normalized_regret_uses_canonical_record_order_sum() -> None:
+    values = [-1e16, *([1.0] * 99_999)]
+
+    # Python 3.12+ changed built-in sum() for floats. The report protocol uses
+    # explicit binary64 additions so the Go seal-time reducer is bit-stable.
+    assert _canonical_ordered_float_sum(values) == -1e16
+
+
+def test_heterogeneous_track_plan_totals_do_not_form_a_cartesian_product() -> None:
+    manifest = _manifest().model_copy(update={"track_ids": ("routing", "capacity")})
+    records = [
+        ExecutionRecord(
+            id="routing-case-1",
+            track_id="routing",
+            case_id="routing-only",
+            attempt_id="attempt-routing",
+            status="succeeded",
+        ),
+        ExecutionRecord(
+            id="capacity-case-1",
+            track_id="capacity",
+            case_id="capacity-only",
+            attempt_id="attempt-capacity",
+            status="succeeded",
+        ),
+    ]
+
+    assert _track_plan_totals(manifest, records) == {"routing": 1, "capacity": 1}
+
+
 def test_fixture_report_is_deterministic_and_coverage_is_case_based(
     tmp_path: Path,
 ) -> None:
@@ -248,7 +281,7 @@ def test_hidden_grading_is_not_written_to_policy_visible_cases(tmp_path: Path) -
     assert store.read_run_text(report.run.id, "grading-cases.jsonl")
 
 
-def test_real_regression_produces_a_failing_gate() -> None:
+def test_real_regression_remains_diagnostic_without_qualification() -> None:
     inputs = fixture_inputs()
     records = execute_fixture(inputs.visible, inputs.grading, inputs.fixture, TRACK_IDS)
     records = [
@@ -259,10 +292,16 @@ def test_real_regression_produces_a_failing_gate() -> None:
         )
         for row in records
     ]
-    gates = compute_gates(
-        compute_metrics(records), has_records=True, cost_accounted=True
+    metrics = compute_metrics(records)
+    gates = compute_gates(metrics, has_records=True, cost_accounted=True)
+    hard_policy = next(gate for gate in gates if gate.id == "G2")
+    violation_rate = next(
+        metric for metric in metrics if metric.id == "safety.violation_rate"
     )
-    assert {gate.id: gate.verdict for gate in gates}["G2"] == "fail"
+    assert hard_policy.verdict == "unavailable"
+    assert hard_policy.observed is None
+    assert hard_policy.threshold is None
+    assert violation_rate.value is not None and violation_rate.value > 0
 
 
 def test_compare_is_paired_by_metric_id(tmp_path: Path) -> None:

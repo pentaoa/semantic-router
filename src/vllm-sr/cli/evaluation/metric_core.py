@@ -9,6 +9,14 @@ from cli.evaluation.evidence import ExecutionRecord
 from cli.evaluation.reporting import EvaluationCoverage, EvaluationMetric
 
 
+def _canonical_ordered_float_sum(values: Iterable[float]) -> float:
+    """Sum binary64 values in evidence order for cross-runtime attestation."""
+    total = 0.0
+    for value in values:
+        total += value
+    return total
+
+
 def percentile(values: Iterable[float], quantile: float) -> float | None:
     ordered = sorted(values)
     if not ordered:

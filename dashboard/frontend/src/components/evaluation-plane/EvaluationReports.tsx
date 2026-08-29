@@ -23,6 +23,7 @@ export default function EvaluationReports({
   onRetry,
 }: EvaluationReportsProps) {
   const reportableRuns = runs.filter((run) => run.status === 'completed')
+  const selectedRun = reportableRuns.find((run) => run.id === selectedRunID)
   return (
     <div className={styles.sectionStack} aria-busy={loading}>
       <section className={styles.surface}>
@@ -62,12 +63,14 @@ export default function EvaluationReports({
           </button>
         </div>
       ) : null}
-      {!loading && !error && report ? <EvaluationReportView report={report} /> : null}
+      {!loading && !error && report ? (
+        <EvaluationReportView report={report} displayRun={selectedRun} />
+      ) : null}
       {!loading && !error && !report ? (
         <div className={styles.emptyState}>
           <p>
             {reportableRuns.length
-              ? 'Select a completed run to load its verified report.'
+              ? 'Select a completed run to load its evidence report.'
               : 'No completed run has published a report yet. Failed and cancelled runs remain in the run inspector.'}
           </p>
         </div>

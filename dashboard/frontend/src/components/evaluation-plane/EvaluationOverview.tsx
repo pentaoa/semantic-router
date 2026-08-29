@@ -6,7 +6,13 @@ import type {
 import { EVALUATION_TRACK_IDS, TRACK_PRESENTATION } from '../../types/evaluationPlane'
 import { formatDateTime } from '../../utils/dateTime'
 import EvaluationMethodCoverage from './EvaluationMethodCoverage'
-import { effectiveGateVerdict, formatMetric, selectHeadlineMetrics } from './evaluationPresentation'
+import {
+  effectiveGateVerdict,
+  formatMetric,
+  hasServerEvaluationAttestation,
+  legacyEvaluationEvidenceLabel,
+  selectHeadlineMetrics,
+} from './evaluationPresentation'
 import type { EvaluationView } from './EvaluationNavigation'
 import { GateVerdictBadge, RunStatusBadge } from './EvaluationPrimitives'
 import styles from './EvaluationPlane.module.css'
@@ -36,6 +42,17 @@ export default function EvaluationOverview({
   const completed = runs.filter((run) => run.status === 'completed').length
   const failed = runs.filter((run) => run.status === 'failed').length
   const latestRun = runs[0]
+  const latestReportRun = latestReport
+    ? runs.find((run) => run.id === latestReport.run.id) || null
+    : null
+  const latestReportName = latestReportRun?.name || latestReport?.run.name
+  const isDiagnostic = latestReport?.run.evidence_level === 'E0'
+  const serverAttested = latestReport ? hasServerEvaluationAttestation(latestReport) : false
+  const isServerAttestedDiagnostic = isDiagnostic && serverAttested
+  const isLegacyReport = Boolean(latestReport) && !serverAttested
+  const legacyEvidenceLabel = latestReport
+    ? legacyEvaluationEvidenceLabel(latestReport.run.evidence_level)
+    : null
   const latestVerdict = latestReport
     ? effectiveGateVerdict(latestReport.summary.verdict, latestReport.gates)
     : null
@@ -54,13 +71,15 @@ export default function EvaluationOverview({
         <div className={styles.readinessCopy}>
           <span className={styles.eyebrow}>Decision readiness</span>
           <h2 id="evaluation-readiness-title">
-            {latestReport ? latestReport.run.name : 'Establish the first evidence baseline'}
+            {latestReportName || 'Establish the first evidence baseline'}
           </h2>
           <p>
             {latestReport
-              ? latestReport.run.evidence_level === 'E0'
-                ? 'This is diagnostic evidence. Measured observations remain useful, but the promotion summary is withheld until native benchmark and execution receipts qualify the claim.'
-                : 'Review required blockers and measured outcomes before changing the production recipe or model pool.'
+              ? isLegacyReport
+                ? `${legacyEvidenceLabel}. The report remains readable for diagnostics, but it has no current server attestation and cannot support a promotion claim.`
+                : isServerAttestedDiagnostic
+                  ? 'This server-attested E0 report exposes a bounded set of independently reduced diagnostics. Promotion remains withheld until native benchmark and execution receipts qualify the claim.'
+                  : 'Review required blockers and measured outcomes before changing the production recipe or model pool.'
               : 'Create a bounded replay or live run. The plane keeps missing evidence explicit and never promotes an unmeasured gate.'}
           </p>
         </div>
@@ -110,10 +129,14 @@ export default function EvaluationOverview({
             <span className={styles.eyebrow}>
               {runLedgerComplete ? 'Latest completed evidence' : 'Latest readable evidence'}
             </span>
-            <h2 id="latest-evidence-title">
-              {latestReport?.run.name || 'No completed report yet'}
-            </h2>
-            <p>Headline metrics follow the selected tracks; irrelevant fixed KPIs are omitted.</p>
+            <h2 id="latest-evidence-title">{latestReportName || 'No completed report yet'}</h2>
+            <p>
+              {isLegacyReport
+                ? `${legacyEvidenceLabel}. Headline elevation is withheld; the complete metric set remains in the report explorer.`
+                : serverAttested
+                  ? 'Only metrics reduced by the current server attestation are elevated here; the complete worker-derived metric set remains in the report explorer.'
+                  : 'Headline elevation is withheld until the report carries a current server attestation.'}
+            </p>
           </div>
           {latestReport ? (
             <button
@@ -125,9 +148,7 @@ export default function EvaluationOverview({
             </button>
           ) : null}
         </header>
-        {reportLoading ? (
-          <p className={styles.emptyCopy}>Loading verified report summary…</p>
-        ) : null}
+        {reportLoading ? <p className={styles.emptyCopy}>Loading report summary…</p> : null}
         {reportError ? (
           <div className={styles.inlineError} role="alert">
             <div>
@@ -147,6 +168,7 @@ export default function EvaluationOverview({
                   <dt>{metric.name}</dt>
                   <dd>{formatMetric(metric)}</dd>
                   <span>
+                    {serverAttested ? `Server-reduced ${latestReport.run.evidence_level} · ` : ''}
                     {metric.track_id ? TRACK_PRESENTATION[metric.track_id].label : 'System'}
                   </span>
                 </div>
@@ -155,11 +177,18 @@ export default function EvaluationOverview({
           ) : (
             <div className={styles.scopeNotice}>
               <strong>
-                Promotion summary withheld — diagnostic {latestReport.run.evidence_level}
+                {isLegacyReport
+                  ? legacyEvidenceLabel
+                  : isDiagnostic
+                    ? 'Promotion summary withheld — server-attested diagnostic E0'
+                    : 'No measured headline applies to this run'}
               </strong>
               <span>
-                No measured aggregate matches this run scope. Inspect diagnostics and gates for the
-                exact evidence gap.
+                {isLegacyReport
+                  ? 'No metric is elevated from this legacy report. Inspect the complete metric explorer and gates as diagnostic evidence only.'
+                  : isDiagnostic
+                    ? 'No independently reduced diagnostic headline matches this run scope. Inspect the metric explorer and gates for the complete E0 observations and exact evidence gap.'
+                    : 'Inspect the full report for the measured outcomes and exact evidence scope.'}
               </span>
             </div>
           )
@@ -218,6 +247,11 @@ export default function EvaluationOverview({
                         <span className={styles.inlineStatus}>
                           <RunStatusBadge status={observation.status} />
                           {Math.round(observation.coverage.fraction * 100)}% observed
+                          {serverAttested
+                            ? ' · server-attested'
+                            : isLegacyReport
+                              ? ' · integrity-only'
+                              : ''}
                         </span>
                       ) : (
                         'No observation in latest run'

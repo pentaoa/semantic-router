@@ -6,7 +6,7 @@ from collections import defaultdict
 
 from cli.evaluation.constants import SCHEMA_VERSION
 from cli.evaluation.evidence import ExecutionRecord
-from cli.evaluation.metric_core import percentile
+from cli.evaluation.metric_core import _canonical_ordered_float_sum, percentile
 
 
 def build_capacity_profile(records: list[ExecutionRecord]) -> dict[str, object]:
@@ -35,7 +35,9 @@ def build_capacity_profile(records: list[ExecutionRecord]) -> dict[str, object]:
                 "latency_p99_ms": percentile(latencies, 0.99),
                 "input_tokens": sum(row.input_tokens or 0 for row in rows),
                 "output_tokens": sum(row.output_tokens or 0 for row in rows),
-                "runtime_cost_usd": sum(row.runtime_cost or 0 for row in rows),
+                "runtime_cost_usd": _canonical_ordered_float_sum(
+                    row.runtime_cost or 0 for row in rows
+                ),
             }
         )
     return {

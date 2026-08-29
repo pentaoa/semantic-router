@@ -138,6 +138,15 @@
   height: 15px;
 }
 
+.navigationShell {
+  position: relative;
+  min-width: 0;
+}
+
+.navigationOverflowHint {
+  display: none;
+}
+
 .navigation {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -1016,7 +1025,10 @@
   .navigation {
     display: flex;
     overflow-x: auto;
+    padding-right: 4.5rem;
     scrollbar-width: none;
+    scroll-behavior: smooth;
+    scroll-padding-inline: 0.25rem 4.5rem;
   }
 
   .navigation::-webkit-scrollbar {
@@ -1026,6 +1038,25 @@
   .navigationButton {
     flex: 0 0 auto;
     min-width: 128px;
+  }
+
+  .navigationOverflowHint {
+    position: absolute;
+    top: 1px;
+    right: 1px;
+    bottom: 1px;
+    display: inline-flex;
+    align-items: center;
+    padding: 0 0.7rem 0 1.7rem;
+    border-radius: 0 var(--radius-lg) var(--radius-lg) 0;
+    background: linear-gradient(90deg, transparent, var(--surface-panel) 32%);
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    font-size: 0.66rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    pointer-events: none;
+    text-transform: uppercase;
   }
 
   .surfaceHeader,

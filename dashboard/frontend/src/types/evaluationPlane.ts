@@ -254,6 +254,7 @@ export interface EvaluationReportSummary {
 
 export interface EvaluationReport {
   schema_version: EvaluationSchemaVersion
+  attestation_revision?: string
   run: EvaluationRun
   summary: EvaluationReportSummary
   tracks: EvaluationTrackReport[]
@@ -267,6 +268,7 @@ export interface EvaluationReport {
 
 export interface EvaluationComparison {
   schema_version: EvaluationSchemaVersion
+  attestation_revision?: string
   baseline_run_id: string
   candidate_run_id: string
   verdict: GateVerdict

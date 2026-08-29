@@ -99,6 +99,9 @@ func (s *Service) finalizeRun(runID string, processErr error) {
 		return
 	}
 	now := time.Now().UTC()
+	if processErr == nil && run.CompletedAt != nil {
+		now = run.CompletedAt.UTC()
+	}
 	run.CompletedAt = &now
 	eventType := "completed"
 	message := "Evaluation completed"

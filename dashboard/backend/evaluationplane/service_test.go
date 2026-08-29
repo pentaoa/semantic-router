@@ -229,6 +229,7 @@ func writeProcessReport(spec ProcessSpec) error {
 	}
 	metrics := []Metric{}
 	gates := testReleaseGates(fixture.run.ChangeProfile, completedAt)
+	setTestGatePlanCoverage(gates, "routing", 1, 1)
 	artifacts, err := writeProcessReportEvidence(fixture, provenance, metrics, gates)
 	if err != nil {
 		return err
@@ -243,12 +244,12 @@ func writeProcessReport(spec ProcessSpec) error {
 		SchemaVersion: SchemaVersion,
 		Run:           reportRun,
 		Summary: ReportSummary{
-			Verdict: "unavailable", Coverage: Coverage{Evaluated: 1, Total: 1, Fraction: 1, Unavailable: 0},
+			Verdict: "unavailable", Coverage: serverCoverage(1, 1),
 			PassedGates: 2, UnavailableGates: 5,
 		},
 		Tracks: []TrackReport{{
 			TrackID: "routing", Status: "completed", EvidenceLevel: "E0", Summary: "Collected 1 evidence records.",
-			Coverage: Coverage{Evaluated: 1, Total: 1, Fraction: 1}, Metrics: []Metric{}, Gates: []Gate{gates[4]},
+			Coverage: serverCoverage(1, 1), Metrics: []Metric{}, Gates: []Gate{gates[4]},
 		}},
 		Metrics:         metrics,
 		Gates:           gates,
@@ -268,9 +269,10 @@ func testArtifactRef(data []byte) map[string]any {
 }
 
 func testArtifact(name string, data []byte) Artifact {
+	contract := publicArtifactContracts[name]
 	return Artifact{
-		ID: strings.ReplaceAll(name, ".", "-"), Name: name, Kind: filepath.Ext(name), URI: name,
-		Digest: digestBytes(data), MediaType: "application/json", SizeBytes: int64(len(data)),
+		ID: strings.ReplaceAll(name, ".", "-"), Name: name, Kind: contract.Kind, URI: name,
+		Digest: digestBytes(data), MediaType: contract.MediaType, SizeBytes: int64(len(data)),
 	}
 }
 
@@ -305,6 +307,24 @@ func testReleaseGates(profile ChangeProfile, evaluatedAt time.Time) []Gate {
 		gates = append(gates, gate)
 	}
 	return gates
+}
+
+func setTestGatePlanCoverage(gates []Gate, selectedTrack TrackID, evaluated, total int) {
+	for index := range gates {
+		gateEvaluated := evaluated
+		gateTotal := total
+		if gates[index].TrackID != "" && gates[index].TrackID != selectedTrack {
+			gateEvaluated = 0
+			gateTotal = 0
+		}
+		count := gateEvaluated
+		coverage := Coverage{Evaluated: gateEvaluated, Total: gateTotal, Unavailable: gateTotal - gateEvaluated}
+		if gateTotal > 0 {
+			coverage.Fraction = float64(gateEvaluated) / float64(gateTotal)
+		}
+		gates[index].SampleCount = &count
+		gates[index].Coverage = &coverage
+	}
 }
 
 func writeTestPrivateReceiptWithoutTesting(runDir string) error {
@@ -372,6 +392,74 @@ func TestControlledProcessReportBundlePassesServerValidation(t *testing.T) {
 	}
 	if err := service.validateAndAnchorReport(run.ID); err != nil {
 		t.Fatalf("validateAndAnchorReport: %v", err)
+	}
+	sealedBytes, readErr := service.store.ReadReport(run.ID)
+	if readErr != nil {
+		t.Fatalf("read sealed report: %v", readErr)
+	}
+	sealed, decodeErr := decodeReportStrict(run.ID, sealedBytes)
+	if decodeErr != nil {
+		t.Fatalf("decode sealed report: %v", decodeErr)
+	}
+	if sealed.Run.Name != run.Name || sealed.Run.Description != run.Description || sealed.Run.StartedAt == nil || sealed.Run.CompletedAt == nil {
+		t.Fatalf("sealed report run identity is not server-owned: %+v", sealed.Run)
+	}
+	if sealed.AttestationRevision != ServerAttestationRevision {
+		t.Fatalf("sealed report attestation_revision=%q, want %q", sealed.AttestationRevision, ServerAttestationRevision)
+	}
+	anchor, anchorErr := service.store.readReportAnchor(run.ID)
+	if anchorErr != nil {
+		t.Fatalf("read report anchor: %v", anchorErr)
+	}
+	if anchor.AttestationRevision != ServerAttestationRevision {
+		t.Fatalf("sealed anchor attestation_revision=%q, want %q", anchor.AttestationRevision, ServerAttestationRevision)
+	}
+}
+
+func TestValidateAndAnchorReportRejectsNonCanonicalPublicArtifactMetadata(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Artifact)
+	}{
+		{name: "kind", mutate: func(artifact *Artifact) { artifact.Kind = "worker-defined" }},
+		{name: "media type", mutate: func(artifact *Artifact) { artifact.MediaType = "text/html" }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			service, root := newTestService(t, &controlledProcess{}, 1)
+			run, err := service.CreateRun(context.Background(), validCreateRequest())
+			if err != nil {
+				t.Fatalf("CreateRun: %v", err)
+			}
+			now := time.Now().UTC()
+			run.Status = StatusRunning
+			run.StartedAt = &now
+			if err := service.store.UpdateRun(run); err != nil {
+				t.Fatalf("stage running run: %v", err)
+			}
+			spec := ProcessSpec{ManifestPath: filepath.Join(root, "runs", run.ID, manifestFileName), StorePath: root}
+			if err := writeProcessReport(spec); err != nil {
+				t.Fatalf("writeProcessReport: %v", err)
+			}
+			reportBytes, readErr := service.store.ReadReport(run.ID)
+			if readErr != nil {
+				t.Fatalf("read report: %v", readErr)
+			}
+			report, decodeErr := decodeReportStrict(run.ID, reportBytes)
+			if decodeErr != nil {
+				t.Fatalf("decode report: %v", decodeErr)
+			}
+			if len(report.Artifacts) == 0 {
+				t.Fatal("fixture report has no public artifacts")
+			}
+			test.mutate(&report.Artifacts[0])
+			if err := service.store.WriteReport(run.ID, report); err != nil {
+				t.Fatalf("rewrite report: %v", err)
+			}
+			if err := service.validateAndAnchorReport(run.ID); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "artifact metadata") {
+				t.Fatalf("validateAndAnchorReport error=%v, want artifact metadata ErrInvalid", err)
+			}
+		})
 	}
 }
 

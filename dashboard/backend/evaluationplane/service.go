@@ -183,6 +183,13 @@ func (s *Service) CreateRun(ctx context.Context, request CreateRunRequest) (Run,
 		if found {
 			return s.resolveIndexedCreate(validated, requestDigest, indexed)
 		}
+		indexed, found, reconcileErr := s.store.ReconcileClientRequestIndex(validated.ClientRequestID)
+		if reconcileErr != nil {
+			return Run{}, fmt.Errorf("%w: client_request_id index reconciliation is unavailable", ErrConflict)
+		}
+		if found {
+			return s.resolveIndexedCreate(validated, requestDigest, indexed)
+		}
 	}
 	if baselineErr := s.validateCreateBaseline(validated, target, snapshot); baselineErr != nil {
 		return Run{}, baselineErr
@@ -197,21 +204,7 @@ func (s *Service) CreateRun(ctx context.Context, request CreateRunRequest) (Run,
 	if err != nil {
 		return Run{}, err
 	}
-	indexedRun, err := s.reserveIndexedCreate(validated, run, requestDigest)
-	if err != nil {
-		return Run{}, err
-	}
-	if indexedRun != nil {
-		return *indexedRun, nil
-	}
-	if _, err := s.store.CreateBundle(run, manifest); err != nil {
-		return Run{}, err
-	}
-	if _, err := s.appendEvent(Event{RunID: run.ID, Type: "snapshot", Timestamp: run.CreatedAt, Message: "Immutable run manifest created", Progress: &run.Progress}); err != nil {
-		_ = s.store.DeleteRun(run.ID)
-		return Run{}, err
-	}
-	return run, nil
+	return s.persistPendingRun(validated, run, manifest, requestDigest)
 }
 
 func requireQualifiedCodeRevision(_ EvidenceLevel, revision string) error {

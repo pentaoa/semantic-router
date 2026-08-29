@@ -266,8 +266,34 @@ no-store`. Event streams use durable numeric IDs and `Last-Event-ID`; browser
 reconnects replay only events after that cursor and suppress duplicate IDs.
 Before publication, the Dashboard strictly validates bounded records, unique
 case/attempt/arm keys, finite metric values, artifact receipts, lineage, and
-the aggregate failure summary. E0 fixture evidence cannot satisfy a promotion
-gate merely because the bundle is structurally complete.
+the aggregate failure summary. It also independently reduces the generic
+`safety.violation_rate`, `safety.block_accuracy`,
+`joint.normalized_regret`, and `capacity.success_rate` values from the sealed
+case records. A worker-authored metric cannot pass validation merely by making
+its report, metric file, and checksums agree with one another.
+
+That trust boundary is machine-readable. Only a report and its server-owned
+anchor that both carry the exact
+`attestation_revision: evaluation-server-attestation.v2` bind the four
+independent metric reductions above together with server-checked coverage,
+track presentation, cost ledgers, and bounded capacity evidence. Reports with
+no revision predate this contract: they remain readable as legacy
+integrity-only diagnostics, but API and UI clients must not elevate their
+metrics or use them for a release verdict. An unknown revision or a mismatch
+between the report and anchor is invalid and fails closed.
+
+`GET /api/evaluation/v1/runs` retains the original bare-array response for API
+compatibility. The Dashboard and completeness-sensitive clients use
+`GET /api/evaluation/v1/run-ledger`, whose envelope also reports quarantined or
+unreadable durable entries. A partial durable index is therefore visible and
+cannot silently look like a complete run history.
+
+These checks attest storage, execution, and four generic reductions, not the
+origin or scientific qualification of every observation. E0 fixture evidence
+cannot satisfy a promotion gate merely because the bundle is structurally
+complete. Until a typed server-owned or native qualification receipt exists,
+applicable G2-G9 gates remain `unavailable`; the underlying diagnostic metric
+is still shown so an operator can investigate it.
 
 Keep raw private workloads and outputs in an ignored store. A public report
 should include aggregate evidence and reproducible provenance without exposing
@@ -315,9 +341,11 @@ observation state remain separate.
 Candidate comparison is also fail-closed. It rejects self-comparison, a
 mismatched `baseline_run_id`, workload/benchmark/seed drift, and treatment
 factors that do not match the selected change profile. Aggregate point deltas
-can diagnose a clear regression, but cannot pass a promotion: that requires a
-case-aligned paired delta interval under a registered statistical comparison
-contract.
+remain visible as descriptive diagnostics, but either report missing the
+current server attestation forces the comparison verdict to `unavailable`.
+Even with current attestations, point deltas cannot pass a promotion: that
+requires a case-aligned paired delta interval under a registered statistical
+comparison contract.
 
 The default gate disposition is explicit:
 
@@ -335,7 +363,7 @@ Gate verdicts distinguish `pass`, `fail`, `unavailable`, `not_applicable`, and
 |------|-------------------|
 | G0 Reproducibility | frozen inputs, seeds, failures, digests, and unbroken lineage |
 | G1 Static correctness | strict schemas, conformance, references, reachability, coverage, deterministic replayability |
-| G2 Hard policy | static enforcement plus dynamic `0/N`, one-sided bound, slice/fault coverage; any observed violation fails |
+| G2 Hard policy | qualified static enforcement plus dynamic `0/N`, one-sided bound, slice/fault coverage; within that qualified evidence any observed violation fails |
 | G3 Offline value | paired incumbent and no-information baseline, frontier position, pool-normalized regret, router overhead |
 | G4 Robustness / OOD | invariant and expected-change pairs, temporal/source/language/domain/modality slices, contamination audit |
 | G5 Live fidelity | paired replay-to-live gap, fresh outputs, complete timeout/retry/failure accounting, calibrated grader |

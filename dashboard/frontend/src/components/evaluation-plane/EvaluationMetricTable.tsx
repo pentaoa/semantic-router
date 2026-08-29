@@ -1,11 +1,17 @@
 import { useDeferredValue, useMemo, useState } from 'react'
 
-import type { EvaluationMetric, EvaluationTrackId } from '../../types/evaluationPlane'
+import type {
+  EvidenceLevel,
+  EvaluationMetric,
+  EvaluationTrackId,
+} from '../../types/evaluationPlane'
 import { TRACK_PRESENTATION } from '../../types/evaluationPlane'
 import {
   formatConfidenceInterval,
   formatDelta,
   formatMetric,
+  isServerReducedMetric,
+  legacyEvaluationEvidenceLabel,
   metricDeltaTone,
 } from './evaluationPresentation'
 import styles from './EvaluationReport.module.css'
@@ -15,6 +21,8 @@ interface EvaluationMetricTableProps {
   caption?: string
   compact?: boolean
   controls?: boolean
+  evidenceLevel?: EvidenceLevel
+  serverAttested?: boolean
 }
 
 function directionLabel(direction: EvaluationMetric['direction']): string {
@@ -28,6 +36,18 @@ function directionLabel(direction: EvaluationMetric['direction']): string {
     default:
       return 'Diagnostic'
   }
+}
+
+function metricEvidenceLabel(
+  evidenceLevel: EvidenceLevel | undefined,
+  serverAttested: boolean,
+  metricID: string,
+): string | undefined {
+  if (!evidenceLevel) return undefined
+  if (!serverAttested) return legacyEvaluationEvidenceLabel(evidenceLevel)
+  return isServerReducedMetric(metricID)
+    ? `Server-reduced ${evidenceLevel}`
+    : `Worker-derived ${evidenceLevel} / diagnostic only`
 }
 
 function MetricValue({ metric }: { metric: EvaluationMetric }) {
@@ -46,6 +66,8 @@ export default function EvaluationMetricTable({
   caption = 'Evaluation metrics',
   compact = false,
   controls = true,
+  evidenceLevel,
+  serverAttested = false,
 }: EvaluationMetricTableProps) {
   const [search, setSearch] = useState('')
   const [track, setTrack] = useState<EvaluationTrackId | 'all'>('all')
@@ -128,6 +150,7 @@ export default function EvaluationMetricTable({
                 const delta = formatDelta(metric)
                 const interval = formatConfidenceInterval(metric)
                 const deltaTone = metricDeltaTone(metric)
+                const metricEvidence = metricEvidenceLabel(evidenceLevel, serverAttested, metric.id)
                 return (
                   <tr key={`${metric.track_id || 'all'}-${metric.id}`}>
                     <th scope="row">
@@ -135,6 +158,7 @@ export default function EvaluationMetricTable({
                       <span className={styles.metricIdentity}>
                         {metric.track_id ? TRACK_PRESENTATION[metric.track_id].label : 'System'} ·{' '}
                         <code>{metric.id}</code>
+                        {metricEvidence ? ` · ${metricEvidence}` : ''}
                       </span>
                     </th>
                     <td>

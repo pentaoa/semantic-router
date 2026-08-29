@@ -49,7 +49,7 @@ export function getEvaluationCatalog(signal?: AbortSignal): Promise<EvaluationCa
 }
 
 export async function listEvaluationRuns(signal?: AbortSignal): Promise<EvaluationRunLedger> {
-  const payload = await requestJson<unknown>('/runs', { signal })
+  const payload = await requestJson<unknown>('/run-ledger', { signal })
   if (
     !isRecord(payload) ||
     payload.schema_version !== EVALUATION_SCHEMA_VERSION ||

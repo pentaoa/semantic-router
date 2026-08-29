@@ -7,15 +7,20 @@ import (
 	"strings"
 )
 
-var downloadableArtifactNames = map[string]bool{
-	"routing-traces.jsonl":  true,
-	"capacity-profile.json": true,
-	"metrics.json":          true,
-	"gates.json":            true,
-	"comparison.json":       true,
-	"failure-summary.json":  true,
-	"provenance.json":       true,
-	"checksums.sha256":      true,
+type publicArtifactContract struct {
+	Kind      string
+	MediaType string
+}
+
+var publicArtifactContracts = map[string]publicArtifactContract{
+	"routing-traces.jsonl":  {Kind: "jsonl", MediaType: "application/x-ndjson"},
+	"capacity-profile.json": {Kind: "json", MediaType: "application/json"},
+	"metrics.json":          {Kind: "json", MediaType: "application/json"},
+	"gates.json":            {Kind: "json", MediaType: "application/json"},
+	"comparison.json":       {Kind: "json", MediaType: "application/json"},
+	"failure-summary.json":  {Kind: "json", MediaType: "application/json"},
+	"provenance.json":       {Kind: "json", MediaType: "application/json"},
+	"checksums.sha256":      {Kind: "sha256", MediaType: "text/plain"},
 }
 
 type OpenedArtifact struct {
@@ -34,7 +39,7 @@ func (s *Store) OpenArtifact(runID, artifactPath string) (*OpenedArtifact, error
 	if err != nil {
 		return nil, err
 	}
-	if !downloadableArtifactNames[filepath.ToSlash(relative)] {
+	if _, ok := publicArtifactContracts[filepath.ToSlash(relative)]; !ok {
 		return nil, fmt.Errorf("%w: artifact is not downloadable", ErrInvalid)
 	}
 	candidate := filepath.Join(runDir, relative)

@@ -30,6 +30,10 @@ _LOWER_CONFIDENCE_QUANTILE = 0.025
 _UPPER_CONFIDENCE_QUANTILE = 0.975
 _MIN_BOOTSTRAP_SAMPLE_SIZE = 2
 _MIN_BOOTSTRAP_RESAMPLES = 100
+_SERVER_REDUCED_WITHOUT_INTERVALS = {
+    "safety.violation_rate",
+    "joint.normalized_regret",
+}
 _LATENCY_METRICS: dict[str, tuple[str, float]] = {
     "routing.latency_p50_ms": ("routing", 0.50),
     "routing.latency_p95_ms": ("routing", 0.95),
@@ -170,7 +174,9 @@ def attach_confidence_intervals(
     decorated: list[EvaluationMetric] = []
     for index, metric in enumerate(metrics):
         interval: tuple[float, float] | None = None
-        if (
+        if metric.id in _SERVER_REDUCED_WITHOUT_INTERVALS:
+            pass
+        elif (
             metric.id in _BINOMIAL_METRICS
             or (
                 metric.id.startswith("model_pool.arm.")

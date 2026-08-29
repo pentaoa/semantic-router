@@ -96,6 +96,43 @@ func TestValidateRecordsAndFailureSummaryAttestsStrictEvidence(t *testing.T) {
 	}
 }
 
+func TestDashboardRecordCoveragePlanIncludesMissingVisibleCells(t *testing.T) {
+	runDir := t.TempDir()
+	writeJSONLinesForTest(t, filepath.Join(runDir, "cases.jsonl"), validVisibleCaseRow("routing-only"), validVisibleCaseRow("capacity-only"))
+	routing := validExecutionRecordRow("routing-cell", "routing-only")
+	capacity := validExecutionRecordRow("capacity-cell", "capacity-only")
+	capacity["track_id"] = "capacity"
+	writeJSONLinesForTest(t, filepath.Join(runDir, "records.jsonl"), routing, capacity)
+	if err := writeJSONAtomic(filepath.Join(runDir, "failure-summary.json"), map[string]any{
+		"schema_version": SchemaVersion,
+		"total_records":  2,
+		"failed":         0,
+		"unavailable":    0,
+		"by_track": []map[string]any{
+			{"track_id": "capacity", "succeeded": 1, "failed": 0, "unavailable": 0},
+			{"track_id": "routing", "succeeded": 1, "failed": 0, "unavailable": 0},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	attestation, err := validateRecordsAndFailureSummary(runDir, RunManifest{
+		SampleLimit: 2, TrackIDs: []TrackID{"routing", "capacity"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, trackID := range []TrackID{"routing", "capacity"} {
+		coverage := attestation.expectedTrackCoverage(trackID)
+		if coverage.Evaluated != 1 || coverage.Total != 2 || coverage.Fraction != 0.5 {
+			t.Fatalf("track %s coverage=%+v, want 1/2 strong visible plan", trackID, coverage)
+		}
+	}
+	overall := attestation.expectedSummaryCoverage()
+	if overall.Evaluated != 2 || overall.Total != 4 || overall.Fraction != 0.5 {
+		t.Fatalf("summary coverage=%+v, want 2/4 strong Dashboard plan", overall)
+	}
+}
+
 type forgedEvidenceTest struct {
 	name             string
 	mutate           func([]map[string]any, []map[string]any, map[string]any)

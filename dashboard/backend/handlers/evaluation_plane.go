@@ -39,12 +39,14 @@ func (h *EvaluationPlaneHandler) Runs(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodGet:
-		ledger, err := h.service.ListRunLedger()
+		// Preserve the original evaluation.v1 collection contract for API clients.
+		// Ledger integrity metadata lives at the additive /run-ledger endpoint.
+		runs, err := h.service.ListRuns()
 		if err != nil {
 			writeEvaluationError(w, err)
 			return
 		}
-		writeEvaluationJSON(w, http.StatusOK, ledger)
+		writeEvaluationJSON(w, http.StatusOK, runs)
 	case http.MethodPost:
 		if h.denyReadonly(w) {
 			return
@@ -69,6 +71,18 @@ func (h *EvaluationPlaneHandler) Runs(w http.ResponseWriter, r *http.Request) {
 	default:
 		methodNotAllowed(w, http.MethodGet, http.MethodPost)
 	}
+}
+
+func (h *EvaluationPlaneHandler) RunLedger(w http.ResponseWriter, r *http.Request) {
+	if preflightOrMethod(w, r, http.MethodGet) {
+		return
+	}
+	ledger, err := h.service.ListRunLedger()
+	if err != nil {
+		writeEvaluationError(w, err)
+		return
+	}
+	writeEvaluationJSON(w, http.StatusOK, ledger)
 }
 
 func (h *EvaluationPlaneHandler) RunRoute(w http.ResponseWriter, r *http.Request) {

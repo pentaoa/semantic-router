@@ -374,7 +374,7 @@ describe('Evaluation Plane API', () => {
 
     expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
       '/api/evaluation/v1/catalog',
-      '/api/evaluation/v1/runs',
+      '/api/evaluation/v1/run-ledger',
       '/api/evaluation/v1/runs/run%201',
       '/api/evaluation/v1/runs',
       '/api/evaluation/v1/runs/run%201/start',

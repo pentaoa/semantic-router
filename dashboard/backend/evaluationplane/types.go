@@ -9,8 +9,9 @@ import (
 )
 
 const (
-	SchemaVersion       = "evaluation.v1"
-	GateContractVersion = "evaluation-release-gates.v1"
+	SchemaVersion             = "evaluation.v1"
+	GateContractVersion       = "evaluation-release-gates.v1"
+	ServerAttestationRevision = "evaluation-server-attestation.v2"
 )
 
 var (
@@ -342,26 +343,28 @@ type ReportSummary struct {
 }
 
 type Report struct {
-	SchemaVersion   string        `json:"schema_version"`
-	Run             Run           `json:"run"`
-	Summary         ReportSummary `json:"summary"`
-	Tracks          []TrackReport `json:"tracks"`
-	Metrics         []Metric      `json:"metrics"`
-	Gates           []Gate        `json:"gates"`
-	Costs           CostLedgers   `json:"costs"`
-	Recommendations []string      `json:"recommendations"`
-	Provenance      Provenance    `json:"provenance"`
-	Artifacts       []Artifact    `json:"artifacts"`
+	SchemaVersion       string        `json:"schema_version"`
+	AttestationRevision string        `json:"attestation_revision,omitempty"`
+	Run                 Run           `json:"run"`
+	Summary             ReportSummary `json:"summary"`
+	Tracks              []TrackReport `json:"tracks"`
+	Metrics             []Metric      `json:"metrics"`
+	Gates               []Gate        `json:"gates"`
+	Costs               CostLedgers   `json:"costs"`
+	Recommendations     []string      `json:"recommendations"`
+	Provenance          Provenance    `json:"provenance"`
+	Artifacts           []Artifact    `json:"artifacts"`
 }
 
 type Comparison struct {
-	SchemaVersion   string      `json:"schema_version"`
-	BaselineRunID   string      `json:"baseline_run_id"`
-	CandidateRunID  string      `json:"candidate_run_id"`
-	Verdict         GateVerdict `json:"verdict"`
-	Summary         string      `json:"summary"`
-	Metrics         []Metric    `json:"metrics"`
-	Gates           []Gate      `json:"gates"`
-	Recommendations []string    `json:"recommendations"`
-	CreatedAt       time.Time   `json:"created_at,omitempty"`
+	SchemaVersion       string      `json:"schema_version"`
+	AttestationRevision string      `json:"attestation_revision,omitempty"`
+	BaselineRunID       string      `json:"baseline_run_id"`
+	CandidateRunID      string      `json:"candidate_run_id"`
+	Verdict             GateVerdict `json:"verdict"`
+	Summary             string      `json:"summary"`
+	Metrics             []Metric    `json:"metrics"`
+	Gates               []Gate      `json:"gates"`
+	Recommendations     []string    `json:"recommendations"`
+	CreatedAt           time.Time   `json:"created_at,omitempty"`
 }

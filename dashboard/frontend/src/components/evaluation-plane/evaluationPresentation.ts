@@ -1,4 +1,5 @@
 import type {
+  EvidenceLevel,
   EvaluationGate,
   EvaluationMetric,
   EvaluationReport,
@@ -175,17 +176,50 @@ const HEADLINE_METRIC_PRIORITY = [
   'multimodal.quality',
   'multimodal.support_rate',
   'preference.agreement',
+  'joint.normalized_regret',
   'safety.violation_rate',
+  'safety.block_accuracy',
   'capacity.throughput_rps',
   'capacity.latency_p95_ms',
   'capacity.success_rate',
   'capacity.cost_per_successful_request',
 ] as const
 
+export const EVALUATION_SERVER_ATTESTATION_REVISION = 'evaluation-server-attestation.v2' as const
+
+// The v2 control plane independently reduces only these values from sealed
+// records, regardless of the report's claim level. Every other aggregate stays
+// available in the explorer but cannot become a headline under this revision.
+const SERVER_REDUCED_HEADLINES = new Set([
+  'joint.normalized_regret',
+  'safety.violation_rate',
+  'safety.block_accuracy',
+  'capacity.success_rate',
+])
+
+export function isServerReducedMetric(metricID: string): boolean {
+  return SERVER_REDUCED_HEADLINES.has(metricID)
+}
+
+export function hasServerEvaluationAttestation(evidence: {
+  attestation_revision?: string
+}): boolean {
+  return evidence.attestation_revision === EVALUATION_SERVER_ATTESTATION_REVISION
+}
+
+export function legacyEvaluationEvidenceLabel(level: EvidenceLevel): string {
+  return level === 'E0'
+    ? 'Legacy worker-derived E0 / integrity-only'
+    : `Legacy unattested ${level} / integrity-only`
+}
+
 export function selectHeadlineMetrics(report: EvaluationReport, limit = 4): EvaluationMetric[] {
-  const available = report.metrics.filter(
-    (metric) => metric.value !== null && Number.isFinite(metric.value),
-  )
+  if (!hasServerEvaluationAttestation(report)) return []
+
+  const available = report.metrics.filter((metric) => {
+    if (metric.value === null || !Number.isFinite(metric.value)) return false
+    return isServerReducedMetric(metric.id)
+  })
   const byID = new Map(available.map((metric) => [metric.id, metric]))
   const selected: EvaluationMetric[] = []
   for (const id of HEADLINE_METRIC_PRIORITY) {
