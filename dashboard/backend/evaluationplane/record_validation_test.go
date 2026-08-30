@@ -15,6 +15,7 @@ func validVisibleCaseRow(id string) map[string]any {
 	return map[string]any{
 		"schema_version": SchemaVersion,
 		"id":             id,
+		"track_ids":      []TrackID{"routing"},
 		"messages": []map[string]any{
 			{"role": "user", "content": "evaluate this case"},
 		},
@@ -77,7 +78,11 @@ func writeRecordValidationFixture(
 	if err := writeJSONAtomic(filepath.Join(runDir, "failure-summary.json"), summary); err != nil {
 		t.Fatalf("write failure summary: %v", err)
 	}
-	return runDir, RunManifest{SampleLimit: len(cases), TrackIDs: []TrackID{"routing"}}
+	return runDir, RunManifest{
+		SampleLimit: len(cases), TrackIDs: []TrackID{"routing"},
+		SuiteIDs:       []string{"evaluation-smoke"},
+		SuiteExecutors: map[string]string{"evaluation-smoke": "fixture-replay.v1"},
+	}
 }
 
 func TestValidateRecordsAndFailureSummaryAttestsStrictEvidence(t *testing.T) {
@@ -87,7 +92,7 @@ func TestValidateRecordsAndFailureSummaryAttestsStrictEvidence(t *testing.T) {
 		[]map[string]any{validExecutionRecordRow("routing-case-1", "case-1")},
 		validFailureSummaryRow(),
 	)
-	attestation, err := validateRecordsAndFailureSummary(runDir, manifest)
+	attestation, err := validateRecordsAndFailureSummaryForTest(t, runDir, manifest)
 	if err != nil {
 		t.Fatalf("validateRecordsAndFailureSummary: %v", err)
 	}
@@ -96,9 +101,12 @@ func TestValidateRecordsAndFailureSummaryAttestsStrictEvidence(t *testing.T) {
 	}
 }
 
-func TestDashboardRecordCoveragePlanIncludesMissingVisibleCells(t *testing.T) {
+func TestDashboardRecordCoverageUsesExplicitHeterogeneousCaseTrackPlan(t *testing.T) {
 	runDir := t.TempDir()
-	writeJSONLinesForTest(t, filepath.Join(runDir, "cases.jsonl"), validVisibleCaseRow("routing-only"), validVisibleCaseRow("capacity-only"))
+	routingCase := validVisibleCaseRow("routing-only")
+	capacityCase := validVisibleCaseRow("capacity-only")
+	capacityCase["track_ids"] = []TrackID{"capacity"}
+	writeJSONLinesForTest(t, filepath.Join(runDir, "cases.jsonl"), routingCase, capacityCase)
 	routing := validExecutionRecordRow("routing-cell", "routing-only")
 	capacity := validExecutionRecordRow("capacity-cell", "capacity-only")
 	capacity["track_id"] = "capacity"
@@ -115,21 +123,61 @@ func TestDashboardRecordCoveragePlanIncludesMissingVisibleCells(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	attestation, err := validateRecordsAndFailureSummary(runDir, RunManifest{
+	attestation, err := validateRecordsAndFailureSummaryForTest(t, runDir, RunManifest{
 		SampleLimit: 2, TrackIDs: []TrackID{"routing", "capacity"},
+		SuiteIDs:       []string{"evaluation-smoke"},
+		SuiteExecutors: map[string]string{"evaluation-smoke": "fixture-replay.v1"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, trackID := range []TrackID{"routing", "capacity"} {
 		coverage := attestation.expectedTrackCoverage(trackID)
-		if coverage.Evaluated != 1 || coverage.Total != 2 || coverage.Fraction != 0.5 {
-			t.Fatalf("track %s coverage=%+v, want 1/2 strong visible plan", trackID, coverage)
+		if coverage.Evaluated != 1 || coverage.Total != 1 || coverage.Fraction != 1 {
+			t.Fatalf("track %s coverage=%+v, want its exact 1/1 planned cell", trackID, coverage)
 		}
 	}
 	overall := attestation.expectedSummaryCoverage()
-	if overall.Evaluated != 2 || overall.Total != 4 || overall.Fraction != 0.5 {
-		t.Fatalf("summary coverage=%+v, want 2/4 strong Dashboard plan", overall)
+	if overall.Evaluated != 2 || overall.Total != 2 || overall.Fraction != 1 {
+		t.Fatalf("summary coverage=%+v, want exact 2/2 heterogeneous plan", overall)
+	}
+}
+
+func TestDashboardRecordAttestationRejectsMissingAndUnplannedCaseTrackCells(t *testing.T) {
+	tests := []struct {
+		name        string
+		caseTracks  []TrackID
+		recordTrack TrackID
+		want        string
+	}{
+		{name: "missing planned cell", caseTracks: []TrackID{"routing", "capacity"}, recordTrack: "routing", want: "omits planned case-track cell"},
+		{name: "unplanned record", caseTracks: []TrackID{"routing"}, recordTrack: "capacity", want: "not present in the explicit visible plan"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			runDir := t.TempDir()
+			visible := validVisibleCaseRow("case-1")
+			visible["track_ids"] = test.caseTracks
+			record := validExecutionRecordRow("record-1", "case-1")
+			record["track_id"] = test.recordTrack
+			visibleRows := []map[string]any{visible}
+			if test.name == "unplanned record" {
+				capacityCase := validVisibleCaseRow("capacity-case")
+				capacityCase["track_ids"] = []TrackID{"capacity"}
+				visibleRows = append(visibleRows, capacityCase)
+			}
+			writeJSONLinesForTest(t, filepath.Join(runDir, "cases.jsonl"), visibleRows...)
+			writeJSONLinesForTest(t, filepath.Join(runDir, "records.jsonl"), record)
+			manifest := RunManifest{
+				SampleLimit: len(visibleRows), TrackIDs: []TrackID{"routing", "capacity"},
+				SuiteIDs:       []string{"evaluation-smoke"},
+				SuiteExecutors: map[string]string{"evaluation-smoke": "fixture-replay.v1"},
+			}
+			_, err := validateRecordsAndFailureSummaryForTest(t, runDir, manifest)
+			if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error=%v, want ErrInvalid containing %q", err, test.want)
+			}
+		})
 	}
 }
 
@@ -142,6 +190,20 @@ type forgedEvidenceTest struct {
 
 func forgedVisibleEvidenceTests() []forgedEvidenceTest {
 	return []forgedEvidenceTest{
+		{
+			name: "missing explicit track plan",
+			mutate: func(cases []map[string]any, _ []map[string]any, _ map[string]any) {
+				delete(cases[0], "track_ids")
+			},
+			wantError: "visible case contract",
+		},
+		{
+			name: "noncanonical track plan",
+			mutate: func(cases []map[string]any, _ []map[string]any, _ map[string]any) {
+				cases[0]["track_ids"] = []TrackID{"capacity", "routing"}
+			},
+			wantError: "visible case contract",
+		},
 		{
 			name: "unknown visible message field",
 			mutate: func(cases []map[string]any, _ []map[string]any, _ map[string]any) {
@@ -252,7 +314,7 @@ func TestValidateRecordsAndFailureSummaryRejectsForgedEvidence(t *testing.T) {
 				records = append(records, test.additionalRecord)
 			}
 			runDir, manifest := writeRecordValidationFixture(t, cases, records, summary)
-			_, err := validateRecordsAndFailureSummary(runDir, manifest)
+			_, err := validateRecordsAndFailureSummaryForTest(t, runDir, manifest)
 			if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), test.wantError) {
 				t.Fatalf("error=%v, want ErrInvalid containing %q", err, test.wantError)
 			}
@@ -295,10 +357,10 @@ func TestReportBundleRejectsSelfConsistentWorkerClaimsOverForgedRecords(t *testi
 		t.Fatalf("CreateRun: %v", err)
 	}
 	now := time.Now().UTC()
-	run.Status = StatusRunning
+	run.Status = StatusSealing
 	run.StartedAt = &now
 	if err := service.store.UpdateRun(run); err != nil {
-		t.Fatalf("stage running run: %v", err)
+		t.Fatalf("stage sealing run: %v", err)
 	}
 	spec := ProcessSpec{ManifestPath: filepath.Join(root, "runs", run.ID, manifestFileName), StorePath: root}
 	if err := writeProcessReport(spec); err != nil {

@@ -4,26 +4,116 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
+	"math"
+	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 )
 
-func (s *Service) execute(ctx context.Context, runID, manifestPath string) {
+func (s *Service) execute(
+	ctx context.Context,
+	runID, manifestPath string,
+	controlledPair *controlledPairRunContext,
+) {
 	defer s.workers.Done()
 	defer func() { <-s.semaphore }()
 	if err := s.recordWorkerEvent(runID, WorkerEvent{Type: "progress", Message: "Evaluation worker started"}); err != nil {
 		s.finalizeRun(runID, err)
 		return
 	}
-	err := s.process.Run(ctx, ProcessSpec{ManifestPath: manifestPath, StorePath: s.store.Root()}, func(event WorkerEvent) error {
+	registry, _, err := s.registrySnapshot()
+	if err != nil {
+		s.finalizeRun(runID, fmt.Errorf("resolve evaluation execution contracts: %w", err))
+		return
+	}
+	result, err := s.process.Run(ctx, ProcessSpec{
+		ManifestPath: manifestPath, StorePath: s.store.Root(), SuiteStorePath: s.suiteStorePath,
+		executionContracts: registry.executionContracts(),
+		controlledPair:     controlledPair,
+	}, func(event WorkerEvent) error {
 		return s.recordWorkerEvent(runID, event)
 	})
+	defer result.discardStagedEvidence()
 	if err == nil {
-		if reportErr := s.validateAndAnchorReport(runID); reportErr != nil {
-			err = fmt.Errorf("validate evaluation worker report: %w", reportErr)
-		}
+		err = ctx.Err()
+	}
+	if err == nil {
+		err = s.beginSealing(runID)
+	}
+	if err == nil {
+		err = result.publishStagedEvidence()
+	}
+	if err == nil {
+		err = s.attestAndAnchorExecution(runID, result.ExecutionTranscript)
+	}
+	if err != nil && controlledPair != nil {
+		controlledPair.coordinator.abort(err)
 	}
 	s.finalizeRun(runID, err)
+}
+
+func (s *Service) beginSealing(runID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	run, err := s.store.commitRunSealing(runID)
+	if err != nil {
+		if run.Status == StatusCancelled {
+			return context.Canceled
+		}
+		return err
+	}
+	_, err = s.appendEventLocked(Event{
+		RunID: runID, Type: "progress", Timestamp: time.Now().UTC(),
+		Message: run.Progress.Message, Progress: &run.Progress,
+	})
+	return err
+}
+
+func (s *Service) attestAndAnchorExecution(runID string, transcript *brokerExecutionTranscript) error {
+	runEvidencePublicationMu.Lock()
+	defer runEvidencePublicationMu.Unlock()
+
+	attestationDigest, err := s.persistExecutionAttestation(runID, transcript)
+	if err != nil {
+		return fmt.Errorf("attest evaluation execution: %w", err)
+	}
+	validationErr := s.validateAndAnchorReport(runID)
+	if validationErr == nil {
+		return nil
+	}
+	// An unanchored attestation is not durable evidence. Roll it back in the
+	// same publication critical section; an already-published anchor is left
+	// intact so restart recovery can validate the completed seal.
+	if attestationDigest != "" {
+		if rollbackErr := s.rollbackUnanchoredExecutionAttestation(runID); rollbackErr != nil {
+			return fmt.Errorf("validate evaluation worker report: %w; %w", validationErr, rollbackErr)
+		}
+	}
+	return fmt.Errorf("validate evaluation worker report: %w", validationErr)
+}
+
+func (s *Service) rollbackUnanchoredExecutionAttestation(runID string) error {
+	runDir, pathErr := s.store.checkedRunDir(runID)
+	if pathErr != nil {
+		return nil
+	}
+	if _, statErr := os.Lstat(filepath.Join(runDir, reportAnchorFileName)); !os.IsNotExist(statErr) {
+		return nil
+	}
+	removed, err := s.store.removeExecutionAttestationIfPresent(runID)
+	if err != nil {
+		return fmt.Errorf("roll back live attestation: %w", err)
+	}
+	if !removed {
+		return nil
+	}
+	if err := syncEvaluationDirectory(s.store.attestationRoot, "evaluation execution attestation rollback"); err != nil {
+		return fmt.Errorf("sync live attestation rollback: %w", err)
+	}
+	return nil
 }
 
 func (s *Service) recordWorkerEvent(runID string, workerEvent WorkerEvent) error {
@@ -44,19 +134,17 @@ func (s *Service) recordWorkerEvent(runID string, workerEvent WorkerEvent) error
 		return fmt.Errorf("worker exceeded the per-run event limit")
 	}
 	s.workerEvents[runID]++
+	if validationErr := validateWorkerEventForRun(workerEvent, run); validationErr != nil {
+		return validationErr
+	}
 	// Terminal state is server-owned. A worker terminal marker counts against
 	// the protocol budget but is not persisted until the process actually exits.
 	if workerEvent.Type == "completed" || workerEvent.Type == "failed" || workerEvent.Type == "cancelled" {
 		return nil
 	}
-	if workerEvent.TrackID != "" && !containsTrack(run.TrackIDs, workerEvent.TrackID) {
-		return fmt.Errorf("worker emitted unknown run track %q", workerEvent.TrackID)
-	}
 	if workerEvent.Progress != nil {
-		if workerEvent.Progress.CurrentTrackID != "" && !containsTrack(run.TrackIDs, workerEvent.Progress.CurrentTrackID) {
-			return fmt.Errorf("worker progress identified unknown run track %q", workerEvent.Progress.CurrentTrackID)
-		}
-		progress := normalizedProgress(*workerEvent.Progress, run.Progress.Total, workerEvent.Message)
+		progress := *workerEvent.Progress
+		progress.Message = workerEvent.Message
 		run.Progress = progress
 		if updateErr := s.store.UpdateRun(run); updateErr != nil {
 			return updateErr
@@ -71,65 +159,142 @@ func (s *Service) recordWorkerEvent(runID string, workerEvent WorkerEvent) error
 	return err
 }
 
-func normalizedProgress(progress RunProgress, total int, message string) RunProgress {
-	if progress.Percent < 0 {
-		progress.Percent = 0
+func validateWorkerEventForRun(event WorkerEvent, run Run) error {
+	if event.Type == "track" {
+		if event.TrackID == "" || event.Progress == nil {
+			return fmt.Errorf("track worker event requires track_id and progress")
+		}
+	} else if event.TrackID != "" {
+		return fmt.Errorf("worker event type %q cannot identify a track", event.Type)
 	}
-	if progress.Percent > 100 {
-		progress.Percent = 100
+	if event.TrackID != "" && !containsTrack(run.TrackIDs, event.TrackID) {
+		return fmt.Errorf("worker emitted unknown run track %q", event.TrackID)
 	}
-	progress.Total = total
-	if progress.Completed < 0 {
-		progress.Completed = 0
+	if event.Progress == nil {
+		return nil
 	}
-	if progress.Completed > progress.Total {
-		progress.Completed = progress.Total
+	progress := event.Progress
+	if math.IsNaN(progress.Percent) || math.IsInf(progress.Percent, 0) ||
+		progress.Percent < 0 || progress.Percent > 100 ||
+		progress.Total != len(run.TrackIDs) || progress.Completed < 0 || progress.Completed > progress.Total ||
+		progress.Message != strings.TrimSpace(progress.Message) || len(progress.Message) > maxWorkerMessageBytes {
+		return fmt.Errorf("worker progress does not match the immutable run contract")
 	}
-	progress.Message = message
-	return progress
+	if progress.CurrentTrackID != "" && !containsTrack(run.TrackIDs, progress.CurrentTrackID) {
+		return fmt.Errorf("worker progress identified unknown run track %q", progress.CurrentTrackID)
+	}
+	if event.Type == "track" && progress.CurrentTrackID != event.TrackID {
+		return fmt.Errorf("track worker progress does not match track_id")
+	}
+	if event.Type == "completed" && (progress.Percent != 100 || progress.Completed != progress.Total || progress.CurrentTrackID != "") {
+		return fmt.Errorf("completed worker progress is not terminal")
+	}
+	return nil
 }
 
 func (s *Service) finalizeRun(runID string, processErr error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.active, runID)
-	delete(s.workerEvents, runID)
-	run, err := s.store.GetRun(runID)
-	if err != nil || run.Status != StatusRunning {
-		return
+	retryDelay := 10 * time.Millisecond
+	for {
+		s.mu.Lock()
+		current, readErr := s.store.GetRun(runID)
+		if readErr != nil {
+			s.recordLifecycleErrorLocked(fmt.Errorf("read run before terminal transition: %w", readErr))
+			s.cleanupWorkerLocked(runID)
+			s.mu.Unlock()
+			return
+		}
+		var transitionErr error
+		var terminalEvent Event
+		if terminalStatus(current.Status) {
+			terminalEvent, transitionErr = s.store.commitTerminalRun(current)
+		} else if current.Status == StatusRunning || current.Status == StatusSealing {
+			terminalEvent, transitionErr = s.store.commitTerminalRun(s.buildTerminalRun(current, processErr))
+		} else {
+			transitionErr = fmt.Errorf("%w: run cannot complete from %s", ErrConflict, current.Status)
+		}
+		if transitionErr == nil {
+			s.cleanupWorkerLocked(runID)
+			s.broadcastEventLocked(terminalEvent)
+			s.mu.Unlock()
+			return
+		}
+		s.mu.Unlock()
+		log.Printf("evaluationplane: terminal lifecycle persistence retry run_id=%q error=%q", runID, transitionErr)
+
+		timer := time.NewTimer(retryDelay)
+		select {
+		case <-timer.C:
+			if retryDelay < time.Second {
+				retryDelay *= 2
+				if retryDelay > time.Second {
+					retryDelay = time.Second
+				}
+			}
+		case <-s.shutdown:
+			if !timer.Stop() {
+				<-timer.C
+			}
+			s.mu.Lock()
+			s.recordLifecycleErrorLocked(fmt.Errorf("persist terminal lifecycle for run %s: %w", runID, transitionErr))
+			s.cleanupWorkerLocked(runID)
+			s.mu.Unlock()
+			return
+		}
 	}
+}
+
+func (s *Service) buildTerminalRun(run Run, processErr error) Run {
 	now := time.Now().UTC()
-	if processErr == nil && run.CompletedAt != nil {
-		now = run.CompletedAt.UTC()
+	if processErr == nil && run.Status != StatusSealing {
+		processErr = fmt.Errorf("evaluation evidence was not in the sealing phase")
+	}
+	if processErr == nil {
+		data, reportErr := s.store.ReadReport(run.ID)
+		if reportErr != nil {
+			processErr = fmt.Errorf("read sealed evaluation report: %w", reportErr)
+		} else if report, decodeErr := decodeReportStrict(run.ID, data); decodeErr != nil {
+			processErr = fmt.Errorf("read sealed evaluation report completion: %w", decodeErr)
+		} else if report.Run.CompletedAt == nil {
+			processErr = fmt.Errorf("sealed evaluation report omits completed_at")
+		} else {
+			now = report.Run.CompletedAt.UTC()
+		}
 	}
 	run.CompletedAt = &now
-	eventType := "completed"
 	message := "Evaluation completed"
 	if processErr == nil {
 		run.Status = StatusCompleted
 		run.Progress = RunProgress{Percent: 100, Completed: run.Progress.Total, Total: run.Progress.Total, Message: message}
-	} else if errors.Is(processErr, context.Canceled) {
+	} else if errors.Is(processErr, context.Canceled) && run.Status == StatusRunning {
 		run.Status = StatusCancelled
-		eventType = "cancelled"
 		message = "Evaluation cancelled"
 		run.Progress.Message = message
 	} else if errors.Is(processErr, context.DeadlineExceeded) {
 		run.Status = StatusFailed
-		eventType = "failed"
 		message = "Evaluation worker timed out"
 		run.Error = "Evaluation worker exceeded its server-owned time limit"
 		run.Progress.Message = message
 	} else {
 		run.Status = StatusFailed
-		eventType = "failed"
 		message = "Evaluation worker failed"
 		run.Error = "Evaluation worker failed; inspect protected server diagnostics"
 		run.Progress.Message = message
 	}
-	if err := s.store.UpdateRun(run); err != nil {
-		return
+	return run
+}
+
+func (s *Service) cleanupWorkerLocked(runID string) {
+	if cancel, ok := s.active[runID]; ok {
+		cancel()
 	}
-	_, _ = s.appendEventLocked(Event{RunID: runID, Type: eventType, Timestamp: now, Message: message, Progress: &run.Progress})
+	delete(s.active, runID)
+	delete(s.workerEvents, runID)
+}
+
+func (s *Service) recordLifecycleErrorLocked(err error) {
+	if err != nil {
+		s.lifecycleErr = errors.Join(s.lifecycleErr, err)
+	}
 }
 
 func (s *Service) RecoverInterruptedRuns() error {
@@ -137,23 +302,80 @@ func (s *Service) RecoverInterruptedRuns() error {
 	if err != nil {
 		return err
 	}
-	for _, run := range runs {
-		if run.Status != StatusRunning {
-			continue
+	for index := range runs {
+		run := runs[index]
+		if run.Status == StatusRunning || run.Status == StatusSealing {
+			if _, recoverErr := s.recoverInterruptedRun(run); recoverErr != nil {
+				return recoverErr
+			}
 		}
+	}
+	return nil
+}
+
+// recoverInterruptedRun distinguishes the publication crash window from a
+// genuinely interrupted worker. A completed status is reconstructed only from
+// the exact server-sealed report, private receipt, anchor, and evidence set.
+func (s *Service) recoverInterruptedRun(run Run) (Run, error) {
+	report, reportErr := s.validateInterruptedRunSeal(run)
+	if run.Status == StatusSealing && reportErr == nil {
+		completedAt := report.Run.CompletedAt.UTC()
+		run.Status = StatusCompleted
+		run.CompletedAt = &completedAt
+		run.Error = ""
+		run.Progress = RunProgress{
+			Percent: 100, Completed: len(run.TrackIDs), Total: len(run.TrackIDs), Message: "Evaluation completed",
+		}
+	} else {
 		now := time.Now().UTC()
 		run.Status = StatusFailed
 		run.CompletedAt = &now
 		run.Error = "Dashboard restarted while the evaluation worker was running"
 		run.Progress.Message = "Run interrupted by Dashboard restart"
-		if err := s.store.UpdateRun(run); err != nil {
-			return err
-		}
-		if _, err := s.appendEvent(Event{RunID: run.ID, Type: "failed", Timestamp: now, Message: run.Progress.Message, Progress: &run.Progress}); err != nil {
-			return err
-		}
 	}
-	return nil
+	if _, err := s.store.commitTerminalRun(run); err != nil {
+		return Run{}, err
+	}
+	return run, nil
+}
+
+func (s *Service) validateInterruptedRunSeal(run Run) (Report, error) {
+	data, err := s.store.ReadReport(run.ID)
+	if err != nil {
+		return Report{}, err
+	}
+	report, err := decodeReportStrict(run.ID, data)
+	if err != nil {
+		return Report{}, err
+	}
+	if report.Run.CompletedAt == nil {
+		return Report{}, fmt.Errorf("%w: sealed evaluation report omits completed_at", ErrInvalid)
+	}
+	manifest, _, err := s.readDurableManifest(run.ID)
+	if err != nil {
+		return Report{}, err
+	}
+	completed := run
+	completedAt := report.Run.CompletedAt.UTC()
+	completed.Status = StatusCompleted
+	completed.CompletedAt = &completedAt
+	completed.Error = ""
+	completed.Progress = RunProgress{
+		Percent: 100, Completed: len(run.TrackIDs), Total: len(run.TrackIDs), Message: "Evaluation completed",
+	}
+	if err := validateStoredRun(completed.ID, completed); err != nil {
+		return Report{}, err
+	}
+	if err := validateReportFrozenFields(completed, manifest, report); err != nil {
+		return Report{}, err
+	}
+	if err := s.verifyReportAnchor(run.ID, data, report.AttestationRevision); err != nil {
+		return Report{}, err
+	}
+	if err := s.rejectConfiguredSecretBytes(data); err != nil {
+		return Report{}, err
+	}
+	return report, nil
 }
 
 func (s *Service) EventsAfter(runID, afterID string) ([]Event, error) {
@@ -204,25 +426,23 @@ func (s *Service) Subscribe(runID string) (<-chan Event, func(), error) {
 	return channel, unsubscribe, nil
 }
 
-func (s *Service) appendEvent(event Event) (Event, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.appendEventLocked(event)
-}
-
 func (s *Service) appendEventLocked(event Event) (Event, error) {
 	persisted, err := s.store.AppendEvent(event)
 	if err != nil {
 		return Event{}, err
 	}
+	s.broadcastEventLocked(persisted)
+	return persisted, nil
+}
+
+func (s *Service) broadcastEventLocked(event Event) {
 	for subscriber := range s.subscribers[event.RunID] {
 		select {
-		case subscriber <- persisted:
+		case subscriber <- event:
 		default:
 			close(subscriber)
 			delete(s.subscribers[event.RunID], subscriber)
 			s.subscriberCount--
 		}
 	}
-	return persisted, nil
 }

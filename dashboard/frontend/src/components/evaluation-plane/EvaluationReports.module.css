@@ -1,0 +1,11 @@
+.reportSelector {
+  display: grid;
+  flex: 0 0 min(280px, 100%);
+  gap: 0.35rem;
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+}
+
+.reportSelector select {
+  min-height: 42px;
+}

@@ -1,0 +1,228 @@
+.fieldGrid,
+.numericGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.85rem;
+}
+
+.numericGrid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.fieldGrid label,
+.numericGrid label {
+  display: grid;
+  gap: 0.38rem;
+  min-width: 0;
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.fieldControl {
+  display: grid;
+  align-content: start;
+  gap: 0.38rem;
+  min-width: 0;
+}
+
+.loadMoreButton {
+  width: fit-content;
+  min-height: 34px;
+  padding: 0.38rem 0.65rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  background: rgba(255, 255, 255, 0.035);
+  color: var(--text-primary);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.loadMoreButton:hover:not(:disabled) {
+  border-color: rgba(255, 255, 255, 0.28);
+  background: var(--surface-raised);
+}
+
+.loadMoreButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.fieldWide,
+.choiceGroup {
+  grid-column: 1 / -1;
+}
+
+.fieldGrid input:not([type='radio']):not([type='checkbox']),
+.fieldGrid textarea,
+.fieldGrid select,
+.numericGrid input {
+  width: 100%;
+  min-height: 40px;
+  border-radius: var(--radius-md);
+  background: var(--surface-shell);
+}
+
+.fieldGrid textarea {
+  min-height: 92px;
+  resize: vertical;
+}
+
+.fieldGrid select option {
+  background: var(--surface-panel);
+  color: var(--text-primary);
+}
+
+.fieldGrid small,
+.numericGrid small {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  font-weight: 400;
+  line-height: 1.45;
+}
+
+.choiceGroup {
+  display: flex;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.choiceGroup legend {
+  margin-bottom: 0.4rem;
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.choiceCard,
+.autoStart {
+  display: flex;
+  gap: 0.65rem;
+  min-width: 0;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--border-subtle);
+  border-radius: 0;
+  background: transparent;
+  cursor: pointer;
+  transition:
+    border-color var(--transition-fast),
+    background var(--transition-fast),
+    transform var(--transition-fast);
+}
+
+.choiceCard:hover,
+.autoStart:hover {
+  border-color: var(--border-strong);
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.choiceCard:has(input:checked) {
+  border-color: rgba(255, 255, 255, 0.3);
+  background: rgba(255, 255, 255, 0.045);
+  box-shadow: inset 0 -2px 0 var(--brand-amd);
+}
+
+.choiceCard {
+  display: grid;
+  grid-template-columns: 1rem minmax(0, 1fr);
+  align-items: center;
+  flex: 1 1 0;
+  min-height: 52px;
+}
+
+.choiceCard > span {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.15rem 0.5rem;
+}
+
+.choiceCard input[type='radio'] {
+  width: 1rem;
+  min-height: 1rem;
+  height: 1rem;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.choiceCard:first-of-type {
+  border-radius: var(--radius-md) 0 0 var(--radius-md);
+}
+
+.choiceCard:last-of-type {
+  margin-left: -1px;
+  border-radius: 0 var(--radius-md) var(--radius-md) 0;
+}
+
+.choiceCard input,
+.autoStart input {
+  flex: 0 0 auto;
+  margin-top: 0.15rem;
+  accent-color: var(--text-primary);
+}
+
+.choiceCard span,
+.autoStart span {
+  display: grid;
+  gap: 0.22rem;
+  min-width: 0;
+}
+
+.choiceCard strong,
+.autoStart strong {
+  color: var(--text-primary);
+  font-size: var(--text-xs);
+}
+
+.choiceCard small,
+.autoStart small {
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  line-height: 1.45;
+}
+
+.autoStart {
+  width: fit-content;
+  margin-top: 0.8rem;
+  border-radius: var(--radius-md);
+}
+
+@media (max-width: 680px) {
+  .fieldGrid,
+  .choiceGroup,
+  .numericGrid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .fieldWide,
+  .choiceGroup {
+    grid-column: auto;
+  }
+
+  .choiceGroup {
+    flex-direction: column;
+  }
+
+  .choiceCard:first-of-type,
+  .choiceCard:last-of-type {
+    margin-left: 0;
+    border-radius: 0;
+  }
+
+  .choiceCard + .choiceCard {
+    margin-top: -1px;
+  }
+
+  .choiceCard:first-of-type {
+    border-radius: var(--radius-md) var(--radius-md) 0 0;
+  }
+
+  .choiceCard:last-of-type {
+    border-radius: 0 0 var(--radius-md) var(--radius-md);
+  }
+}

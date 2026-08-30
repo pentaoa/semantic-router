@@ -1,0 +1,138 @@
+.metricTableRegion {
+  display: grid;
+  gap: 0.8rem;
+  min-width: 0;
+}
+
+.metricToolbar {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(160px, 0.35fr) auto;
+  align-items: end;
+  gap: 0.7rem;
+}
+
+.metricToolbar label {
+  display: grid;
+  gap: 0.35rem;
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+}
+
+.metricToolbar input,
+.metricToolbar select {
+  width: 100%;
+  min-height: 42px;
+}
+
+.metricToolbar select option {
+  background: var(--surface-panel);
+  color: var(--text-primary);
+}
+
+.metricResultCount {
+  padding-bottom: 0.55rem;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
+.metricPagination {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.65rem;
+}
+
+.metricPagination button {
+  min-height: 36px;
+  padding: 0.4rem 0.7rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--surface-raised);
+  color: var(--text-primary);
+  font-size: var(--text-xs);
+  font-weight: 650;
+}
+
+.metricPagination button:hover:not(:disabled) {
+  border-color: var(--text-muted);
+  background: var(--color-bg-elevated);
+}
+
+.metricPagination button:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.metricPagination span {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+}
+
+.metricTable tbody th {
+  width: 34%;
+}
+
+.metricTable td {
+  min-width: 150px;
+}
+
+.metricTable td > span,
+.metricTable td > strong {
+  display: block;
+}
+
+.metricName,
+.metricValue {
+  color: var(--text-primary);
+  font-size: var(--text-xs);
+}
+
+.metricIdentity,
+.metricDirection,
+.tableMuted {
+  display: block;
+  margin-top: 0.15rem;
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  font-weight: 400;
+}
+
+.metricIdentity code {
+  overflow-wrap: anywhere;
+}
+
+.missingValue {
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.delta_positive {
+  color: #a5f3c1;
+}
+
+.delta_negative {
+  color: #ffb0b3;
+}
+
+.delta_warning {
+  color: #f9d38b;
+}
+
+.delta_neutral {
+  color: var(--text-secondary);
+}
+
+.metricTableCompact {
+  min-width: 560px;
+}
+
+@media (max-width: 800px) {
+  .metricToolbar {
+    grid-template-columns: 1fr;
+  }
+
+  .metricResultCount {
+    padding: 0;
+  }
+}

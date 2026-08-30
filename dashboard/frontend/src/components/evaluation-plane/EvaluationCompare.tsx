@@ -1,25 +1,34 @@
-import type { EvaluationComparison, EvaluationRun } from '../../types/evaluationPlane'
+import type { EvaluationRun } from '../../types/evaluationPlane'
+import type { EvaluationComparison } from '../../types/evaluationReport'
 import EvaluationGateList from './EvaluationGateList'
 import EvaluationMetricTable from './EvaluationMetricTable'
-import {
-  evaluationGatesForPresentation,
-  effectiveGateVerdict,
-  hasServerEvaluationAttestation,
-} from './evaluationPresentation'
+import EvaluationComparisonStatistics from './EvaluationComparisonStatistics'
+import { effectiveGateVerdict } from './evaluationPresentation'
 import { GateVerdictBadge } from './EvaluationPrimitives'
 import { cohortMismatches, eligibleComparisonCandidates } from './evaluationRunSupport'
-import styles from './EvaluationReport.module.css'
+import styles from './EvaluationCompare.module.css'
+import disclosureStyles from './EvaluationReportDisclosures.module.css'
+import heroStyles from './EvaluationReportHero.module.css'
+import reportStyles from './EvaluationReportLayout.module.css'
 
 interface EvaluationCompareProps {
   runs: EvaluationRun[]
   baselineID: string
   candidateID: string
   comparison: EvaluationComparison | null
+  runLedgerAvailable: boolean
   runLedgerComplete: boolean
+  totalRuns: number
+  hasMoreRuns: boolean
+  loadingMoreRuns: boolean
+  resourcesLoading: boolean
+  resourcesError: string | null
   loading: boolean
   error: string | null
   onPairChange: (candidateID: string, baselineID: string) => void
   onCompare: () => void
+  onLoadMoreRuns: () => void
+  onRetryResources: () => void
   onCreateRun?: () => void
 }
 
@@ -28,33 +37,40 @@ export default function EvaluationCompare({
   baselineID,
   candidateID,
   comparison,
+  runLedgerAvailable,
   runLedgerComplete,
+  totalRuns,
+  hasMoreRuns,
+  loadingMoreRuns,
+  resourcesLoading,
+  resourcesError,
   loading,
   error,
   onPairChange,
   onCompare,
+  onLoadMoreRuns,
+  onRetryResources,
   onCreateRun,
 }: EvaluationCompareProps) {
   const completed = new Map(
     runs.filter((run) => run.status === 'completed').map((run) => [run.id, run]),
   )
-  const candidates = runLedgerComplete ? eligibleComparisonCandidates(runs) : []
-  const candidate = runLedgerComplete ? completed.get(candidateID) : undefined
-  const baseline = runLedgerComplete ? completed.get(baselineID) : undefined
+  const candidates =
+    runLedgerAvailable && runLedgerComplete ? eligibleComparisonCandidates(runs) : []
+  const candidate = runLedgerAvailable && runLedgerComplete ? completed.get(candidateID) : undefined
+  const baseline = runLedgerAvailable && runLedgerComplete ? completed.get(baselineID) : undefined
   const mismatches = baseline && candidate ? cohortMismatches(baseline, candidate) : []
   const lineageMismatch = Boolean(candidate && candidate.baseline_run_id !== baselineID)
   const invalidPair =
-    !runLedgerComplete || !baseline || !candidate || lineageMismatch || mismatches.length > 0
-  const comparisonAttested = comparison ? hasServerEvaluationAttestation(comparison) : false
-  const comparisonGates = evaluationGatesForPresentation(
-    comparison || {},
-    comparison?.gates || [],
-    'Current joint attestation',
-  )
+    !runLedgerAvailable ||
+    !runLedgerComplete ||
+    !baseline ||
+    !candidate ||
+    resourcesLoading ||
+    lineageMismatch ||
+    mismatches.length > 0
   const comparisonVerdict = comparison
-    ? comparisonAttested
-      ? effectiveGateVerdict(comparison.verdict, comparison.gates)
-      : 'unavailable'
+    ? effectiveGateVerdict(comparison.verdict, comparison.gates)
     : null
 
   const chooseCandidate = (id: string) => {
@@ -63,22 +79,30 @@ export default function EvaluationCompare({
   }
 
   return (
-    <div className={styles.report} aria-busy={loading}>
+    <div className={reportStyles.report} aria-busy={loading}>
       <section className={styles.compareHero}>
         <div>
-          <span className={styles.eyebrow}>Paired evidence</span>
+          <span className={reportStyles.eyebrow}>Diagnostic layer · paired evidence</span>
           <h2>Compare a candidate with its pinned baseline</h2>
           <p>
             Candidate lineage fixes the baseline and cohort. Arbitrary completed runs are excluded
-            because they can manufacture invalid deltas.
+            because they can manufacture invalid deltas. This scientific diagnostic does not issue a
+            promotion decision.
           </p>
         </div>
         <div className={styles.compareControls}>
           <label>
             Candidate
             <select
+              aria-label="Comparison candidate"
               value={candidateID}
-              disabled={!runLedgerComplete || loading || candidates.length === 0}
+              disabled={
+                !runLedgerAvailable ||
+                !runLedgerComplete ||
+                loading ||
+                resourcesLoading ||
+                candidates.length === 0
+              }
               onChange={(event) => chooseCandidate(event.target.value)}
             >
               <option value="">Select a candidate with baseline lineage</option>
@@ -100,19 +124,50 @@ export default function EvaluationCompare({
             <small id="evaluation-baseline-help">Read-only scientific lineage</small>
           </label>
           <button type="button" disabled={invalidPair || loading} onClick={onCompare}>
-            {loading ? 'Comparing paired evidence…' : 'Compare paired evidence'}
+            {resourcesLoading
+              ? 'Loading run identities…'
+              : loading
+                ? 'Comparing paired evidence…'
+                : 'Compare paired evidence'}
           </button>
         </div>
       </section>
 
-      {!runLedgerComplete ? (
-        <div className={styles.error} role="alert">
+      {!runLedgerAvailable ? (
+        <div className={heroStyles.error} role="alert">
+          The run ledger is unavailable. Retry it before selecting or comparing evidence.
+        </div>
+      ) : null}
+      {runLedgerAvailable && !runLedgerComplete ? (
+        <div className={heroStyles.error} role="alert">
           The durable run ledger is incomplete. Baseline selection and comparison conclusions are
           blocked until every quarantined run bundle is repaired.
         </div>
       ) : null}
-      {runLedgerComplete && candidates.length === 0 ? (
-        <div className={styles.emptyState}>
+      {resourcesError ? (
+        <div className={heroStyles.error} role="alert">
+          <span>{resourcesError}</span>
+          <button type="button" onClick={onRetryResources}>
+            Retry run identities
+          </button>
+        </div>
+      ) : null}
+      {runLedgerAvailable && runLedgerComplete && hasMoreRuns ? (
+        <div className={styles.selectionScope} role="status">
+          <span>
+            Candidate selection covers {runs.length} of {totalRuns} loaded runs.
+          </span>
+          <button type="button" disabled={loadingMoreRuns} onClick={onLoadMoreRuns}>
+            {loadingMoreRuns ? 'Loading older runs…' : 'Load older candidates'}
+          </button>
+        </div>
+      ) : null}
+      {runLedgerAvailable &&
+      runLedgerComplete &&
+      !resourcesLoading &&
+      !resourcesError &&
+      candidates.length === 0 ? (
+        <div className={reportStyles.emptyState}>
           <div>
             <strong>No comparable candidate exists.</strong>
             <p>Create a new run from a completed baseline; the form pins the exact cohort.</p>
@@ -149,48 +204,41 @@ export default function EvaluationCompare({
         </dl>
       ) : null}
       {runLedgerComplete && lineageMismatch ? (
-        <div className={styles.error} role="alert">
+        <div className={heroStyles.error} role="alert">
           The selected candidate is not pinned to this baseline.
         </div>
       ) : null}
       {runLedgerComplete && mismatches.length ? (
-        <div className={styles.error} role="alert">
+        <div className={heroStyles.error} role="alert">
           Cohort mismatch: {mismatches.join(', ')}.
         </div>
       ) : null}
       {error ? (
-        <div className={styles.error} role="alert">
+        <div className={heroStyles.error} role="alert">
           {error}
         </div>
       ) : null}
 
-      {!comparison && !error && candidates.length > 0 ? (
-        <div className={styles.empty}>
+      {runLedgerAvailable &&
+      runLedgerComplete &&
+      !resourcesLoading &&
+      !resourcesError &&
+      !comparison &&
+      !error &&
+      candidates.length > 0 ? (
+        <div className={reportStyles.empty}>
           Choose a candidate, then calculate its paired comparison.
         </div>
       ) : null}
       {runLedgerComplete && comparison ? (
         <>
-          {!comparisonAttested ? (
-            <div className={styles.claimNotice} role="status">
-              <strong>Current joint attestation required</strong>
-              <span>
-                The paired deltas remain readable as integrity-only diagnostics. No reported gate,
-                recommendation, or comparison verdict can support a promotion decision.
-              </span>
-            </div>
-          ) : null}
-          <section className={styles.section}>
-            <div className={styles.sectionHeader}>
+          <section className={reportStyles.section}>
+            <div className={reportStyles.sectionHeader}>
               <div>
-                <span className={styles.eyebrow}>Comparison verdict</span>
-                <h3>
-                  {comparisonAttested ? comparison.summary : 'Current joint attestation required'}
-                </h3>
+                <span className={reportStyles.eyebrow}>Diagnostic finding · not promotion</span>
+                <h3>{comparison.summary}</h3>
                 <p>
-                  {comparisonAttested
-                    ? 'Improvement colors follow each metric direction; schema mismatches stay unmatched.'
-                    : `Reported diagnostic summary: ${comparison.summary}`}
+                  Improvement colors follow each metric direction; schema mismatches stay unmatched.
                 </p>
               </div>
               {comparisonVerdict ? (
@@ -202,31 +250,46 @@ export default function EvaluationCompare({
               caption="Paired comparison metrics"
               controls={comparison.metrics.length > 6}
               evidenceLevel={candidate?.evidence_level}
-              serverAttested={comparisonAttested}
             />
           </section>
-          <section className={styles.section}>
-            <div className={styles.sectionHeader}>
+          <section className={reportStyles.section}>
+            <div className={reportStyles.sectionHeader}>
               <div>
-                <span className={styles.eyebrow}>Regression boundary</span>
-                <h3>Comparison gates</h3>
+                <span className={reportStyles.eyebrow}>Server-reduced inference</span>
+                <h3>Paired scientific statistics</h3>
+                <p>
+                  Independent case units, paired confidence intervals, and frozen non-inferiority
+                  margins determine whether the comparison is conclusive.
+                </p>
               </div>
             </div>
-            <EvaluationGateList gates={comparisonGates} />
+            <EvaluationComparisonStatistics statistics={comparison.statistics} />
           </section>
-          <details className={styles.disclosure}>
+          <section
+            className={reportStyles.section}
+            aria-labelledby="evaluation-comparison-gates-title"
+          >
+            <div className={reportStyles.sectionHeader}>
+              <div>
+                <span className={reportStyles.eyebrow}>Run-level evidence</span>
+                <h3 id="evaluation-comparison-gates-title">Comparison gates</h3>
+              </div>
+            </div>
+            <EvaluationGateList gates={comparison.gates} />
+          </section>
+          <details className={disclosureStyles.disclosure}>
             <summary>
               Comparison findings <span>{comparison.recommendations.length}</span>
             </summary>
-            <div className={styles.disclosureBody}>
+            <div className={disclosureStyles.disclosureBody}>
               {comparison.recommendations.length ? (
-                <ol className={styles.recommendations}>
+                <ol className={disclosureStyles.recommendations}>
                   {comparison.recommendations.map((item, index) => (
                     <li key={`${index}-${item}`}>{item}</li>
                   ))}
                 </ol>
               ) : (
-                <p className={styles.empty}>No comparison findings were generated.</p>
+                <p className={reportStyles.empty}>No comparison findings were generated.</p>
               )}
             </div>
           </details>

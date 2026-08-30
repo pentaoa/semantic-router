@@ -1,25 +1,32 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-import type { EvaluationComparison } from '../types/evaluationPlane'
+import type { EvaluationComparison } from '../types/evaluationReport'
 import { compareEvaluationRuns } from '../utils/evaluationPlaneApi'
 
 function comparisonErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : 'Failed to compare evaluation runs.'
 }
 
+type ComparisonState =
+  | { key: string; status: 'idle'; comparison: null; error: null }
+  | { key: string; status: 'loading'; comparison: null; error: null }
+  | { key: string; status: 'ready'; comparison: EvaluationComparison; error: null }
+  | { key: string; status: 'error'; comparison: null; error: string }
+
 export function useEvaluationComparison(
   baselineID: string,
   candidateID: string,
   runLedgerComplete = true,
 ) {
-  const [comparison, setComparison] = useState<EvaluationComparison | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [requestPair, setRequestPair] = useState('')
-  const [errorPair, setErrorPair] = useState('')
+  const key = `${runLedgerComplete ? 'complete' : 'blocked'}\u0000${baselineID}\u0000${candidateID}`
+  const [state, setState] = useState<ComparisonState>({
+    key,
+    status: 'idle',
+    comparison: null,
+    error: null,
+  })
   const requestVersion = useRef(0)
   const controller = useRef<AbortController | null>(null)
-  const pair = `${baselineID}\u0000${candidateID}`
 
   const compare = useCallback(async () => {
     if (!runLedgerComplete || !baselineID || !candidateID || baselineID === candidateID) return
@@ -27,11 +34,7 @@ export function useEvaluationComparison(
     controller.current?.abort()
     const nextController = new AbortController()
     controller.current = nextController
-    setRequestPair(pair)
-    setLoading(true)
-    setComparison(null)
-    setError(null)
-    setErrorPair('')
+    setState({ key, status: 'loading', comparison: null, error: null })
     try {
       const nextComparison = await compareEvaluationRuns(
         baselineID,
@@ -39,32 +42,23 @@ export function useEvaluationComparison(
         nextController.signal,
       )
       if (nextController.signal.aborted || version !== requestVersion.current) return
-      if (
-        nextComparison.baseline_run_id !== baselineID ||
-        nextComparison.candidate_run_id !== candidateID
-      ) {
-        throw new Error('Evaluation comparison response did not match the requested pair.')
-      }
-      setComparison(nextComparison)
-      setError(null)
-      setErrorPair('')
+      setState({ key, status: 'ready', comparison: nextComparison, error: null })
     } catch (comparisonError) {
       if (nextController.signal.aborted || version !== requestVersion.current) return
-      setError(comparisonErrorMessage(comparisonError))
-      setErrorPair(pair)
-    } finally {
-      if (version === requestVersion.current) setLoading(false)
+      setState({
+        key,
+        status: 'error',
+        comparison: null,
+        error: comparisonErrorMessage(comparisonError),
+      })
     }
-  }, [baselineID, candidateID, pair, runLedgerComplete])
+  }, [baselineID, candidateID, key, runLedgerComplete])
 
   useEffect(() => {
     requestVersion.current += 1
     controller.current?.abort()
-    setComparison(null)
-    setError(null)
-    setErrorPair('')
-    setLoading(false)
-  }, [baselineID, candidateID, runLedgerComplete])
+    setState({ key, status: 'idle', comparison: null, error: null })
+  }, [key])
 
   useEffect(
     () => () => {
@@ -74,15 +68,12 @@ export function useEvaluationComparison(
     [],
   )
 
-  const visibleComparison =
-    comparison?.baseline_run_id === baselineID && comparison.candidate_run_id === candidateID
-      ? comparison
-      : null
+  const currentState = state.key === key ? state : null
 
   return {
-    comparison: visibleComparison,
-    loading: loading && requestPair === pair,
-    error: errorPair === pair ? error : null,
+    comparison: currentState?.comparison || null,
+    loading: currentState?.status === 'loading',
+    error: currentState?.error || null,
     compare,
   }
 }

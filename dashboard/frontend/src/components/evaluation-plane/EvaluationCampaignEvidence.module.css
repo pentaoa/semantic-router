@@ -1,0 +1,119 @@
+.anchorGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.6rem;
+}
+
+.anchorCard {
+  display: grid;
+  gap: 0.45rem;
+  min-width: 0;
+  padding: 0.8rem;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+}
+
+.anchorCard:last-child:nth-child(odd) {
+  grid-column: 1 / -1;
+}
+
+.anchorHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.anchorHeader strong {
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: var(--text-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.digestList {
+  display: grid;
+  gap: 0.3rem;
+  margin: 0;
+}
+
+.digestList > div {
+  display: grid;
+  grid-template-columns: 7.2rem minmax(0, 1fr);
+  gap: 0.5rem;
+}
+
+.digestList dt {
+  color: var(--text-muted);
+  font-size: 0.67rem;
+}
+
+.digestList dd {
+  margin: 0;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.copyableDigest {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.copyableDigest > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.copyableDigest button {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 1.55rem;
+  height: 1.55rem;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.copyableDigest button:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  background: var(--surface-raised);
+  color: var(--text-primary);
+}
+
+.copyableDigest button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+.copyableDigest button svg {
+  width: 0.85rem;
+  height: 0.85rem;
+}
+
+@media (max-width: 760px) {
+  .anchorGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .anchorCard:last-child:nth-child(odd) {
+    grid-column: auto;
+  }
+}
+
+@media (max-width: 480px) {
+  .digestList > div {
+    grid-template-columns: 1fr;
+    gap: 0.1rem;
+  }
+}

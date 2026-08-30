@@ -96,6 +96,17 @@
   overflow-wrap: anywhere;
 }
 
+.error {
+  margin-top: 1rem;
+  padding: 0.75rem 0.8rem;
+  border: 1px solid rgba(248, 113, 113, 0.38);
+  border-radius: var(--radius-lg);
+  background: rgba(239, 68, 68, 0.08);
+  color: #ffb0b3;
+  font-size: var(--text-xs);
+  line-height: 1.5;
+}
+
 .confirmation {
   display: grid;
   gap: 0.5rem;

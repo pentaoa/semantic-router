@@ -1,5 +1,10 @@
-import { expect, test } from '@playwright/test'
-import { mockAuthenticatedAppShell, mockAuthenticatedSession, TEST_CSRF_TOKEN } from './support/auth'
+import { expect, test, type Page } from '@playwright/test'
+import {
+  dashboardSettingsResponse,
+  mockAuthenticatedAppShell,
+  mockAuthenticatedSession,
+  TEST_CSRF_TOKEN,
+} from './support/auth'
 import { openComposerAddMenu } from './support/playground'
 
 const baseSetupState = {
@@ -164,13 +169,16 @@ test.describe('Dashboard auth flow', () => {
       window.cancelAnimationFrame = () => undefined
     })
     const issuedToken = 'issued-dashboard-token'
-    let settingsAuthHeader = ''
-    let statusAuthHeader = ''
+    let settingsSessionCookie = ''
+    let statusSessionCookie = ''
 
     await page.route('**/api/setup/state', async (route) => {
       await route.fulfill({
         status: 200,
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Set-Cookie': `vsr_session=${issuedToken}; Path=/; HttpOnly; SameSite=Lax`,
+        },
         body: JSON.stringify(baseSetupState),
       })
     })
@@ -200,7 +208,7 @@ test.describe('Dashboard auth flow', () => {
     })
 
     await page.route('**/api/auth/me', async (route) => {
-      if (route.request().headers().authorization !== `Bearer ${issuedToken}`) {
+      if (!route.request().headers().cookie?.includes(`vsr_session=${issuedToken}`)) {
         await route.fulfill({ status: 401, body: 'Unauthorized' })
         return
       }
@@ -219,8 +227,8 @@ test.describe('Dashboard auth flow', () => {
     })
 
     await page.route('**/api/settings', async (route) => {
-      settingsAuthHeader = route.request().headers().authorization ?? settingsAuthHeader
-      if (!route.request().headers().authorization) {
+      settingsSessionCookie = route.request().headers().cookie ?? settingsSessionCookie
+      if (!settingsSessionCookie.includes(`vsr_session=${issuedToken}`)) {
         await route.fulfill({ status: 401, body: 'Unauthorized' })
         return
       }
@@ -228,17 +236,12 @@ test.describe('Dashboard auth flow', () => {
       await route.fulfill({
         status: 200,
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          readonlyMode: false,
-          setupMode: false,
-          platform: '',
-          envoyUrl: '',
-        }),
+        body: JSON.stringify(dashboardSettingsResponse()),
       })
     })
 
     await page.route('**/api/status', async (route) => {
-      statusAuthHeader = route.request().headers().authorization ?? ''
+      statusSessionCookie = route.request().headers().cookie ?? ''
       await route.fulfill({
         status: 200,
         headers: { 'Content-Type': 'application/json' },
@@ -288,8 +291,8 @@ test.describe('Dashboard auth flow', () => {
       page.getByRole('button', { name: 'Continue' }).click(),
     ])
     await expect(page).toHaveURL(/\/dashboard$/, { timeout: 12000 })
-    await expect.poll(() => settingsAuthHeader).toBe(`Bearer ${issuedToken}`)
-    await expect.poll(() => statusAuthHeader).toBe(`Bearer ${issuedToken}`)
+    await expect.poll(() => settingsSessionCookie).toContain(`vsr_session=${issuedToken}`)
+    await expect.poll(() => statusSessionCookie).toContain(`vsr_session=${issuedToken}`)
   })
 
   test('bootstrap registration passes through the transition loader', async ({ page }) => {
@@ -375,12 +378,7 @@ test.describe('Dashboard auth flow', () => {
       await route.fulfill({
         status: 200,
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          readonlyMode: false,
-          setupMode: false,
-          platform: '',
-          envoyUrl: '',
-        }),
+        body: JSON.stringify(dashboardSettingsResponse()),
       })
     })
 
@@ -519,12 +517,7 @@ test.describe('Dashboard auth flow', () => {
       await route.fulfill({
         status: 200,
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          readonlyMode: false,
-          setupMode: false,
-          platform: '',
-          envoyUrl: '',
-        }),
+        body: JSON.stringify(dashboardSettingsResponse()),
       })
     })
 
@@ -637,12 +630,7 @@ test.describe('Dashboard auth flow', () => {
       await route.fulfill({
         status: 200,
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          readonlyMode: false,
-          setupMode: false,
-          platform: '',
-          envoyUrl: '',
-        }),
+        body: JSON.stringify(dashboardSettingsResponse()),
       })
     })
 
@@ -707,12 +695,7 @@ test.describe('Dashboard auth flow', () => {
       await route.fulfill({
         status: 200,
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          readonlyMode: false,
-          setupMode: false,
-          platform: '',
-          envoyUrl: '',
-        }),
+        body: JSON.stringify(dashboardSettingsResponse()),
       })
     })
 
@@ -780,12 +763,7 @@ test.describe('Dashboard auth flow', () => {
       await route.fulfill({
         status: 200,
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          readonlyMode: false,
-          setupMode: true,
-          platform: '',
-          envoyUrl: '',
-        }),
+        body: JSON.stringify(dashboardSettingsResponse({ setupMode: true })),
       })
     })
 
@@ -806,6 +784,8 @@ test.describe('Dashboard auth flow', () => {
       },
       settings: {
         readonlyMode: true,
+        serverReadonly: true,
+        runtimeConfigWritable: false,
         setupMode: false,
         platform: '',
         envoyUrl: '',
@@ -893,15 +873,12 @@ test.describe('Dashboard auth flow', () => {
 
     await page.goto('/insights/replay-sensitive-1')
 
-    await page.getByRole('button', { name: 'Expand Tool Trace' }).click()
-    await expect(page.getByText('Tool Call Success Rate')).toBeVisible()
-    await expect(page.getByText('100%')).toBeVisible()
-    await expect(page.getByText('Tool Calling (fetch_price)')).toBeVisible()
-    await expect(page.getByText('Tool Execute (fetch_price)')).toBeVisible()
-    await expect(page.getByText('Source: User')).toBeVisible()
-    await expect(page.getByText('Source: LLM')).toHaveCount(2)
-    await expect(page.getByText('Source: Agent')).toBeVisible()
-    await expect(page.getByText('Inputs and outputs are hidden for your role')).toHaveCount(4)
+    await expandRecordTrace(page)
+    await expect(page.getByText('You', { exact: true })).toBeVisible()
+    await expect(page.getByText('Response', { exact: true })).toBeVisible()
+    await expect(page.getByText('Arguments hidden for this role')).toBeVisible()
+    await expect(page.getByText(/Result hidden/)).toBeVisible()
+    await expect(page.getByText('Content hidden for this role')).toHaveCount(1)
     await expect(page.getByText('Confidential flow prompt 7A')).toHaveCount(0)
     await expect(page.getByText('Confidential tool result 7B')).toHaveCount(0)
     await expect(page.getByText('Confidential final answer 7C')).toHaveCount(0)
@@ -933,13 +910,12 @@ test.describe('Dashboard auth flow', () => {
 
     await page.goto('/insights/replay-sensitive-1')
 
-    await page.getByRole('button', { name: 'Expand Tool Trace' }).click()
-    await expect(page.getByText('Source: User')).toBeVisible()
-    await expect(page.getByText('Source: LLM')).toHaveCount(2)
-    await expect(page.getByText('Source: Agent')).toBeVisible()
-    await expect(page.getByText('Confidential flow prompt 7A')).toBeVisible()
-    await expect(page.getByText('Confidential tool result 7B')).toBeVisible()
-    await expect(page.getByText('Confidential final answer 7C')).toBeVisible()
+    await expandRecordTrace(page)
+    await expect(page.getByText('You', { exact: true })).toBeVisible()
+    await expect(page.getByText('Response', { exact: true })).toBeVisible()
+    await expect(page.getByText('Confidential flow prompt 7A', { exact: true }).last()).toBeVisible()
+    await expect(page.getByText('Confidential tool result 7B', { exact: true }).last()).toBeVisible()
+    await expect(page.getByText('Confidential final answer 7C', { exact: true }).last()).toBeVisible()
   })
 
   test('authenticated admins can open the users page', async ({ page }) => {
@@ -1051,6 +1027,7 @@ test.describe('Dashboard auth flow', () => {
       .poll(() => invitationPayload)
       .toEqual({
         email: 'writer@example.com',
+        kind: 'personal',
         name: 'Writer User',
         role: 'write',
       })
@@ -1162,3 +1139,17 @@ test.describe('Dashboard auth flow', () => {
     expect(seenHeader).toBe(TEST_CSRF_TOKEN)
   })
 })
+
+async function expandRecordTrace(page: Page) {
+  const trace = page
+    .locator('details')
+    .filter({ has: page.getByRole('heading', { name: 'Record trace' }) })
+    .first()
+  await trace.locator(':scope > summary').click()
+  const turn = trace.locator('details').first()
+  await turn.locator(':scope > summary').click()
+  const nestedDetails = turn.locator('details')
+  for (let index = 0; index < (await nestedDetails.count()); index += 1) {
+    await nestedDetails.nth(index).locator(':scope > summary').click()
+  }
+}

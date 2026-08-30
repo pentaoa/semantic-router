@@ -69,7 +69,13 @@ func (s *Service) validatePublicArtifacts(
 	return s.verifyPublicChecksum(runID, report, receipt)
 }
 
-func validateReportProvenance(runDir string, manifest RunManifest, report Report, checksums map[string]string) error {
+func validateReportProvenance(
+	runDir string,
+	manifest RunManifest,
+	report Report,
+	checksums map[string]string,
+	executionContract resolvedExecutionContract,
+) error {
 	var persisted Provenance
 	if err := decodeStrictEvidence(filepath.Join(runDir, "provenance.json"), &persisted); err != nil {
 		return err
@@ -81,11 +87,12 @@ func validateReportProvenance(runDir string, manifest RunManifest, report Report
 	if err != nil {
 		return fmt.Errorf("read lineage evidence: %w", err)
 	}
-	resolved, err := resolvedLineage(lineageBytes)
+	document, err := decodeLineageDocument(lineageBytes)
 	if err != nil {
 		return err
 	}
-	if bindingErr := validateLineageBindings(runDir, manifest, resolved, checksums); bindingErr != nil {
+	resolved := document.Resolved
+	if bindingErr := validateLineageBindings(runDir, manifest, document, checksums, executionContract); bindingErr != nil {
 		return bindingErr
 	}
 	for _, field := range []string{"workload", "policy", "binding", "pool", "arms", "environment"} {
@@ -93,29 +100,51 @@ func validateReportProvenance(runDir string, manifest RunManifest, report Report
 			return fmt.Errorf("%w: lineage omits %s snapshot", ErrInvalid, field)
 		}
 	}
-	digests := map[string]*string{
-		"workload":    &report.Provenance.WorkloadSnapshotDigest,
-		"policy":      &report.Provenance.PolicySnapshotDigest,
-		"binding":     &report.Provenance.BindingSnapshotDigest,
-		"environment": &report.Provenance.EnvironmentSnapshotDigest,
-	}
-	for field, expected := range digests {
+	for _, item := range []struct {
+		field    string
+		expected string
+	}{
+		{field: "workload", expected: report.Provenance.WorkloadSnapshotDigest},
+		{field: "environment", expected: report.Provenance.EnvironmentSnapshotDigest},
+	} {
+		field, expected := item.field, item.expected
 		digest, digestErr := canonicalJSONDigest(resolved[field])
-		if digestErr != nil || digest != *expected {
+		if digestErr != nil || digest != expected {
 			return fmt.Errorf("%w: %s provenance digest does not match lineage", ErrInvalid, field)
 		}
 	}
-	pool, err := decodeJSONValue(resolved["pool"])
-	if err != nil {
-		return err
-	}
-	arms, err := decodeJSONValue(resolved["arms"])
-	if err != nil {
-		return err
-	}
-	poolDigest, err := canonicalValueDigest(map[string]any{"pool": pool, "arms": arms})
-	if err != nil || poolDigest != report.Provenance.PoolSnapshotDigest {
-		return fmt.Errorf("%w: pool provenance digest does not match lineage", ErrInvalid)
+	if executionContract.Executor.LineageProfile == lineageRuntime {
+		mixture := manifest.Target.Mixture
+		if mixture == nil || report.Provenance.PolicySnapshotDigest != mixture.RecipeDigest ||
+			report.Provenance.BindingSnapshotDigest != mixture.BindingDigest ||
+			report.Provenance.PoolSnapshotDigest != mixture.PoolDigest {
+			return fmt.Errorf("%w: provenance does not match the server-frozen Mixture factors", ErrInvalid)
+		}
+	} else {
+		for _, item := range []struct {
+			field    string
+			expected string
+		}{
+			{field: "policy", expected: report.Provenance.PolicySnapshotDigest},
+			{field: "binding", expected: report.Provenance.BindingSnapshotDigest},
+		} {
+			digest, digestErr := canonicalJSONDigest(resolved[item.field])
+			if digestErr != nil || digest != item.expected {
+				return fmt.Errorf("%w: %s provenance digest does not match lineage", ErrInvalid, item.field)
+			}
+		}
+		pool, err := decodeJSONValue(resolved["pool"])
+		if err != nil {
+			return err
+		}
+		arms, err := decodeJSONValue(resolved["arms"])
+		if err != nil {
+			return err
+		}
+		poolDigest, err := canonicalValueDigest(map[string]any{"pool": pool, "arms": arms})
+		if err != nil || poolDigest != report.Provenance.PoolSnapshotDigest {
+			return fmt.Errorf("%w: pool provenance digest does not match lineage", ErrInvalid)
+		}
 	}
 	var policy struct {
 		SchemaVersion string `json:"schema_version"`
@@ -138,25 +167,34 @@ func validateReportProvenance(runDir string, manifest RunManifest, report Report
 	return nil
 }
 
-func resolvedLineage(data []byte) (map[string]json.RawMessage, error) {
+type lineageDocument struct {
+	Resolved                  map[string]json.RawMessage
+	NormalizedSuiteIdentities json.RawMessage
+}
+
+func decodeLineageDocument(data []byte) (lineageDocument, error) {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	var root map[string]json.RawMessage
 	if err := decoder.Decode(&root); err != nil {
-		return nil, fmt.Errorf("decode lineage evidence: %w", err)
+		return lineageDocument{}, fmt.Errorf("decode lineage evidence: %w", err)
 	}
 	if err := ensureJSONEOF(decoder); err != nil {
-		return nil, err
+		return lineageDocument{}, err
 	}
+	document := lineageDocument{}
 	if wrapped := root["resolved_snapshot"]; len(wrapped) > 0 {
-		allowed := map[string]bool{"resolved_snapshot": true, "normalized_suite_aliases": true}
+		allowed := map[string]bool{"resolved_snapshot": true, "normalized_suite_identities": true}
 		for key := range root {
 			if !allowed[key] {
-				return nil, fmt.Errorf("%w: lineage wrapper contains unknown field %s", ErrInvalid, key)
+				return lineageDocument{}, fmt.Errorf("%w: lineage wrapper contains unknown field %s", ErrInvalid, key)
 			}
 		}
-		if err := json.Unmarshal(wrapped, &root); err != nil {
-			return nil, fmt.Errorf("decode resolved lineage snapshot: %w", err)
+		document.NormalizedSuiteIdentities = root["normalized_suite_identities"]
+		var resolved map[string]json.RawMessage
+		if err := json.Unmarshal(wrapped, &resolved); err != nil {
+			return lineageDocument{}, fmt.Errorf("decode resolved lineage snapshot: %w", err)
 		}
+		root = resolved
 	}
 	allowed := map[string]bool{
 		"schema_version": true, "manifest_digest": true, "workload": true, "policy": true,
@@ -165,15 +203,16 @@ func resolvedLineage(data []byte) (map[string]json.RawMessage, error) {
 	}
 	for key := range root {
 		if !allowed[key] {
-			return nil, fmt.Errorf("%w: resolved lineage contains unknown field %s", ErrInvalid, key)
+			return lineageDocument{}, fmt.Errorf("%w: resolved lineage contains unknown field %s", ErrInvalid, key)
 		}
 	}
 	var schemaVersion, manifestDigest string
 	if err := json.Unmarshal(root["schema_version"], &schemaVersion); err != nil || schemaVersion != SchemaVersion ||
 		json.Unmarshal(root["manifest_digest"], &manifestDigest) != nil || !digestPattern.MatchString(manifestDigest) {
-		return nil, fmt.Errorf("%w: resolved lineage identity is invalid", ErrInvalid)
+		return lineageDocument{}, fmt.Errorf("%w: resolved lineage identity is invalid", ErrInvalid)
 	}
-	return root, nil
+	document.Resolved = root
+	return document, nil
 }
 
 func (s *Service) verifyReportAnchor(runID string, report []byte, attestationRevision string) error {
@@ -182,19 +221,29 @@ func (s *Service) verifyReportAnchor(runID string, report []byte, attestationRev
 		return err
 	}
 	reportDigest, reportSize := digestAndSize(report)
-	_, manifest, err := s.readDurableManifest(runID)
+	manifest, manifestBytes, err := s.readDurableManifest(runID)
 	if err != nil {
 		return err
 	}
-	manifestDigest, _ := digestAndSize(manifest)
+	manifestArtifactDigest, _ := digestAndSize(manifestBytes)
 	privateReceipt, err := readEvidenceBytes(filepath.Join(s.store.runsRoot, runID, privateChecksumArtifactName), maxStructuredArtifactBytes)
 	if err != nil {
 		return err
 	}
 	privateReceiptDigest, _ := digestAndSize(privateReceipt)
-	if anchor.ReportDigest != reportDigest || anchor.ReportSize != reportSize || anchor.ManifestDigest != manifestDigest ||
+	if anchor.ReportDigest != reportDigest || anchor.ReportSize != reportSize ||
+		anchor.ManifestSemanticDigest != manifest.ManifestDigest ||
+		anchor.ManifestArtifactDigest != manifestArtifactDigest ||
 		anchor.PrivateReceiptDigest != privateReceiptDigest {
 		return fmt.Errorf("%w: evaluation report no longer matches its server-owned anchor", ErrInvalid)
+	}
+	if manifest.Mode == ModeLive {
+		attestation, attestationErr := s.store.readExecutionAttestation(runID)
+		if attestationErr != nil || anchor.ExecutionAttestationDigest != attestation.Digest {
+			return fmt.Errorf("%w: live execution attestation no longer matches its report anchor", ErrInvalid)
+		}
+	} else if anchor.ExecutionAttestationDigest != "" {
+		return fmt.Errorf("%w: replay report cannot claim a live execution attestation", ErrInvalid)
 	}
 	if anchor.AttestationRevision != attestationRevision {
 		return fmt.Errorf("%w: evaluation report attestation revision does not match its server-owned anchor", ErrInvalid)

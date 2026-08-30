@@ -18,7 +18,7 @@ import (
 
 const (
 	evaluationSchemaVersion = "evaluation.v1"
-	evaluationGateContract  = "evaluation-release-gates.v1"
+	evaluationGateContract  = "evaluation-release-gates.v2"
 	evaluationSmokeSuite    = "evaluation-smoke"
 	evaluationFixtureTarget = "fixture"
 	evaluationPollTimeout   = 2 * time.Minute

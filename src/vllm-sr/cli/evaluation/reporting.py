@@ -8,7 +8,15 @@ from typing import Literal
 from pydantic import Field, field_validator, model_validator
 
 from cli.evaluation.constants import SCHEMA_VERSION
-from cli.evaluation.contracts import StrictModel
+from cli.evaluation.contracts import (
+    CapacityLoadProtocol,
+    CapacitySLO,
+    CatalogMixture,
+    StrictModel,
+    validate_canonical_uuid,
+    validate_run_description,
+    validate_run_name,
+)
 from cli.evaluation.gate_contract import GATE_CONTRACT_VERSION, ChangeProfile
 
 TrackID = Literal[
@@ -24,6 +32,9 @@ TrackID = Literal[
 EvidenceLevel = Literal["E0", "E1", "E2", "E3", "E4", "E5"]
 GateVerdict = Literal["pass", "fail", "unavailable", "waived", "not_applicable"]
 
+_MAX_EVENT_MESSAGE_BYTES = 512
+_MIN_CAPACITY_CONCURRENCY = 2
+
 
 class EvaluationRunProgress(StrictModel):
     percent: float = Field(ge=0, le=100)
@@ -32,21 +43,35 @@ class EvaluationRunProgress(StrictModel):
     current_track_id: TrackID | None = None
     message: str | None = None
 
+    @field_validator("message")
+    @classmethod
+    def validate_message(cls, value: str | None) -> str | None:
+        if value is not None and (
+            value.strip() != value
+            or len(value.encode("utf-8")) > _MAX_EVENT_MESSAGE_BYTES
+        ):
+            raise ValueError("progress message must be trimmed and at most 512 bytes")
+        return value
+
 
 class EvaluationRun(StrictModel):
     schema_version: Literal[SCHEMA_VERSION] = SCHEMA_VERSION
     id: str
+    client_request_id: str
     name: str
     description: str
-    status: Literal["pending", "running", "completed", "failed", "cancelled"]
+    status: Literal["pending", "running", "sealing", "completed", "failed", "cancelled"]
     mode: Literal["replay", "live"]
     evidence_level: EvidenceLevel
     target_id: str
+    mixture: CatalogMixture | None = None
     change_profile: ChangeProfile
     suite_ids: tuple[str, ...]
     track_ids: tuple[TrackID, ...]
     sample_limit: int
     concurrency: int
+    capacity_slo: CapacitySLO | None = None
+    capacity_load_protocol: CapacityLoadProtocol | None = None
     seed: int
     baseline_run_id: str | None = None
     progress: EvaluationRunProgress
@@ -54,6 +79,51 @@ class EvaluationRun(StrictModel):
     started_at: datetime | None = None
     completed_at: datetime | None = None
     error: str | None = None
+
+    _id = field_validator("id", "client_request_id")(validate_canonical_uuid)
+    _name = field_validator("name")(validate_run_name)
+    _description = field_validator("description")(validate_run_description)
+
+    @field_validator("baseline_run_id")
+    @classmethod
+    def validate_baseline_run_id(cls, value: str | None) -> str | None:
+        return validate_canonical_uuid(value) if value is not None else None
+
+    @model_validator(mode="after")
+    def client_identity_matches_run(self) -> EvaluationRun:
+        if self.client_request_id != self.id:
+            raise ValueError("client_request_id must equal the run id")
+        if self.mode == "live" and self.mixture is None:
+            raise ValueError("live evaluation run requires its frozen mixture summary")
+        if (
+            self.mode == "replay"
+            and self.mixture is not None
+            and self.suite_ids != ("live-mom-core",)
+        ):
+            raise ValueError(
+                "only the frozen MoM campaign cohort may replay a Mixture target"
+            )
+        capacity_selected = "capacity" in self.track_ids
+        if self.mode == "live" and capacity_selected:
+            if self.concurrency < _MIN_CAPACITY_CONCURRENCY:
+                raise ValueError("live capacity run requires concurrency of at least 2")
+            if self.capacity_slo is None:
+                raise ValueError("live capacity run requires capacity_slo")
+            if self.capacity_load_protocol is None:
+                raise ValueError("live capacity run requires capacity_load_protocol")
+            if self.capacity_slo.required_concurrency > self.concurrency:
+                raise ValueError(
+                    "capacity_slo required_concurrency cannot exceed run concurrency"
+                )
+            if self.capacity_load_protocol.concurrency_levels[-1] != self.concurrency:
+                raise ValueError(
+                    "capacity_load_protocol must terminate at run concurrency"
+                )
+        elif self.capacity_slo is not None or self.capacity_load_protocol is not None:
+            raise ValueError(
+                "capacity_slo and capacity_load_protocol are valid only for a live capacity run"
+            )
+        return self
 
 
 class EvaluationCoverage(StrictModel):
@@ -202,6 +272,14 @@ class EvaluationReport(StrictModel):
             raise ValueError("report must contain G0 through G9 exactly once in order")
         if any(gate.change_profile != self.run.change_profile for gate in self.gates):
             raise ValueError("report gates must match the run change profile")
+        track_ids = tuple(track.track_id for track in self.tracks)
+        if track_ids != self.run.track_ids:
+            raise ValueError("report tracks must exactly match the run track order")
+        expected_level = min(
+            (track.evidence_level for track in self.tracks), default="E0"
+        )
+        if self.run.evidence_level != expected_level:
+            raise ValueError("run evidence_level must equal the weakest selected track")
         return self
 
 
@@ -217,9 +295,53 @@ class EvaluationComparison(StrictModel):
     created_at: datetime | None = None
 
 
+class TrackWorkerEventPayload(StrictModel):
+    record_count: int = Field(ge=0, le=100_000_000)
+
+
+class CompletedWorkerEventPayload(StrictModel):
+    verdict: GateVerdict
+
+
+WorkerEventPayload = TrackWorkerEventPayload | CompletedWorkerEventPayload
+WorkerEventType = Literal[
+    "snapshot",
+    "progress",
+    "track",
+    "gate",
+    "artifact",
+    "completed",
+    "failed",
+    "cancelled",
+]
+
+
 class WorkerEvent(StrictModel):
-    type: str
+    type: WorkerEventType
     message: str
     track_id: TrackID | None = None
     progress: EvaluationRunProgress | None = None
-    payload: dict[str, object] | None = None
+    payload: WorkerEventPayload | None = None
+
+    @field_validator("message")
+    @classmethod
+    def validate_message(cls, value: str) -> str:
+        if (
+            not value
+            or value.strip() != value
+            or len(value.encode("utf-8")) > _MAX_EVENT_MESSAGE_BYTES
+        ):
+            raise ValueError("worker event message must be 1-512 trimmed bytes")
+        return value
+
+    @model_validator(mode="after")
+    def payload_matches_event(self) -> WorkerEvent:
+        if self.type == "track":
+            if not isinstance(self.payload, TrackWorkerEventPayload):
+                raise ValueError("track event requires only record_count payload")
+        elif self.type == "completed":
+            if not isinstance(self.payload, CompletedWorkerEventPayload):
+                raise ValueError("completed event requires only verdict payload")
+        elif self.payload is not None:
+            raise ValueError(f"{self.type} event does not accept a payload")
+        return self

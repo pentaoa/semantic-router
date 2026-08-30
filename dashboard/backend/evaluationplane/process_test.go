@@ -29,7 +29,10 @@ func TestWorkerStagingCannotWriteSiblingOrControlBundles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read real status: %v", err)
 	}
-	staging, err := prepareWorkerStaging(ProcessSpec{ManifestPath: realManifest, StorePath: root})
+	staging, err := prepareWorkerStaging(ProcessSpec{
+		ManifestPath: realManifest, StorePath: root,
+		executionContracts: serviceExecutionContractsForTest(t, service),
+	})
 	if err != nil {
 		t.Fatalf("prepareWorkerStaging: %v", err)
 	}
@@ -117,6 +120,7 @@ func TestWorkerStagingRejectsOversizedStructuredReportBeforeImport(t *testing.T)
 	realRun := filepath.Join(root, "runs", run.ID)
 	staging, err := prepareWorkerStaging(ProcessSpec{
 		ManifestPath: filepath.Join(realRun, manifestFileName), StorePath: root,
+		executionContracts: serviceExecutionContractsForTest(t, service),
 	})
 	if err != nil {
 		t.Fatalf("prepareWorkerStaging: %v", err)
@@ -163,8 +167,10 @@ func TestDecodeWorkerEventRejectsProtocolDrift(t *testing.T) {
 		`{"type":"progress","message":""}`,
 		`{"type":"progress","message":"running"} {}`,
 		`{"type":"progress","message":"running","payload":{"record_count":1}}`,
+		`{"type":"track","message":"running","track_id":"routing"}`,
 		`{"type":"track","message":"running","payload":{"record_count":-1}}`,
 		`{"type":"track","message":"running","payload":{"record_count":1,"url":"https://private.invalid"}}`,
+		`{"type":"completed","message":"done"}`,
 		`{"type":"completed","message":"done","payload":{"verdict":"maybe"}}`,
 	} {
 		if _, err := decodeWorkerEvent([]byte(line)); err == nil {
@@ -183,17 +189,21 @@ func TestWorkerEventsPersistOnlyTypedRedactedData(t *testing.T) {
 	if createErr != nil {
 		t.Fatalf("CreateRun: %v", createErr)
 	}
-	run.Status = StatusRunning
-	if err := service.store.UpdateRun(run); err != nil {
-		t.Fatalf("stage running run: %v", err)
-	}
+	run = stageRunningTestRun(t, service, run)
 	recordCount := 3
 	if err := service.recordWorkerEvent(run.ID, WorkerEvent{
 		Type: "track", Message: "api_key=private-value", TrackID: "routing",
 		Progress: &RunProgress{Percent: 50, Completed: 1, Total: 999, CurrentTrackID: "routing", Message: "https://private.invalid"},
 		Payload:  &WorkerEventPayload{RecordCount: &recordCount},
+	}); err == nil || !strings.Contains(err.Error(), "immutable run contract") {
+		t.Fatalf("invalid worker progress error=%v", err)
+	}
+	if err := service.recordWorkerEvent(run.ID, WorkerEvent{
+		Type: "track", Message: "api_key=private-value", TrackID: "routing",
+		Progress: &RunProgress{Percent: 50, Completed: 1, Total: 1, CurrentTrackID: "routing", Message: "https://private.invalid"},
+		Payload:  &WorkerEventPayload{RecordCount: &recordCount},
 	}); err != nil {
-		t.Fatalf("recordWorkerEvent: %v", err)
+		t.Fatalf("record valid worker event: %v", err)
 	}
 	events, eventsErr := service.EventsAfter(run.ID, "1")
 	if eventsErr != nil || len(events) != 1 {
@@ -218,10 +228,7 @@ func TestWorkerEventFloodFailsClosedAtPerRunLimit(t *testing.T) {
 	if createErr != nil {
 		t.Fatalf("CreateRun: %v", createErr)
 	}
-	run.Status = StatusRunning
-	if err := service.store.UpdateRun(run); err != nil {
-		t.Fatalf("stage running run: %v", err)
-	}
+	run = stageRunningTestRun(t, service, run)
 	service.mu.Lock()
 	service.workerEvents[run.ID] = maxWorkerEventsPerRun - 1
 	service.mu.Unlock()
@@ -395,12 +402,12 @@ type delayedCancelProcess struct {
 	once      sync.Once
 }
 
-func (p *delayedCancelProcess) Run(ctx context.Context, _ ProcessSpec, _ func(WorkerEvent) error) error {
+func (p *delayedCancelProcess) Run(ctx context.Context, _ ProcessSpec, _ func(WorkerEvent) error) (ProcessResult, error) {
 	close(p.started)
 	<-ctx.Done()
 	p.once.Do(func() { close(p.cancelled) })
 	<-p.exit
-	return ctx.Err()
+	return ProcessResult{}, ctx.Err()
 }
 
 func TestCancelKeepsRunUndeletableUntilWorkerExit(t *testing.T) {
@@ -448,11 +455,14 @@ func TestCancelKeepsRunUndeletableUntilWorkerExit(t *testing.T) {
 
 func TestCommandProcessShapeCannotAcceptArbitraryCommands(t *testing.T) {
 	typeOfSpec := reflect.TypeOf(ProcessSpec{})
-	if typeOfSpec.NumField() != 2 || typeOfSpec.Field(0).Name != "ManifestPath" || typeOfSpec.Field(1).Name != "StorePath" {
+	if typeOfSpec.NumField() != 5 || typeOfSpec.Field(0).Name != "ManifestPath" ||
+		typeOfSpec.Field(1).Name != "StorePath" || typeOfSpec.Field(2).Name != "SuiteStorePath" ||
+		typeOfSpec.Field(3).Name != "executionContracts" || typeOfSpec.Field(3).IsExported() ||
+		typeOfSpec.Field(4).Name != "controlledPair" || typeOfSpec.Field(4).IsExported() {
 		t.Fatalf("ProcessSpec grew an arbitrary execution surface: %v", typeOfSpec)
 	}
-	if workerModule != "cli.evaluation.worker" {
-		t.Fatalf("worker module=%q", workerModule)
+	if workerSandboxScript != "cli/evaluation/sandbox_worker.py" {
+		t.Fatalf("worker sandbox script=%q", workerSandboxScript)
 	}
 }
 
@@ -525,7 +535,6 @@ func TestStoreCreatesCanonicalPrivateDirectoryLayout(t *testing.T) {
 		filepath.Join(root, "objects"),
 		filepath.Join(root, "objects", "sha256"),
 		filepath.Join(root, "runs"),
-		filepath.Join(root, "index"),
 	} {
 		info, err := os.Stat(directory)
 		if err != nil {

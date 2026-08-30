@@ -97,7 +97,37 @@ func TestRoomCollaborationBus_WSDisconnectDoesNotBreakSSE(t *testing.T) {
 
 	wsConn := dialRoomWebSocket(t, server.URL, room.ID)
 	readWSConnected(t, wsConn)
-	_ = wsConn.Close()
+
+	// Exercise the disconnect and room fan-out concurrently. The server may
+	// unregister the client at any point, but a fan-out already holding the
+	// client must never race with closing its outbound channel.
+	start := make(chan struct{})
+	wsClosed := make(chan struct{})
+	fanOutDone := make(chan struct{})
+	go func() {
+		<-start
+		_ = wsConn.Close()
+		close(wsClosed)
+	}()
+	go func() {
+		<-start
+		defer close(fanOutDone)
+		for range 128 {
+			h.publishRoomCollaborationEvent(room.ID, newMessageCollaborationEvent(ClawRoomMessage{
+				ID:         "msg-disconnect-race",
+				RoomID:     room.ID,
+				TeamID:     room.TeamID,
+				SenderType: "system",
+				SenderID:   "openclaw-system",
+				SenderName: "OpenClaw",
+				Content:    "disconnect race",
+				CreatedAt:  time.Now().UTC().Format(time.RFC3339),
+			}))
+		}
+	}()
+	close(start)
+	<-wsClosed
+	<-fanOutDone
 
 	sseEvents := make(chan clawRoomStreamEvent, 4)
 	sseClientID := "sse-after-ws-close"

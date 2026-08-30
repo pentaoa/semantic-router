@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from datetime import date, datetime
 from enum import Enum
 from typing import Any
@@ -19,7 +20,7 @@ def json_value(value: Any, *, exclude_none: bool = True) -> Any:
             value.model_dump(mode="json", exclude_none=exclude_none),
             exclude_none=exclude_none,
         )
-    if isinstance(value, dict):
+    if isinstance(value, Mapping):
         return {
             str(key): json_value(item, exclude_none=exclude_none)
             for key, item in value.items()

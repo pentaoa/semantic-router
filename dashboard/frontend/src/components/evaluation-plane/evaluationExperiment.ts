@@ -1,12 +1,21 @@
 import type {
   EvaluationCatalog,
   EvaluationCatalogSuite,
+  EvaluationCapacityLoadProtocol,
+  EvaluationCapacitySLO,
   EvaluationChangeProfileId,
   EvaluationMode,
   EvaluationRun,
   EvaluationTrackId,
   EvidenceLevel,
 } from '../../types/evaluationPlane'
+import {
+  decodeEvaluationCapacityLoadProtocol,
+  decodeEvaluationCapacitySLO,
+  equalEvaluationCapacityLoadProtocol,
+  equalEvaluationCapacitySLO,
+  requiresCapacitySLO,
+} from '../../utils/evaluationCapacitySLOContract'
 
 export const EVALUATION_RUN_LIMITS = {
   name: 200,
@@ -24,6 +33,8 @@ export interface EvaluationExactCohort {
   trackIDs: EvaluationTrackId[]
   sampleLimit: number
   concurrency: number
+  capacitySLO?: EvaluationCapacitySLO
+  capacityLoadProtocol?: EvaluationCapacityLoadProtocol
   seed: number
 }
 
@@ -76,9 +87,12 @@ export function compatibleEvaluationSuites(
   mode: EvaluationMode,
 ): EvaluationCatalogSuite[] {
   const availableTracks = supportedEvaluationTracks(catalog, targetID, mode)
+  const target = catalog.targets.find((candidate) => candidate.id === targetID)
+  const acceptedExecutors = new Set(target?.accepted_executors[mode] || [])
   return catalog.suites.filter(
     (suite) =>
       suite.modes.includes(mode) &&
+      acceptedExecutors.has(suite.executors[mode] || '') &&
       suite.track_ids.length > 0 &&
       suite.track_ids.every((trackID) => availableTracks.includes(trackID)),
   )
@@ -94,7 +108,14 @@ export function reconcileEvaluationScope(
   const compatibleSuiteIDs = new Set(
     compatibleEvaluationSuites(catalog, targetID, mode).map((suite) => suite.id),
   )
-  const nextSuiteIDs = unique(suiteIDs).filter((suiteID) => compatibleSuiteIDs.has(suiteID))
+  const requestedSuiteIDs = new Set(unique(suiteIDs))
+  const requestedSuites = catalog.suites.filter(
+    (suite) => requestedSuiteIDs.has(suite.id) && compatibleSuiteIDs.has(suite.id),
+  )
+  const cohortExecutor = requestedSuites[0]?.executors[mode]
+  const nextSuiteIDs = requestedSuites
+    .filter((suite) => suite.executors[mode] === cohortExecutor)
+    .map((suite) => suite.id)
   const selectedSuiteTracks = new Set(
     catalog.suites
       .filter((suite) => nextSuiteIDs.includes(suite.id))
@@ -103,9 +124,14 @@ export function reconcileEvaluationScope(
   const availableTracks = new Set(supportedEvaluationTracks(catalog, targetID, mode))
   return {
     suiteIDs: nextSuiteIDs,
-    trackIDs: unique(trackIDs).filter(
-      (trackID) => selectedSuiteTracks.has(trackID) && availableTracks.has(trackID),
-    ),
+    trackIDs: catalog.tracks
+      .map((track) => track.id)
+      .filter(
+        (trackID) =>
+          trackIDs.includes(trackID) &&
+          selectedSuiteTracks.has(trackID) &&
+          availableTracks.has(trackID),
+      ),
   }
 }
 
@@ -132,6 +158,12 @@ export function toggleEvaluationSuite(
     (candidate) => candidate.id === suiteID,
   )
   if (!suite) return current
+  const selectedExecutor = catalog.suites.find((candidate) =>
+    current.suiteIDs.includes(candidate.id),
+  )?.executors[mode]
+  if (selectedExecutor && selectedExecutor !== suite.executors[mode]) {
+    return reconcileEvaluationScope(catalog, targetID, mode, [suite.id], [...suite.track_ids])
+  }
   return reconcileEvaluationScope(
     catalog,
     targetID,
@@ -157,7 +189,7 @@ export function selectedSuiteTracks(
   return scope.trackIDs
 }
 
-export function minimumEvidenceClaimCeiling(
+export function minimumCatalogEvidenceClass(
   catalog: EvaluationCatalog,
   suiteIDs: string[],
 ): EvidenceLevel | null {
@@ -181,6 +213,15 @@ export function exactCohortFromRun(run: EvaluationRun): EvaluationExactCohort {
     trackIDs: [...run.track_ids],
     sampleLimit: run.sample_limit,
     concurrency: run.concurrency,
+    ...(run.capacity_slo ? { capacitySLO: { ...run.capacity_slo } } : {}),
+    ...(run.capacity_load_protocol
+      ? {
+          capacityLoadProtocol: {
+            ...run.capacity_load_protocol,
+            concurrency_levels: [...run.capacity_load_protocol.concurrency_levels],
+          },
+        }
+      : {}),
     seed: run.seed,
   }
 }
@@ -192,6 +233,8 @@ export function exactCohortMatchesRun(cohort: EvaluationExactCohort, run: Evalua
     cohort.changeProfile === run.change_profile &&
     cohort.sampleLimit === run.sample_limit &&
     cohort.concurrency === run.concurrency &&
+    equalEvaluationCapacitySLO(cohort.capacitySLO, run.capacity_slo) &&
+    equalEvaluationCapacityLoadProtocol(cohort.capacityLoadProtocol, run.capacity_load_protocol) &&
     cohort.seed === run.seed &&
     sameSet(cohort.suiteIDs, run.suite_ids) &&
     sameSet(cohort.trackIDs, run.track_ids)
@@ -212,6 +255,33 @@ export function baselineCohortIssue(catalog: EvaluationCatalog, run: EvaluationR
   }
   if (!isBoundedInteger(run.concurrency, 1, EVALUATION_RUN_LIMITS.concurrency)) {
     return 'Its concurrency is outside the supported cohort bounds.'
+  }
+  const capacityRequired = requiresCapacitySLO(run.mode, run.track_ids)
+  if (capacityRequired && run.concurrency < 2) {
+    return 'Its live capacity cohort has fewer than two concurrency levels.'
+  }
+  if (capacityRequired && (!run.capacity_slo || !run.capacity_load_protocol)) {
+    return 'Its live capacity cohort has no frozen SLO or load protocol.'
+  }
+  if (!capacityRequired && (run.capacity_slo || run.capacity_load_protocol)) {
+    return 'Its capacity contract is outside a live capacity cohort.'
+  }
+  if (run.capacity_slo) {
+    try {
+      const capacitySLO = decodeEvaluationCapacitySLO(run.capacity_slo)
+      if (capacitySLO.required_concurrency > run.concurrency) {
+        return 'Its Capacity SLO exceeds the run concurrency.'
+      }
+    } catch {
+      return 'Its frozen Capacity SLO is invalid.'
+    }
+  }
+  if (run.capacity_load_protocol) {
+    try {
+      decodeEvaluationCapacityLoadProtocol(run.capacity_load_protocol, run.concurrency)
+    } catch {
+      return 'Its frozen Capacity load protocol is invalid.'
+    }
   }
   if (!isBoundedInteger(run.seed, 0, EVALUATION_RUN_LIMITS.seed)) {
     return 'Its seed is outside the supported cohort bounds.'
@@ -293,6 +363,33 @@ export function validateEvaluationDraft(
   if (!isBoundedInteger(draft.concurrency, 1, EVALUATION_RUN_LIMITS.concurrency)) {
     return `Concurrency must be an integer between 1 and ${EVALUATION_RUN_LIMITS.concurrency}.`
   }
+  const capacityRequired = requiresCapacitySLO(draft.mode, draft.trackIDs)
+  if (capacityRequired && draft.concurrency < 2) {
+    return 'Live capacity evaluation requires concurrency of at least 2.'
+  }
+  if (capacityRequired && (!draft.capacitySLO || !draft.capacityLoadProtocol)) {
+    return 'Define the Capacity SLO and load protocol before creating a live capacity run.'
+  }
+  if (!capacityRequired && (draft.capacitySLO || draft.capacityLoadProtocol)) {
+    return 'Capacity contracts are valid only when the live capacity track is selected.'
+  }
+  if (draft.capacitySLO) {
+    try {
+      const capacitySLO = decodeEvaluationCapacitySLO(draft.capacitySLO)
+      if (capacitySLO.required_concurrency > draft.concurrency) {
+        return 'Required SLO concurrency cannot exceed the run concurrency.'
+      }
+    } catch (error) {
+      return error instanceof Error ? error.message : 'Capacity SLO is invalid.'
+    }
+  }
+  if (draft.capacityLoadProtocol) {
+    try {
+      decodeEvaluationCapacityLoadProtocol(draft.capacityLoadProtocol, draft.concurrency)
+    } catch (error) {
+      return error instanceof Error ? error.message : 'Capacity load protocol is invalid.'
+    }
+  }
   if (!isBoundedInteger(draft.seed, 0, EVALUATION_RUN_LIMITS.seed)) {
     return `Seed must be an integer between 0 and ${EVALUATION_RUN_LIMITS.seed}.`
   }
@@ -306,21 +403,4 @@ export function validateEvaluationDraft(
     }
   }
   return null
-}
-
-export function newEvaluationClientRequestID(): string {
-  const bytes = new Uint8Array(16)
-  if (typeof globalThis.crypto?.getRandomValues === 'function') {
-    globalThis.crypto.getRandomValues(bytes)
-  } else {
-    // The id is an idempotency token, not a credential. Keep creation usable in
-    // constrained HTTP/WebView contexts that do not expose Web Crypto.
-    for (let index = 0; index < bytes.length; index += 1) {
-      bytes[index] = Math.floor(Math.random() * 256)
-    }
-  }
-  bytes[6] = (bytes[6] % 16) + 64
-  bytes[8] = (bytes[8] % 64) + 128
-  const hex = [...bytes].map((value) => value.toString(16).padStart(2, '0')).join('')
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
 }

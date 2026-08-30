@@ -6,16 +6,18 @@ const BOTTOM_THRESHOLD_PX = 72
 const TURN_TOP_OFFSET_PX = 16
 
 function isNearBottom(container: HTMLDivElement) {
-  return container.scrollHeight - container.scrollTop - container.clientHeight <= BOTTOM_THRESHOLD_PX
+  return (
+    container.scrollHeight - container.scrollTop - container.clientHeight <= BOTTOM_THRESHOLD_PX
+  )
 }
 
 function hasLiveAssistantActivity(message: Message) {
   return (
     message.role === 'assistant' &&
-    (
-      message.isStreaming === true ||
-      message.toolCalls?.some(toolCall => toolCall.status === 'pending' || toolCall.status === 'running') === true
-    )
+    (message.isStreaming === true ||
+      message.toolCalls?.some(
+        (toolCall) => toolCall.status === 'pending' || toolCall.status === 'running',
+      ) === true)
   )
 }
 
@@ -23,19 +25,17 @@ export function useChatTranscriptAutoScroll(messages: Message[], conversationId:
   const containerRef = useRef<HTMLDivElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
   const shouldAutoFollowRef = useRef(true)
+  const userPausedAutoFollowRef = useRef(false)
   const anchoredUserMessageIdRef = useRef<string | null>(null)
   const shouldAnchorCurrentTurnRef = useRef(false)
   const isProgrammaticScrollRef = useRef(false)
   const programmaticScrollTimeoutRef = useRef<number | null>(null)
   const lastConversationIdRef = useRef<string | null>(null)
 
-  const liveAssistantActivity = useMemo(
-    () => messages.some(hasLiveAssistantActivity),
-    [messages]
-  )
+  const liveAssistantActivity = useMemo(() => messages.some(hasLiveAssistantActivity), [messages])
   const lastUserMessage = useMemo(
-    () => [...messages].reverse().find(message => message.role === 'user') ?? null,
-    [messages]
+    () => [...messages].reverse().find((message) => message.role === 'user') ?? null,
+    [messages],
   )
 
   const syncFollowState = useCallback(() => {
@@ -49,9 +49,10 @@ export function useChatTranscriptAutoScroll(messages: Message[], conversationId:
 
   const releaseAnchorToUser = useCallback(() => {
     shouldAnchorCurrentTurnRef.current = false
+    shouldAutoFollowRef.current = false
+    userPausedAutoFollowRef.current = true
     isProgrammaticScrollRef.current = false
-    syncFollowState()
-  }, [syncFollowState])
+  }, [])
 
   const beginProgrammaticScroll = useCallback(() => {
     isProgrammaticScrollRef.current = true
@@ -66,43 +67,51 @@ export function useChatTranscriptAutoScroll(messages: Message[], conversationId:
     }, 120)
   }, [])
 
-  const scrollToBottom = useCallback((behavior: ScrollBehavior = 'auto') => {
-    const container = containerRef.current
-    if (!container) {
-      return
-    }
+  const scrollToBottom = useCallback(
+    (behavior: ScrollBehavior = 'auto') => {
+      const container = containerRef.current
+      if (!container) {
+        return
+      }
 
-    beginProgrammaticScroll()
-    container.scrollTo({
-      top: container.scrollHeight,
-      behavior,
-    })
-  }, [beginProgrammaticScroll])
+      beginProgrammaticScroll()
+      container.scrollTo({
+        top: container.scrollHeight,
+        behavior,
+      })
+    },
+    [beginProgrammaticScroll],
+  )
 
-  const scrollUserTurnToTop = useCallback((messageId: string, behavior: ScrollBehavior = 'smooth') => {
-    const container = containerRef.current
-    const content = contentRef.current
-    if (!container || !content) {
-      return
-    }
+  const scrollUserTurnToTop = useCallback(
+    (messageId: string, behavior: ScrollBehavior = 'smooth') => {
+      const container = containerRef.current
+      const content = contentRef.current
+      if (!container || !content) {
+        return
+      }
 
-    const target = Array.from(content.querySelectorAll<HTMLElement>('[data-message-id]'))
-      .find(node => node.dataset.messageId === messageId)
+      const target = Array.from(content.querySelectorAll<HTMLElement>('[data-message-id]')).find(
+        (node) => node.dataset.messageId === messageId,
+      )
 
-    if (!target) {
-      return
-    }
+      if (!target) {
+        return
+      }
 
-    const targetRect = target.getBoundingClientRect()
-    const containerRect = container.getBoundingClientRect()
-    const nextTop = container.scrollTop + (targetRect.top - containerRect.top) - TURN_TOP_OFFSET_PX
+      const targetRect = target.getBoundingClientRect()
+      const containerRect = container.getBoundingClientRect()
+      const nextTop =
+        container.scrollTop + (targetRect.top - containerRect.top) - TURN_TOP_OFFSET_PX
 
-    beginProgrammaticScroll()
-    container.scrollTo({
-      top: Math.max(0, nextTop),
-      behavior,
-    })
-  }, [beginProgrammaticScroll])
+      beginProgrammaticScroll()
+      container.scrollTo({
+        top: Math.max(0, nextTop),
+        behavior,
+      })
+    },
+    [beginProgrammaticScroll],
+  )
 
   useEffect(() => {
     const container = containerRef.current
@@ -114,6 +123,11 @@ export function useChatTranscriptAutoScroll(messages: Message[], conversationId:
 
     const handleScroll = () => {
       if (isProgrammaticScrollRef.current) {
+        return
+      }
+
+      if (userPausedAutoFollowRef.current) {
+        shouldAutoFollowRef.current = false
         return
       }
 
@@ -154,15 +168,19 @@ export function useChatTranscriptAutoScroll(messages: Message[], conversationId:
     anchoredUserMessageIdRef.current = lastUserMessage?.id ?? null
     shouldAnchorCurrentTurnRef.current = false
     shouldAutoFollowRef.current = true
+    userPausedAutoFollowRef.current = false
 
     requestAnimationFrame(() => {
-      scrollToBottom('auto')
+      if (shouldAutoFollowRef.current && !userPausedAutoFollowRef.current) {
+        scrollToBottom('auto')
+      }
     })
   }, [conversationId, lastUserMessage, scrollToBottom])
 
   useEffect(() => {
     if (messages.length === 0) {
       shouldAutoFollowRef.current = true
+      userPausedAutoFollowRef.current = false
       anchoredUserMessageIdRef.current = null
       shouldAnchorCurrentTurnRef.current = false
       return
@@ -172,22 +190,35 @@ export function useChatTranscriptAutoScroll(messages: Message[], conversationId:
       anchoredUserMessageIdRef.current = lastUserMessage.id
       shouldAnchorCurrentTurnRef.current = true
       shouldAutoFollowRef.current = false
+      userPausedAutoFollowRef.current = false
       requestAnimationFrame(() => {
-        scrollUserTurnToTop(lastUserMessage.id, 'auto')
+        if (
+          shouldAnchorCurrentTurnRef.current &&
+          anchoredUserMessageIdRef.current === lastUserMessage.id
+        ) {
+          scrollUserTurnToTop(lastUserMessage.id, 'auto')
+        }
       })
       return
     }
 
     if (shouldAnchorCurrentTurnRef.current && lastUserMessage) {
       requestAnimationFrame(() => {
-        scrollUserTurnToTop(lastUserMessage.id, 'auto')
+        if (
+          shouldAnchorCurrentTurnRef.current &&
+          anchoredUserMessageIdRef.current === lastUserMessage.id
+        ) {
+          scrollUserTurnToTop(lastUserMessage.id, 'auto')
+        }
       })
       return
     }
 
     if (shouldAutoFollowRef.current && liveAssistantActivity) {
       requestAnimationFrame(() => {
-        scrollToBottom('auto')
+        if (shouldAutoFollowRef.current && !userPausedAutoFollowRef.current) {
+          scrollToBottom('auto')
+        }
       })
     }
   }, [lastUserMessage, liveAssistantActivity, messages, scrollToBottom, scrollUserTurnToTop])

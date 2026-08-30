@@ -16,9 +16,21 @@ TRACK_IDS = (
     "capacity",
 )
 
+BUILTIN_SUITE_IDS = (
+    "evaluation-smoke",
+    "live-mom-core",
+    "live-agent-tasks",
+    "live-fault-recovery",
+    "live-multimodal",
+    "live-hard-policy",
+    "live-production-experiment",
+    "live-capacity",
+)
+
 RUN_STATUSES = (
     "pending",
     "running",
+    "sealing",
     "completed",
     "failed",
     "cancelled",
@@ -34,7 +46,6 @@ ARTIFACT_NAMES = frozenset(
         "records.jsonl",
         "metrics.json",
         "gates.json",
-        "comparison.json",
         "report.json",
         "report.md",
         "report.html",

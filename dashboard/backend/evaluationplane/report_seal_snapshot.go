@@ -14,11 +14,10 @@ import (
 const maxSealedEvidenceFiles = 4096
 
 type sealedEvidenceFile struct {
-	Scope       string `json:"scope"`
-	Name        string `json:"name"`
-	Digest      string `json:"digest"`
-	SizeBytes   int64  `json:"size_bytes"`
-	FileVersion string `json:"file_version"`
+	Scope     string `json:"scope"`
+	Name      string `json:"name"`
+	Digest    string `json:"digest"`
+	SizeBytes int64  `json:"size_bytes"`
 }
 
 func (s *Service) buildSealedEvidenceSnapshot(runID string, checksums map[string]string) ([]sealedEvidenceFile, error) {
@@ -178,7 +177,7 @@ func sealEvidenceFile(scope, name, path, expectedDigest string, limit int64) (se
 		return sealedEvidenceFile{}, fmt.Errorf("evidence file does not match its receipt")
 	}
 	return sealedEvidenceFile{
-		Scope: scope, Name: name, Digest: digest, SizeBytes: written, FileVersion: bundleFileVersion(after),
+		Scope: scope, Name: name, Digest: digest, SizeBytes: written,
 	}, nil
 }
 
@@ -237,7 +236,7 @@ func validateSealedEvidenceMetadata(entries []sealedEvidenceFile) error {
 		if entry.Scope == "cas" {
 			validName = casObjectNamePattern.MatchString(entry.Name) && entry.Digest == "sha256:"+entry.Name
 		}
-		if !validName || !digestPattern.MatchString(entry.Digest) || !digestPattern.MatchString(entry.FileVersion) ||
+		if !validName || !digestPattern.MatchString(entry.Digest) ||
 			entry.SizeBytes < 0 || (last != "" && key <= last) {
 			return fmt.Errorf("%w: report anchor evidence metadata is invalid", ErrInvalid)
 		}

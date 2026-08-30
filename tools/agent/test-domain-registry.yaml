@@ -161,7 +161,7 @@ domains:
     local:
       fast: [make vllm-sr-test]
       feature: [make vllm-sr-test-integration]
-    image_receipts: [dashboard, extproc, vllm-sr, vllm-sr-sim]
+    image_receipts: [dashboard, extproc, vllm-sr]
     reporting: {kind: check}
 
   memory:
@@ -195,7 +195,7 @@ domains:
       - e2e/profiles/response-api-redis-cluster/**
       - deploy/kubernetes/response-api/**
     local: {fast: [], feature: [make memory-test-integration]}
-    image_receipts: [dashboard, extproc, llm-katan, vllm-sr, vllm-sr-sim]
+    image_receipts: [dashboard, extproc, llm-katan, vllm-sr]
     reporting: {kind: check}
 
   recipe-conformance:

@@ -283,10 +283,16 @@ const ChatComponent = ({
     hasHydratedConversation.current = true
   }, [areConversationsHydrated, conversations, restoreMessages])
 
+  const hasStoredActiveConversation = conversations.some(
+    (conversation) => conversation.id === conversationId,
+  )
+
   useEffect(() => {
-    if (!hasHydratedConversation.current) return
+    if (!hasHydratedConversation.current || !hasStoredActiveConversation) {
+      return
+    }
     writeActiveConversationPreference(conversationId)
-  }, [conversationId])
+  }, [conversationId, hasStoredActiveConversation])
 
   // Persist changed conversations whenever in-memory messages change
   useEffect(() => {
@@ -529,23 +535,23 @@ const ChatComponent = ({
         (earliestTask, task) => (task.createdAt < earliestTask.createdAt ? task : earliestTask),
         queue[0],
       )
+      if (
+        !activatedOrphanQueue &&
+        conversationIdRef.current !== targetConversationId &&
+        !conversations.some((conversation) => conversation.id === targetConversationId)
+      ) {
+        activatedOrphanQueue = true
+        conversationIdRef.current = targetConversationId
+        setConversationId(targetConversationId)
+        setInputValue('')
+        setProbeDraft(null)
+        setExpandedToolCards(new Set())
+      }
       if (!routingModels.some((modelOption) => modelOption.id === nextTask.requestOptions.model)) {
         setConversationError(
           targetConversationId,
           `Queued model "${nextTask.requestOptions.model}" is no longer available. Delete the queued task and resend it with an available model.`,
         )
-        if (
-          !activatedOrphanQueue &&
-          conversationIdRef.current !== targetConversationId &&
-          !conversations.some((conversation) => conversation.id === targetConversationId)
-        ) {
-          activatedOrphanQueue = true
-          conversationIdRef.current = targetConversationId
-          setConversationId(targetConversationId)
-          setInputValue('')
-          setProbeDraft(null)
-          setExpandedToolCards(new Set())
-        }
         return
       }
 

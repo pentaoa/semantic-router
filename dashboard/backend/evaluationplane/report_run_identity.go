@@ -1,7 +1,6 @@
 package evaluationplane
 
 import (
-	"strings"
 	"time"
 )
 
@@ -9,6 +8,8 @@ func canonicalizeReportRun(run Run, report *Report, completedAt time.Time) {
 	report.Run.ClientRequestID = run.ClientRequestID
 	report.Run.Name = run.Name
 	report.Run.Description = run.Description
+	report.Run.Mixture = copyCatalogMixture(run.Mixture)
+	report.Run.TrackEvidenceLevels = copyTrackEvidenceLevels(run.TrackEvidenceLevels)
 	report.Run.CreatedAt = run.CreatedAt
 	report.Run.StartedAt = copyTime(run.StartedAt)
 	report.Run.CompletedAt = copyTime(&completedAt)
@@ -19,34 +20,29 @@ func canonicalizeReportRun(run Run, report *Report, completedAt time.Time) {
 	}
 }
 
+func copyTrackEvidenceLevels(source map[TrackID]EvidenceLevel) map[TrackID]EvidenceLevel {
+	result := make(map[TrackID]EvidenceLevel, len(source))
+	for trackID, level := range source {
+		result[trackID] = level
+	}
+	return result
+}
+
 func reportRunNameMatches(run Run, reported Run) bool {
-	return reported.Name == run.Name || reported.Name == run.ID
+	return reported.Name == run.Name
 }
 
 func reportRunDescriptionMatches(run Run, reported Run) bool {
-	legacy := "Evaluation suites: " + strings.Join(run.SuiteIDs, ", ")
-	return reported.Description == run.Description || reported.Description == legacy
+	return reported.Description == run.Description
 }
 
 func reportRunClientRequestIDMatches(run Run, reported Run) bool {
-	return reported.ClientRequestID == run.ClientRequestID || reported.ClientRequestID == ""
+	return reported.ClientRequestID == run.ClientRequestID
 }
 
 func reportRunTimesMatch(run Run, reported Run) bool {
-	if sameOptionalTime(run.StartedAt, reported.StartedAt) && sameOptionalTime(run.CompletedAt, reported.CompletedAt) {
-		return true
-	}
-	// Reports sealed before the server-owned identity contract used worker-clock
-	// start/completion timestamps and report.run.name equal to the run UUID. Keep
-	// those durable reports readable while bounding both timestamps to the
-	// server-owned execution window.
-	if reported.Name != run.ID || run.StartedAt == nil || run.CompletedAt == nil ||
-		reported.StartedAt == nil || reported.CompletedAt == nil {
-		return false
-	}
-	return !reported.StartedAt.Before(*run.StartedAt) &&
-		!reported.CompletedAt.Before(*reported.StartedAt) &&
-		!reported.CompletedAt.After(*run.CompletedAt)
+	return sameOptionalTime(run.StartedAt, reported.StartedAt) &&
+		sameOptionalTime(run.CompletedAt, reported.CompletedAt)
 }
 
 func sameOptionalTime(left, right *time.Time) bool {

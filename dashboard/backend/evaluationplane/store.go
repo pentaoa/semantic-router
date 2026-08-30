@@ -1,17 +1,13 @@
 package evaluationplane
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"path/filepath"
-	"regexp"
-	"sort"
-	"strconv"
 	"sync"
+	"time"
 )
 
 const (
@@ -21,41 +17,61 @@ const (
 	reportFileName   = "report.json"
 	maxEventsPerRun  = uint64(8192)
 	maxEventLogBytes = int64(16 * 1024 * 1024)
-
-	corruptRunBundleWarningCode = "corrupt_run_bundle"
 )
 
-var safeIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`)
-
 type Store struct {
-	root            string
-	runsRoot        string
-	mu              sync.Mutex
-	sequences       map[string]uint64
-	runListWarnings map[string]runListWarning
-}
-
-type runListWarning struct {
-	Code    string
-	RunID   string
-	Message string
+	root                 string
+	runsRoot             string
+	suiteRoot            string
+	attestationRoot      string
+	lifecycleRoot        string
+	lifecycleAuditRoot   string
+	mu                   sync.Mutex
+	runIndex             *runMetadataIndex
+	lifecycle            *lifecycleCoordinator
+	lifecyclePolicy      lifecycleStorePolicy
+	lifecycleNow         func() time.Time
+	lifecyclePersistence lifecyclePolicyPersistence
+	lifecycleAuditWriter lifecycleAuditWriter
+	statusPersistence    runStatusPersistence
 }
 
 func NewStore(root string) (*Store, error) {
+	return newStoreWithLifecycleLimits(root, LifecycleLimits{})
+}
+
+func newStoreWithLifecycleLimits(root string, requestedLimits LifecycleLimits) (*Store, error) {
 	if root == "" {
 		return nil, fmt.Errorf("%w: evaluation data directory is required", ErrInvalid)
+	}
+	limits, err := normalizeLifecycleLimits(requestedLimits)
+	if err != nil {
+		return nil, err
 	}
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
 		return nil, fmt.Errorf("resolve evaluation data directory: %w", err)
 	}
 	runsRoot := filepath.Join(absRoot, "runs")
+	suiteRoot := filepath.Join(absRoot, "suites")
+	attestationRoot := filepath.Join(absRoot, "attestations")
+	lifecycleRoot := filepath.Join(absRoot, "lifecycle")
+	lifecycleAuditRoot := filepath.Join(lifecycleRoot, lifecycleAuditDirectoryName)
 	privateDirectories := []string{
 		absRoot,
+		filepath.Join(absRoot, "campaigns"),
 		filepath.Join(absRoot, "objects"),
 		filepath.Join(absRoot, "objects", "sha256"),
 		runsRoot,
-		filepath.Join(absRoot, "index"),
+		suiteRoot,
+		attestationRoot,
+		lifecycleRoot,
+		lifecycleAuditRoot,
+		filepath.Join(suiteRoot, "objects", "visible", "sha256"),
+		filepath.Join(suiteRoot, "objects", "grading", "sha256"),
+		filepath.Join(suiteRoot, "objects", "metadata", "sha256"),
+		filepath.Join(suiteRoot, "manifests", "sha256"),
+		filepath.Join(suiteRoot, "index"),
 	}
 	for _, directory := range privateDirectories {
 		if err := os.MkdirAll(directory, 0o700); err != nil {
@@ -65,140 +81,87 @@ func NewStore(root string) (*Store, error) {
 			return nil, err
 		}
 	}
-	return &Store{
-		root: absRoot, runsRoot: runsRoot,
-		sequences: make(map[string]uint64), runListWarnings: make(map[string]runListWarning),
-	}, nil
+	if err := recoverStagedRunBundles(runsRoot); err != nil {
+		return nil, err
+	}
+	if err := recoverStagedCampaigns(filepath.Join(absRoot, "campaigns")); err != nil {
+		return nil, err
+	}
+	store := &Store{
+		root: absRoot, runsRoot: runsRoot, suiteRoot: suiteRoot, attestationRoot: attestationRoot,
+		lifecycleRoot: lifecycleRoot, lifecycleAuditRoot: lifecycleAuditRoot,
+		runIndex:             sharedRunMetadataIndex(absRoot),
+		lifecycle:            sharedLifecycleCoordinator(absRoot),
+		lifecycleNow:         func() time.Time { return time.Now().UTC() },
+		lifecyclePersistence: atomicLifecyclePolicyPersistence{},
+		lifecycleAuditWriter: atomicLifecycleAuditWriter{},
+		statusPersistence:    atomicRunStatusPersistence{},
+	}
+	store.lifecycle.mu.Lock()
+	if err := store.initializeLifecyclePolicyUnlocked(limits); err != nil {
+		store.lifecycle.mu.Unlock()
+		return nil, err
+	}
+	if err := store.validateLifecycleAuditUnlocked(); err != nil {
+		store.lifecycle.mu.Unlock()
+		return nil, err
+	}
+	store.lifecycle.mu.Unlock()
+	if err := store.recoverExecutionAttestations(); err != nil {
+		return nil, err
+	}
+	if err := store.refreshRunIndex(); err != nil {
+		return nil, err
+	}
+	if err := store.validateLifecycleRunBindings(); err != nil {
+		return nil, err
+	}
+	if err := store.validateRunReferenceIntegrity(); err != nil {
+		return nil, err
+	}
+	if err := store.validateCampaignReferenceIntegrity(); err != nil {
+		return nil, err
+	}
+	store.recoverCASGarbage()
+	return store, nil
 }
 
 func (s *Store) Root() string { return s.root }
 
+func (s *Store) SuiteRoot() string { return s.suiteRoot }
+
 func (s *Store) GetRun(id string) (Run, error) {
-	runDir, err := s.checkedRunDir(id)
+	run, err := s.getRunUnlocked(id)
 	if err != nil {
 		return Run{}, err
 	}
-	var run Run
-	if err := readJSON(filepath.Join(runDir, runFileName), &run); err != nil {
+	if _, err := s.readRunLifecycle(run); err != nil {
 		return Run{}, err
-	}
-	if err := validateStoredRun(id, run); err != nil {
-		return Run{}, fmt.Errorf("validate evaluation run status: %w", err)
 	}
 	return run, nil
 }
 
-func (s *Store) ListRuns() ([]Run, error) {
-	ledger, err := s.ListRunLedger()
-	if err != nil {
-		return nil, err
-	}
-	return ledger.Runs, nil
-}
-
-func (s *Store) ListRunLedger() (RunLedger, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	entries, err := os.ReadDir(s.runsRoot)
-	if err != nil {
-		return RunLedger{}, fmt.Errorf("list evaluation runs: %w", err)
-	}
-	runs := make([]Run, 0, len(entries))
-	warnings := make(map[string]runListWarning)
-	for _, entry := range entries {
-		if !entry.IsDir() || !safeIDPattern.MatchString(entry.Name()) {
-			continue
-		}
-		run, readErr := s.GetRun(entry.Name())
-		if readErr != nil {
-			warnings[entry.Name()] = runListWarning{
-				Code: corruptRunBundleWarningCode, RunID: entry.Name(), Message: readErr.Error(),
-			}
-			continue
-		}
-		runs = append(runs, run)
-	}
-	s.updateRunListWarnings(warnings)
-	sort.Slice(runs, func(i, j int) bool { return runs[i].CreatedAt.After(runs[j].CreatedAt) })
-	publicWarnings := make([]RunLedgerWarning, 0, len(warnings))
-	for _, warning := range warnings {
-		publicWarnings = append(publicWarnings, publicRunLedgerWarning(warning))
-	}
-	sort.Slice(publicWarnings, func(i, j int) bool { return publicWarnings[i].RunID < publicWarnings[j].RunID })
-	return RunLedger{
-		SchemaVersion: SchemaVersion, Runs: runs,
-		LedgerComplete: len(publicWarnings) == 0, Warnings: publicWarnings,
-	}, nil
-}
-
-func validateStoredRun(bundleID string, run Run) error {
-	if run.SchemaVersion != SchemaVersion {
-		return fmt.Errorf("status schema_version must be %q", SchemaVersion)
-	}
-	if run.ID != bundleID {
-		return fmt.Errorf("status run identity does not match its bundle")
-	}
-	switch run.Status {
-	case StatusPending, StatusRunning, StatusCompleted, StatusFailed, StatusCancelled:
-		return nil
-	default:
-		return fmt.Errorf("status contains an invalid run state")
-	}
-}
-
-func (s *Store) updateRunListWarnings(current map[string]runListWarning) {
-	for runID, warning := range current {
-		if previous, unchanged := s.runListWarnings[runID]; unchanged && previous == warning {
-			continue
-		}
-		log.Printf(
-			"evaluationplane: warning_code=%s run_id=%q message=%q",
-			warning.Code,
-			warning.RunID,
-			warning.Message,
-		)
-	}
-	s.runListWarnings = current
-}
-
-func (s *Store) activeRunListWarnings() []runListWarning {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	warnings := make([]runListWarning, 0, len(s.runListWarnings))
-	for _, warning := range s.runListWarnings {
-		warnings = append(warnings, warning)
-	}
-	sort.Slice(warnings, func(i, j int) bool { return warnings[i].RunID < warnings[j].RunID })
-	return warnings
-}
-
 func (s *Store) UpdateRun(run Run) error {
-	if err := validateResourceID(run.ID); err != nil {
-		return err
+	if err := validateStoredRun(run.ID, run); err != nil {
+		return fmt.Errorf("%w: evaluation run status is invalid: %w", ErrInvalid, err)
 	}
+	s.runIndex.coordinator.Lock()
+	defer s.runIndex.coordinator.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	runDir, err := s.checkedRunDir(run.ID)
 	if err != nil {
 		return err
 	}
-	return writeJSONAtomic(filepath.Join(runDir, runFileName), run)
-}
-
-func (s *Store) DeleteRun(id string) error {
-	if err := validateResourceID(id); err != nil {
+	if err := s.statusPersistence.Write(filepath.Join(runDir, runFileName), run); err != nil {
+		// Atomic publication may have completed before a directory sync error.
+		// Re-read the canonical fact so the in-memory projection never guesses.
+		if durable, readErr := s.getRunUnlocked(run.ID); readErr == nil {
+			s.runIndex.upsert(durable)
+		}
 		return err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	runDir, err := s.checkedRunDir(id)
-	if err != nil {
-		return err
-	}
-	delete(s.sequences, id)
-	if err := os.RemoveAll(runDir); err != nil {
-		return fmt.Errorf("delete evaluation run: %w", err)
-	}
+	s.runIndex.upsert(run)
 	return nil
 }
 
@@ -217,99 +180,6 @@ func (s *Store) ManifestPath(id string) (string, error) {
 	}
 	_ = file.Close()
 	return path, nil
-}
-
-func (s *Store) AppendEvent(event Event) (Event, error) {
-	if err := validateResourceID(event.RunID); err != nil {
-		return Event{}, err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	runDir, err := s.checkedRunDir(event.RunID)
-	if err != nil {
-		return Event{}, err
-	}
-	sequence, loaded := s.sequences[event.RunID]
-	if !loaded {
-		sequence, err = lastEventSequence(filepath.Join(runDir, eventsFileName), event.RunID)
-		if err != nil {
-			return Event{}, err
-		}
-	}
-	sequence++
-	if sequence > maxEventsPerRun {
-		return Event{}, fmt.Errorf("%w: evaluation event log reached its per-run limit", ErrInvalid)
-	}
-	event.ID = strconv.FormatUint(sequence, 10)
-	encoded, err := json.Marshal(event)
-	if err != nil {
-		return Event{}, fmt.Errorf("encode evaluation event: %w", err)
-	}
-	file, err := openBundleFile(filepath.Join(runDir, eventsFileName), os.O_WRONLY|os.O_APPEND)
-	if err != nil {
-		return Event{}, fmt.Errorf("open evaluation event log: %w", err)
-	}
-	if _, err = file.Write(append(encoded, '\n')); err == nil {
-		err = file.Sync()
-	}
-	closeErr := file.Close()
-	if err != nil {
-		return Event{}, fmt.Errorf("append evaluation event: %w", err)
-	}
-	if closeErr != nil {
-		return Event{}, fmt.Errorf("close evaluation event log: %w", closeErr)
-	}
-	s.sequences[event.RunID] = sequence
-	return event, nil
-}
-
-func (s *Store) EventsAfter(id string, after uint64) ([]Event, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	runDir, err := s.checkedRunDir(id)
-	if err != nil {
-		return nil, err
-	}
-	file, err := openBundleFile(filepath.Join(runDir, eventsFileName), os.O_RDONLY)
-	if err != nil {
-		return nil, fmt.Errorf("open evaluation event log: %w", err)
-	}
-	defer func() { _ = file.Close() }()
-	info, err := file.Stat()
-	if err != nil {
-		return nil, fmt.Errorf("stat evaluation event log: %w", err)
-	}
-	if info.Size() > maxEventLogBytes {
-		return nil, fmt.Errorf("%w: evaluation event log exceeds its per-run byte limit", ErrInvalid)
-	}
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 4*1024), maxWorkerEventLineBytes)
-	var events []Event
-	var scanned uint64
-	for scanner.Scan() {
-		scanned++
-		if scanned > maxEventsPerRun {
-			return nil, fmt.Errorf("%w: evaluation event log exceeds its per-run event limit", ErrInvalid)
-		}
-		var event Event
-		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
-			return nil, fmt.Errorf("decode evaluation event: %w", err)
-		}
-		sequence, err := strconv.ParseUint(event.ID, 10, 64)
-		if err != nil {
-			return nil, fmt.Errorf("decode evaluation event id: %w", err)
-		}
-		if event.RunID != id || sequence != scanned || event.ID != strconv.FormatUint(scanned, 10) {
-			return nil, fmt.Errorf("evaluation event history is not a strictly monotonic run-local sequence")
-		}
-		if sequence > after {
-			events = append(events, event)
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("scan evaluation event log: %w", err)
-	}
-	return events, nil
 }
 
 func (s *Store) ReadReport(id string) ([]byte, error) {
@@ -375,9 +245,17 @@ func (s *Store) checkedRunDir(id string) (string, error) {
 	return runDir, nil
 }
 
-func validateResourceID(id string) error {
-	if !safeIDPattern.MatchString(id) {
-		return fmt.Errorf("%w: invalid resource id", ErrInvalid)
+func (s *Store) getRunUnlocked(id string) (Run, error) {
+	runDir, err := s.checkedRunDir(id)
+	if err != nil {
+		return Run{}, err
 	}
-	return nil
+	var run Run
+	if err := readJSON(filepath.Join(runDir, runFileName), &run); err != nil {
+		return Run{}, err
+	}
+	if err := validateStoredRun(id, run); err != nil {
+		return Run{}, fmt.Errorf("validate evaluation run status: %w", err)
+	}
+	return run, nil
 }

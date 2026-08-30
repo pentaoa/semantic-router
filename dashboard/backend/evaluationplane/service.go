@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
-	"os"
 	"reflect"
 	"regexp"
 	"strings"
@@ -14,17 +12,24 @@ import (
 )
 
 type Options struct {
-	DataDir            string
-	PythonPath         string
-	RouterAPIURL       string
-	EnvoyURL           string
-	ConfigPath         string
-	CodeRevision       string
-	EnvoyAPIKeyEnv     string
-	MaxConcurrent      int
-	WorkerTimeout      time.Duration
-	Process            Process
-	CredentialProvider CredentialProvider
+	DataDir                    string
+	PythonPath                 string
+	RouterAPIURL               string
+	EnvoyURL                   string
+	ConfigPath                 string
+	DeploymentsDir             string
+	CodeRevision               string
+	RouterAPIKeyEnv            string
+	EnvoyAPIKeyEnv             string
+	AgentTaskLedger            *ServiceEndpoint
+	FaultRecoveryLedger        *ServiceEndpoint
+	HardPolicyLedger           *ServiceEndpoint
+	ProductionExperimentLedger *ServiceEndpoint
+	MaxConcurrent              int
+	WorkerTimeout              time.Duration
+	Process                    Process
+	CredentialProvider         CredentialProvider
+	LifecycleLimits            LifecycleLimits
 }
 
 const defaultWorkerTimeout = 6 * time.Hour
@@ -40,55 +45,130 @@ const (
 var sourceRevisionPattern = regexp.MustCompile(`^(?:[0-9a-f]{40}|sha256:[0-9a-f]{64})$`)
 
 type Service struct {
-	store              *Store
-	registry           *Registry
-	process            Process
-	configPath         string
-	codeRevision       string
-	routerAPIURL       string
-	envoyURL           string
-	envoyAPIKeyEnv     string
-	routerAuthRequired bool
-	semaphore          chan struct{}
-	evidenceReads      chan struct{}
-	workerTimeout      time.Duration
-	createMu           sync.Mutex
-
-	mu              sync.Mutex
-	active          map[string]context.CancelFunc
-	workerEvents    map[string]int
-	subscribers     map[string]map[chan Event]struct{}
-	subscriberCount int
-	workers         sync.WaitGroup
-	closeOnce       sync.Once
-	closed          bool
+	store                      *Store
+	suiteStorePath             string
+	process                    Process
+	configPath                 string
+	deploymentsDir             string
+	codeRevision               string
+	routerAPIURL               string
+	envoyURL                   string
+	routerAPIKeyEnv            string
+	envoyAPIKeyEnv             string
+	agentTaskLedger            *ServiceEndpoint
+	faultRecoveryLedger        *ServiceEndpoint
+	hardPolicyLedger           *ServiceEndpoint
+	productionExperimentLedger *ServiceEndpoint
+	routerAuthRequired         bool
+	semaphore                  chan struct{}
+	evidenceReads              chan struct{}
+	workerTimeout              time.Duration
+	mu                         sync.Mutex
+	active                     map[string]context.CancelFunc
+	workerEvents               map[string]int
+	subscribers                map[string]map[chan Event]struct{}
+	subscriberCount            int
+	workers                    sync.WaitGroup
+	closeOnce                  sync.Once
+	shutdown                   chan struct{}
+	lifecycleErr               error
+	closed                     bool
 }
 
 func NewService(options Options) (*Service, error) {
-	store, err := NewStore(options.DataDir)
+	store, err := newStoreWithLifecycleLimits(options.DataDir, options.LifecycleLimits)
 	if err != nil {
 		return nil, err
 	}
 	codeRevision := strings.TrimSpace(options.CodeRevision)
-	if codeRevision == "" {
-		codeRevision = "unavailable"
+	if !sourceRevisionPattern.MatchString(codeRevision) {
+		return nil, fmt.Errorf(
+			"%w: evaluation source revision must be an immutable git commit or source-tree digest",
+			ErrInvalid,
+		)
 	}
 	if options.EnvoyAPIKeyEnv != "" && !secretEnvPattern.MatchString(options.EnvoyAPIKeyEnv) {
 		return nil, fmt.Errorf("evaluation Envoy credential reference must be an uppercase environment variable name")
 	}
-	snapshot, err := LoadModelArmSnapshot(options.ConfigPath, codeRevision)
+	routerAuthRequired, err := resolveRouterAuthentication(options.RouterAPIKeyEnv, options.CredentialProvider)
 	if err != nil {
 		return nil, err
 	}
-	routerAuthRequired := routerAuthenticationRequired(options.CredentialProvider)
-	registry, err := NewRegistry(options.RouterAPIURL, options.EnvoyURL, RegistryOptions{
-		EnvoyAPIKey: configuredSecretRef(options.EnvoyURL, options.EnvoyAPIKeyEnv),
-		ModelArms:   snapshot.ModelArms, BackendTopologyDigest: snapshot.BackendTopologyDigest,
-		RouterAuthRequired: routerAuthRequired,
+	// CodeRevision identifies the evaluation implementation, not the model
+	// servers behind a Mixture.  Do not publish it as every arm's runtime
+	// revision: that would make a source-only change silently mutate the pool
+	// treatment and make schema-adapter comparisons impossible.
+	snapshot, err := LoadModelArmSnapshot(options.ConfigPath, "")
+	if err != nil {
+		return nil, err
+	}
+	installedSuites, err := loadInstalledCatalogSuites(store.SuiteRoot())
+	if err != nil {
+		return nil, err
+	}
+	deploymentTargets, err := LoadEvaluationDeploymentRegistry(options.DeploymentsDir, "")
+	if err != nil {
+		return nil, err
+	}
+	mixtures := snapshot.Mixtures
+	if len(deploymentTargets) > 0 {
+		mixtures = nil
+	}
+	_, err = NewRegistry(options.RouterAPIURL, options.EnvoyURL, RegistryOptions{
+		RouterAPIKey: configuredRuntimeSecretRef(
+			options.RouterAPIURL, deploymentTargets, options.RouterAPIKeyEnv, true,
+		),
+		EnvoyAPIKey: configuredRuntimeSecretRef(
+			options.EnvoyURL, deploymentTargets, options.EnvoyAPIKeyEnv, false,
+		),
+		AgentTaskLedger:            copyServiceEndpoint(options.AgentTaskLedger),
+		FaultRecoveryLedger:        copyServiceEndpoint(options.FaultRecoveryLedger),
+		HardPolicyLedger:           copyServiceEndpoint(options.HardPolicyLedger),
+		ProductionExperimentLedger: copyServiceEndpoint(options.ProductionExperimentLedger),
+		Mixtures:                   mixtures,
+		DeploymentTargets:          deploymentTargets,
+		DefaultConfigDigest:        snapshot.ConfigDigest,
+		RouterAuthRequired:         routerAuthRequired,
+		InstalledSuites:            installedSuites,
 	})
 	if err != nil {
 		return nil, err
 	}
+	process, err := configureServiceProcess(&options, store)
+	if err != nil {
+		return nil, err
+	}
+	service := &Service{
+		store:                      store,
+		suiteStorePath:             store.SuiteRoot(),
+		process:                    process,
+		configPath:                 options.ConfigPath,
+		deploymentsDir:             strings.TrimSpace(options.DeploymentsDir),
+		codeRevision:               codeRevision,
+		routerAPIURL:               options.RouterAPIURL,
+		envoyURL:                   options.EnvoyURL,
+		routerAPIKeyEnv:            strings.TrimSpace(options.RouterAPIKeyEnv),
+		envoyAPIKeyEnv:             strings.TrimSpace(options.EnvoyAPIKeyEnv),
+		agentTaskLedger:            copyServiceEndpoint(options.AgentTaskLedger),
+		faultRecoveryLedger:        copyServiceEndpoint(options.FaultRecoveryLedger),
+		hardPolicyLedger:           copyServiceEndpoint(options.HardPolicyLedger),
+		productionExperimentLedger: copyServiceEndpoint(options.ProductionExperimentLedger),
+		routerAuthRequired:         routerAuthRequired,
+		semaphore:                  make(chan struct{}, options.MaxConcurrent),
+		evidenceReads:              make(chan struct{}, maxConcurrentEvidenceReads),
+		workerTimeout:              options.WorkerTimeout,
+		active:                     make(map[string]context.CancelFunc),
+		workerEvents:               make(map[string]int),
+		subscribers:                make(map[string]map[chan Event]struct{}),
+		shutdown:                   make(chan struct{}),
+	}
+	if err := service.RecoverInterruptedRuns(); err != nil {
+		return nil, err
+	}
+	return service, nil
+}
+
+func configureServiceProcess(options *Options, store *Store) (Process, error) {
 	if options.MaxConcurrent <= 0 {
 		options.MaxConcurrent = 2
 	}
@@ -101,95 +181,58 @@ func NewService(options Options) (*Service, error) {
 	process := options.Process
 	if process == nil {
 		commandProcess := NewCommandProcess(options.PythonPath)
+		commandProcess.routerAPIKeyEnv = strings.TrimSpace(options.RouterAPIKeyEnv)
 		commandProcess.envoyAPIKeyEnv = strings.TrimSpace(options.EnvoyAPIKeyEnv)
+		commandProcess.cpuSeconds = workerCPULimit(options.WorkerTimeout)
+		commandProcess.quotaCheck = store.requireEvidenceQuotaUnlocked
 		process = commandProcess
 	}
-	if hydrationErr := store.HydrateLegacyClientRequestIndices(); hydrationErr != nil {
-		log.Printf(
-			"evaluationplane: warning_code=client_request_index_migration_incomplete message=%q",
-			hydrationErr.Error(),
-		)
-	}
-	service := &Service{
-		store:              store,
-		registry:           registry,
-		process:            process,
-		configPath:         options.ConfigPath,
-		codeRevision:       codeRevision,
-		routerAPIURL:       options.RouterAPIURL,
-		envoyURL:           options.EnvoyURL,
-		envoyAPIKeyEnv:     strings.TrimSpace(options.EnvoyAPIKeyEnv),
-		routerAuthRequired: routerAuthRequired,
-		semaphore:          make(chan struct{}, options.MaxConcurrent),
-		evidenceReads:      make(chan struct{}, maxConcurrentEvidenceReads),
-		workerTimeout:      options.WorkerTimeout,
-		active:             make(map[string]context.CancelFunc),
-		workerEvents:       make(map[string]int),
-		subscribers:        make(map[string]map[chan Event]struct{}),
-	}
-	if err := service.RecoverInterruptedRuns(); err != nil {
-		return nil, err
-	}
-	return service, nil
+	return process, nil
 }
 
-func (s *Service) Catalog() Catalog {
+func (s *Service) Catalog() (Catalog, error) {
 	registry, _, err := s.registrySnapshot()
 	if err != nil {
-		return s.registry.Catalog()
+		return Catalog{}, err
 	}
-	return registry.Catalog()
+	return registry.Catalog(), nil
 }
 
 func (s *Service) CreateRun(ctx context.Context, request CreateRunRequest) (Run, error) {
-	if !sourceRevisionPattern.MatchString(s.codeRevision) {
-		return Run{}, fmt.Errorf("%w: evaluation source revision must be an immutable git commit or source-tree digest", ErrInvalid)
-	}
-	registry, snapshot, err := s.registrySnapshot()
-	if err != nil {
+	return s.CreateRunAs(ctx, SystemActor(), request)
+}
+
+func (s *Service) CreateRunAs(ctx context.Context, actor Actor, request CreateRunRequest) (Run, error) {
+	if err := validateActor(actor); err != nil {
 		return Run{}, err
 	}
-	validated, target, err := s.validateCreateRequest(registry, request)
-	if err != nil {
-		return Run{}, err
+	registry, snapshot, registryErr := s.registrySnapshot()
+	if registryErr != nil {
+		return Run{}, registryErr
 	}
-	evidenceLevel, err := selectedSuiteEvidenceLevel(registry, validated.SuiteIDs)
-	if err != nil {
-		return Run{}, err
+	validated, target, requestErr := s.validateCreateRequest(registry, request)
+	if requestErr != nil {
+		return Run{}, requestErr
+	}
+	evidenceLevel, evidenceErr := selectedSuiteEvidenceLevel(registry, validated.SuiteIDs, validated.Mode)
+	if evidenceErr != nil {
+		return Run{}, evidenceErr
 	}
 	if qualificationErr := requireQualifiedCodeRevision(evidenceLevel, s.codeRevision); qualificationErr != nil {
 		return Run{}, qualificationErr
 	}
-	// Serialize keyed creates in this process. The durable create-only index also
-	// arbitrates independent Store instances and survives process restarts.
-	var requestDigest string
-	if validated.ClientRequestID != "" {
-		s.createMu.Lock()
-		defer s.createMu.Unlock()
-		if hydrationErr := s.store.HydrateLegacyClientRequestIndices(); hydrationErr != nil {
-			return Run{}, fmt.Errorf(
-				"%w: client_request_id creates are quarantined until the legacy index migration completes",
-				ErrConflict,
-			)
+	if validated.BaselineRunID != "" {
+		if ledgerErr := s.RequireCompleteRunLedger(); ledgerErr != nil {
+			return Run{}, ledgerErr
 		}
-		requestDigest, err = createRequestDigest(validated)
-		if err != nil {
+	}
+	if existing, getErr := s.store.GetRun(validated.ClientRequestID); getErr == nil {
+		if err := s.store.auditExistingCreate(actor, existing); err != nil {
 			return Run{}, err
 		}
-		indexed, found, indexErr := s.store.ClientRequestIndex(validated.ClientRequestID)
-		if indexErr != nil {
-			return Run{}, fmt.Errorf("%w: client_request_id index is unavailable", ErrConflict)
-		}
-		if found {
-			return s.resolveIndexedCreate(validated, requestDigest, indexed)
-		}
-		indexed, found, reconcileErr := s.store.ReconcileClientRequestIndex(validated.ClientRequestID)
-		if reconcileErr != nil {
-			return Run{}, fmt.Errorf("%w: client_request_id index reconciliation is unavailable", ErrConflict)
-		}
-		if found {
-			return s.resolveIndexedCreate(validated, requestDigest, indexed)
-		}
+		return s.resolveExistingCreate(validated, existing)
+	} else if !errors.Is(getErr, ErrNotFound) {
+		return Run{}, getErr
 	}
 	if baselineErr := s.validateCreateBaseline(validated, target, snapshot); baselineErr != nil {
 		return Run{}, baselineErr
@@ -204,7 +247,7 @@ func (s *Service) CreateRun(ctx context.Context, request CreateRunRequest) (Run,
 	if err != nil {
 		return Run{}, err
 	}
-	return s.persistPendingRun(validated, run, manifest, requestDigest)
+	return s.persistPendingRunAs(actor, validated, run, manifest)
 }
 
 func requireQualifiedCodeRevision(_ EvidenceLevel, revision string) error {
@@ -218,8 +261,10 @@ func validateComparableRunRequest(candidate CreateRunRequest, baseline Run) erro
 	if candidate.Mode != baseline.Mode || candidate.TargetID != baseline.TargetID ||
 		candidate.ChangeProfile != baseline.ChangeProfile ||
 		candidate.SampleLimit != baseline.SampleLimit || candidate.Concurrency != baseline.Concurrency || candidate.Seed != baseline.Seed ||
-		!sameStringSet(candidate.SuiteIDs, baseline.SuiteIDs) || !sameTrackSet(candidate.TrackIDs, baseline.TrackIDs) {
-		return fmt.Errorf("%w: candidate change_profile, mode, target, suites, tracks, sample_limit, concurrency, and seed must match the baseline", ErrInvalid)
+		!reflect.DeepEqual(candidate.CapacitySLO, baseline.CapacitySLO) ||
+		!reflect.DeepEqual(candidate.CapacityLoadProtocol, baseline.CapacityLoadProtocol) ||
+		!reflect.DeepEqual(candidate.SuiteIDs, baseline.SuiteIDs) || !reflect.DeepEqual(candidate.TrackIDs, baseline.TrackIDs) {
+		return fmt.Errorf("%w: candidate change_profile, mode, target, suites, tracks, sample_limit, concurrency, capacity_slo, and seed must match the baseline", ErrInvalid)
 	}
 	return nil
 }
@@ -230,71 +275,113 @@ func (s *Service) validateComparableTargetSnapshot(
 	snapshot ModelArmSnapshot,
 	baselineRunID string,
 ) error {
-	manifestPath, err := s.store.ManifestPath(baselineRunID)
+	baseline, _, err := s.readDurableManifest(baselineRunID)
 	if err != nil {
-		return fmt.Errorf("%w: baseline manifest is unavailable", ErrInvalid)
-	}
-	var baseline RunManifest
-	if err := readJSON(manifestPath, &baseline); err != nil {
 		return fmt.Errorf("%w: baseline manifest is unavailable", ErrInvalid)
 	}
 	if baseline.ChangeProfile != profile {
 		return fmt.Errorf("%w: baseline manifest change_profile does not match", ErrInvalid)
 	}
 	allowed := comparisonTreatment(profile)
-	if !allowed.pool && !reflect.DeepEqual(baseline.Target.ModelArms, target.ModelArms) {
+	if !allowed.supported {
+		return fmt.Errorf(
+			"%w: change_profile %q has no independent server-owned treatment factor and cannot be paired",
+			ErrInvalid, profile,
+		)
+	}
+	codeChanged := baseline.CodeRevision != s.codeRevision
+	if codeChanged && !allowed.code {
+		return fmt.Errorf("%w: source code revision must remain frozen for change_profile %q", ErrInvalid, profile)
+	}
+	poolChanged := !sameMixturePool(baseline.Target.Mixture, target.Mixture)
+	if poolChanged && !allowed.pool {
 		return fmt.Errorf("%w: model pool snapshot must remain frozen for change_profile %q", ErrInvalid, profile)
 	}
-	if !allowed.environment && baseline.Target.BackendTopologyDigest != target.BackendTopologyDigest {
-		return fmt.Errorf("%w: backend topology snapshot must remain frozen for change_profile %q", ErrInvalid, profile)
+	bindingChanged := !sameMixtureBinding(baseline.Target.Mixture, target.Mixture)
+	if bindingChanged && !allowed.binding {
+		return fmt.Errorf("%w: candidate binding snapshot must remain frozen for change_profile %q", ErrInvalid, profile)
 	}
-	candidatePolicyDigest := manifestPolicySnapshotDigest(target, snapshot)
+	selectorChanged, selectorAvailable := changedMixtureDigest(
+		baseline.Target.Mixture, target.Mixture, func(mixture *ManifestMixture) string { return mixture.SelectorDigest },
+	)
+	if selectorChanged && !allowed.selector {
+		return fmt.Errorf("%w: selector snapshot must remain frozen for change_profile %q", ErrInvalid, profile)
+	}
+	adaptationChanged, adaptationAvailable := changedMixtureDigest(
+		baseline.Target.Mixture, target.Mixture, func(mixture *ManifestMixture) string { return mixture.AdaptationDigest },
+	)
+	if adaptationChanged && !allowed.adaptation {
+		return fmt.Errorf("%w: online adaptation snapshot must remain frozen for change_profile %q", ErrInvalid, profile)
+	}
+	productionEnvironmentChanged := baseline.Target.RouterAPIURL != target.RouterAPIURL ||
+		baseline.Target.EnvoyURL != target.EnvoyURL ||
+		!reflect.DeepEqual(baseline.Target.RouterAPIKey, target.RouterAPIKey) ||
+		!reflect.DeepEqual(baseline.Target.EnvoyAPIKey, target.EnvoyAPIKey) ||
+		!reflect.DeepEqual(baseline.Target.AgentTaskLedger, target.AgentTaskLedger) ||
+		!reflect.DeepEqual(baseline.Target.FaultRecoveryLedger, target.FaultRecoveryLedger) ||
+		!reflect.DeepEqual(baseline.Target.HardPolicyLedger, target.HardPolicyLedger) ||
+		!reflect.DeepEqual(baseline.Target.ProductionExperimentLedger, target.ProductionExperimentLedger)
+	if profile == "model_pool" && productionEnvironmentChanged {
+		return fmt.Errorf("%w: model_pool treatment must freeze runtime origins, credentials, and production ledgers", ErrInvalid)
+	}
+	environmentChanged := baseline.Target.BackendTopologyDigest != target.BackendTopologyDigest || productionEnvironmentChanged
+	if !allowed.environment && environmentChanged {
+		return fmt.Errorf("%w: runtime environment snapshot must remain frozen for change_profile %q", ErrInvalid, profile)
+	}
+	candidatePolicyDigest := manifestPolicySnapshotDigest(target, snapshot, baseline.SuiteRevisions)
 	if !digestPattern.MatchString(baseline.PolicySnapshotDigest) || !digestPattern.MatchString(candidatePolicyDigest) {
 		return fmt.Errorf("%w: policy snapshot identity is unavailable", ErrInvalid)
 	}
-	if !allowed.policy && baseline.PolicySnapshotDigest != candidatePolicyDigest {
+	policyChanged := baseline.PolicySnapshotDigest != candidatePolicyDigest
+	if policyChanged && !allowed.policy {
 		return fmt.Errorf("%w: policy snapshot must remain frozen for change_profile %q", ErrInvalid, profile)
+	}
+	primaryChanged := map[string]bool{
+		"code": codeChanged, "policy": policyChanged, "selector": selectorChanged,
+		"adaptation": adaptationChanged, "binding": bindingChanged,
+		"pool": poolChanged, "environment": environmentChanged,
+	}[allowed.primary]
+	// Recorded targets do not expose a server-owned live Mixture factor graph at
+	// create time. Preserve cohort/freeze checks here and require the exact
+	// treatment from the sealed report factors before any comparison can exist.
+	if baseline.Target.Mixture == nil && target.Mixture == nil && allowed.primary != "code" {
+		return nil
+	}
+	if (allowed.primary == "selector" && !selectorAvailable) ||
+		(allowed.primary == "adaptation" && !adaptationAvailable) {
+		return fmt.Errorf(
+			"%w: change_profile %q requires a server-owned %s snapshot",
+			ErrInvalid, profile, allowed.primary,
+		)
+	}
+	if !primaryChanged {
+		return fmt.Errorf(
+			"%w: change_profile %q requires the %s treatment factor to change",
+			ErrInvalid, profile, allowed.primary,
+		)
 	}
 	return nil
 }
 
-func manifestPolicySnapshotDigest(target targetDefinition, snapshot ModelArmSnapshot) string {
-	if target.Public.ID == "fixture" {
-		return fixturePolicySnapshotDigest
+func sameMixtureBinding(left, right *ManifestMixture) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
 	}
-	return snapshot.PolicySnapshotDigest
+	return left.ID == right.ID && left.BindingDigest == right.BindingDigest
 }
 
-func sameStringSet(left, right []string) bool {
-	if len(left) != len(right) {
-		return false
+func changedMixtureDigest(
+	left, right *ManifestMixture,
+	value func(*ManifestMixture) string,
+) (bool, bool) {
+	if left == nil || right == nil {
+		return left != right, false
 	}
-	values := make(map[string]bool, len(left))
-	for _, value := range left {
-		values[value] = true
-	}
-	for _, value := range right {
-		if !values[value] {
-			return false
-		}
-	}
-	return true
+	return value(left) != value(right), true
 }
 
-func sameTrackSet(left, right []TrackID) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	values := make(map[TrackID]bool, len(left))
-	for _, value := range left {
-		values[value] = true
-	}
-	for _, value := range right {
-		if !values[value] {
-			return false
-		}
-	}
-	return true
+func manifestPolicySnapshotDigest(target targetDefinition, snapshot ModelArmSnapshot, suiteRevisions map[string]string) string {
+	return policySnapshotDigestForTarget(target, suiteRevisions)
 }
 
 func (s *Service) ListRuns() ([]Run, error) { return s.store.ListRuns() }
@@ -302,13 +389,26 @@ func (s *Service) ListRuns() ([]Run, error) { return s.store.ListRuns() }
 func (s *Service) GetRun(id string) (Run, error) { return s.store.GetRun(id) }
 
 func (s *Service) StartRun(_ context.Context, id string) (Run, error) {
+	return s.StartRunAs(context.Background(), SystemActor(), id)
+}
+
+func (s *Service) StartRunAs(ctx context.Context, actor Actor, id string) (Run, error) {
+	s.store.lifecycle.mu.Lock()
+	defer s.store.lifecycle.mu.Unlock()
+	if err := s.store.authorizeRunActionUnlocked(actor, id, "start"); err != nil {
+		return Run{}, err
+	}
+	return s.startRunInternal(ctx, id)
+}
+
+func (s *Service) startRunInternal(_ context.Context, id string) (Run, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	run, err := s.store.GetRun(id)
 	if err != nil {
 		return Run{}, err
 	}
-	if run.Status == StatusRunning || terminalStatus(run.Status) {
+	if run.Status == StatusRunning || run.Status == StatusSealing || terminalStatus(run.Status) {
 		return run, nil
 	}
 	if s.closed {
@@ -353,7 +453,7 @@ func (s *Service) StartRun(_ context.Context, id string) (Run, error) {
 	s.active[id] = cancel
 	s.workerEvents[id] = 0
 	s.workers.Add(1)
-	go s.execute(workerContext, id, manifestPath)
+	go s.execute(workerContext, id, manifestPath, nil)
 	return run, nil
 }
 
@@ -369,19 +469,36 @@ func (s *Service) validateRunStart(run Run) error {
 	if err != nil {
 		return err
 	}
+	executorID, singleExecutor := manifestExecutorIdentity(manifest)
+	executor, registered := registry.executor(executorID)
+	if !singleExecutor || !registered || executor.Mode != manifest.Mode {
+		return fmt.Errorf("%w: pending run executor is not registered for its frozen mode", ErrInvalid)
+	}
 	if manifest.GateContractVersion != GateContractVersion ||
-		!reflect.DeepEqual(manifest.SuiteRevisions, suiteRevisionSnapshot(registry, manifest.SuiteIDs)) {
+		!reflect.DeepEqual(manifest.SuiteRevisions, suiteRevisionSnapshot(registry, manifest.SuiteIDs)) ||
+		!reflect.DeepEqual(manifest.SuiteExecutors, suiteExecutorSnapshot(registry, manifest.SuiteIDs, manifest.Mode)) {
 		return fmt.Errorf("%w: pending run suite or change-profile contract revision does not match the active evaluation worker", ErrConflict)
 	}
-	_, _, err = s.validateCreateRequest(registry, CreateRunRequest{
-		Name: run.Name, Description: run.Description,
+	_, currentTarget, err := s.validateCreateRequest(registry, CreateRunRequest{
+		ClientRequestID: run.ClientRequestID,
+		Name:            run.Name, Description: run.Description,
 		SuiteIDs: run.SuiteIDs, TrackIDs: run.TrackIDs,
 		Mode: run.Mode, TargetID: run.TargetID, ChangeProfile: run.ChangeProfile,
 		SampleLimit: run.SampleLimit, Concurrency: run.Concurrency, Seed: run.Seed,
-		BaselineRunID: run.BaselineRunID,
+		CapacitySLO:          copyCapacitySLO(run.CapacitySLO),
+		CapacityLoadProtocol: copyCapacityLoadProtocol(run.CapacityLoadProtocol),
+		BaselineRunID:        run.BaselineRunID,
 	})
 	if err != nil {
 		return fmt.Errorf("%w: run target is no longer supported", ErrConflict)
+	}
+	mixtureDrift := manifest.Mode == ModeLive && (currentTarget.Mixture == nil ||
+		manifest.PolicySnapshotDigest != currentTarget.Mixture.RecipeDigest)
+	if !manifestMatchesTargetDefinition(manifest.Target, currentTarget) || mixtureDrift {
+		return fmt.Errorf("%w: pending run mixture no longer matches the active recipe, pool, or binding", ErrConflict)
+	}
+	if manifest.ConfigDigest != currentTarget.ConfigDigest {
+		return fmt.Errorf("%w: pending run config digest no longer matches the active target", ErrConflict)
 	}
 	return nil
 }
@@ -396,12 +513,25 @@ func suiteRevisionSnapshot(registry *Registry, suiteIDs []string) map[string]str
 	return revisions
 }
 
+func suiteExecutorSnapshot(registry *Registry, suiteIDs []string, mode Mode) map[string]string {
+	executors := make(map[string]string, len(suiteIDs))
+	for _, suiteID := range suiteIDs {
+		if suite, ok := registry.suite(suiteID); ok {
+			if executor, executable := suiteExecutorForMode(suite, mode); executable {
+				executors[suiteID] = executor
+			}
+		}
+	}
+	return executors
+}
+
 // Close prevents new workers from starting, cancels every active worker, and
 // waits until each worker has released its process and concurrency slot.
 func (s *Service) Close() error {
 	s.closeOnce.Do(func() {
 		s.mu.Lock()
 		s.closed = true
+		close(s.shutdown)
 		cancellations := make([]context.CancelFunc, 0, len(s.active))
 		for _, cancel := range s.active {
 			cancellations = append(cancellations, cancel)
@@ -423,10 +553,25 @@ func (s *Service) Close() error {
 		s.subscriberCount = 0
 		s.mu.Unlock()
 	})
-	return nil
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lifecycleErr
 }
 
 func (s *Service) CancelRun(id string) (Run, error) {
+	return s.CancelRunAs(SystemActor(), id)
+}
+
+func (s *Service) CancelRunAs(actor Actor, id string) (Run, error) {
+	s.store.lifecycle.mu.Lock()
+	defer s.store.lifecycle.mu.Unlock()
+	if err := s.store.authorizeRunActionUnlocked(actor, id, "cancel"); err != nil {
+		return Run{}, err
+	}
+	return s.cancelRunInternal(id)
+}
+
+func (s *Service) cancelRunInternal(id string) (Run, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	run, err := s.store.GetRun(id)
@@ -434,25 +579,56 @@ func (s *Service) CancelRun(id string) (Run, error) {
 		return Run{}, err
 	}
 	if terminalStatus(run.Status) {
+		terminalEvent, eventErr := s.store.commitTerminalRun(run)
+		if eventErr != nil {
+			return Run{}, eventErr
+		}
+		if run.Status == StatusCancelled {
+			if cancel, ok := s.active[id]; ok {
+				cancel()
+			}
+		}
+		s.broadcastEventLocked(terminalEvent)
 		return run, nil
+	}
+	if run.Status != StatusRunning {
+		return Run{}, fmt.Errorf("%w: run cannot be cancelled from %s", ErrConflict, run.Status)
 	}
 	now := time.Now().UTC()
 	run.Status = StatusCancelled
 	run.CompletedAt = &now
 	run.Progress.Message = "Run cancelled"
-	if err := s.store.UpdateRun(run); err != nil {
+	terminalEvent, err := s.store.commitTerminalRun(run)
+	if err != nil {
 		return Run{}, err
 	}
-	if cancel, ok := s.active[id]; ok {
-		cancel()
-	}
-	if _, err := s.appendEventLocked(Event{RunID: id, Type: "cancelled", Timestamp: now, Message: "Run cancelled by user", Progress: &run.Progress}); err != nil {
+	durable, err := s.store.GetRun(id)
+	if err != nil {
 		return Run{}, err
 	}
-	return run, nil
+	if durable.Status == StatusCancelled {
+		if cancel, ok := s.active[id]; ok {
+			cancel()
+		}
+	}
+	s.broadcastEventLocked(terminalEvent)
+	return durable, nil
 }
 
 func (s *Service) DeleteRun(id string) error {
+	return s.DeleteRunAs(SystemActor(), id)
+}
+
+func (s *Service) DeleteRunAs(actor Actor, id string) error {
+	s.store.lifecycle.mu.Lock()
+	defer s.store.lifecycle.mu.Unlock()
+	if err := s.store.authorizeRunActionUnlocked(actor, id, "delete"); err != nil {
+		return err
+	}
+	return s.deleteRunInternal(actor, id)
+}
+
+func (s *Service) deleteRunInternal(actor Actor, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	run, err := s.store.GetRun(id)
@@ -462,26 +638,55 @@ func (s *Service) DeleteRun(id string) error {
 	if _, active := s.active[id]; active {
 		return fmt.Errorf("%w: evaluation worker is still exiting", ErrConflict)
 	}
-	if run.Status == StatusRunning {
-		return fmt.Errorf("%w: cancel a running evaluation before deletion", ErrConflict)
+	if run.Status == StatusRunning || run.Status == StatusSealing {
+		return fmt.Errorf("%w: evaluation execution is still active", ErrConflict)
+	}
+	if err := s.store.deleteRunAuthorizedUnlocked(actor, id); err != nil {
+		return err
 	}
 	for subscriber := range s.subscribers[id] {
 		close(subscriber)
 		s.subscriberCount--
 	}
 	delete(s.subscribers, id)
-	return s.store.DeleteRun(id)
+	return nil
 }
 
 func (s *Service) registrySnapshot() (*Registry, ModelArmSnapshot, error) {
-	snapshot, err := LoadModelArmSnapshot(s.configPath, s.codeRevision)
+	// The model runtime revision is not available from the Router config. Keep it
+	// unset instead of conflating it with the evaluation source revision.
+	snapshot, err := LoadModelArmSnapshot(s.configPath, "")
 	if err != nil {
 		return nil, ModelArmSnapshot{}, err
 	}
+	installedSuites, err := loadInstalledCatalogSuites(s.suiteStorePath)
+	if err != nil {
+		return nil, ModelArmSnapshot{}, err
+	}
+	deploymentTargets, err := LoadEvaluationDeploymentRegistry(s.deploymentsDir, "")
+	if err != nil {
+		return nil, ModelArmSnapshot{}, err
+	}
+	mixtures := snapshot.Mixtures
+	if len(deploymentTargets) > 0 {
+		mixtures = nil
+	}
 	registry, err := NewRegistry(s.routerAPIURL, s.envoyURL, RegistryOptions{
-		EnvoyAPIKey: configuredSecretRef(s.envoyURL, s.envoyAPIKeyEnv),
-		ModelArms:   snapshot.ModelArms, BackendTopologyDigest: snapshot.BackendTopologyDigest,
-		RouterAuthRequired: s.routerAuthRequired,
+		RouterAPIKey: configuredRuntimeSecretRef(
+			s.routerAPIURL, deploymentTargets, s.routerAPIKeyEnv, true,
+		),
+		EnvoyAPIKey: configuredRuntimeSecretRef(
+			s.envoyURL, deploymentTargets, s.envoyAPIKeyEnv, false,
+		),
+		AgentTaskLedger:            copyServiceEndpoint(s.agentTaskLedger),
+		FaultRecoveryLedger:        copyServiceEndpoint(s.faultRecoveryLedger),
+		HardPolicyLedger:           copyServiceEndpoint(s.hardPolicyLedger),
+		ProductionExperimentLedger: copyServiceEndpoint(s.productionExperimentLedger),
+		Mixtures:                   mixtures,
+		DeploymentTargets:          deploymentTargets,
+		DefaultConfigDigest:        snapshot.ConfigDigest,
+		RouterAuthRequired:         s.routerAuthRequired,
+		InstalledSuites:            installedSuites,
 	})
 	if err != nil {
 		return nil, ModelArmSnapshot{}, err
@@ -489,22 +694,35 @@ func (s *Service) registrySnapshot() (*Registry, ModelArmSnapshot, error) {
 	return registry, snapshot, nil
 }
 
-func routerAuthenticationRequired(provider CredentialProvider) bool {
-	if provider == nil {
-		return false
-	}
-	token, err := provider.ManagementCredential()
-	if errors.Is(err, os.ErrNotExist) {
-		return false
-	}
-	return err != nil || strings.TrimSpace(token) != ""
-}
-
 func configuredSecretRef(endpointURL, envName string) *SecretRef {
 	if strings.TrimSpace(endpointURL) == "" || strings.TrimSpace(envName) == "" {
 		return nil
 	}
 	return &SecretRef{SchemaVersion: SchemaVersion, Env: strings.TrimSpace(envName)}
+}
+
+func configuredRuntimeSecretRef(
+	defaultOrigin string,
+	deployments []DeploymentTargetSnapshot,
+	envName string,
+	router bool,
+) *SecretRef {
+	if strings.TrimSpace(envName) == "" {
+		return nil
+	}
+	if strings.TrimSpace(defaultOrigin) != "" {
+		return configuredSecretRef(defaultOrigin, envName)
+	}
+	for _, deployment := range deployments {
+		origin := deployment.EnvoyURL
+		if router {
+			origin = deployment.RouterAPIURL
+		}
+		if origin != "" {
+			return &SecretRef{SchemaVersion: SchemaVersion, Env: strings.TrimSpace(envName)}
+		}
+	}
+	return nil
 }
 
 func terminalStatus(status RunStatus) bool {

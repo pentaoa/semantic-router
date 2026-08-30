@@ -17,7 +17,6 @@ var publicArtifactContracts = map[string]publicArtifactContract{
 	"capacity-profile.json": {Kind: "json", MediaType: "application/json"},
 	"metrics.json":          {Kind: "json", MediaType: "application/json"},
 	"gates.json":            {Kind: "json", MediaType: "application/json"},
-	"comparison.json":       {Kind: "json", MediaType: "application/json"},
 	"failure-summary.json":  {Kind: "json", MediaType: "application/json"},
 	"provenance.json":       {Kind: "json", MediaType: "application/json"},
 	"checksums.sha256":      {Kind: "sha256", MediaType: "text/plain"},
@@ -39,7 +38,8 @@ func (s *Store) OpenArtifact(runID, artifactPath string) (*OpenedArtifact, error
 	if err != nil {
 		return nil, err
 	}
-	if _, ok := publicArtifactContracts[filepath.ToSlash(relative)]; !ok {
+	contract, ok := publicArtifactContracts[filepath.ToSlash(relative)]
+	if !ok {
 		return nil, fmt.Errorf("%w: artifact is not downloadable", ErrInvalid)
 	}
 	candidate := filepath.Join(runDir, relative)
@@ -62,7 +62,9 @@ func (s *Store) OpenArtifact(runID, artifactPath string) (*OpenedArtifact, error
 		_ = file.Close()
 		return nil, fmt.Errorf("stat evaluation artifact: %w", err)
 	}
-	return &OpenedArtifact{File: file, Name: filepath.Base(candidate), Size: openedInfo.Size()}, nil
+	return &OpenedArtifact{
+		File: file, Name: filepath.Base(candidate), MediaType: contract.MediaType, Size: openedInfo.Size(),
+	}, nil
 }
 
 func cleanArtifactPath(raw string) (string, error) {

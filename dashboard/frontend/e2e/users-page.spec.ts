@@ -78,14 +78,17 @@ test.describe('Users page', () => {
     await expect(closeButton).toBeFocused()
 
     await submitButton.click()
-    await expect.poll(() => invitePayload).toEqual({
-      email: 'grace@example.com',
-      name: 'Grace Hopper',
-      role: 'write',
-    })
+    await expect
+      .poll(() => invitePayload)
+      .toEqual({
+        email: 'grace@example.com',
+        kind: 'personal',
+        name: 'Grace Hopper',
+        role: 'write',
+      })
     const readyDialog = page.getByRole('dialog', { name: 'Welcome Grace Hopper' })
     await expect(readyDialog).toBeVisible()
-    await expect(readyDialog.getByText('One-time invitation URL')).toBeVisible()
+    await expect(readyDialog.getByText('One-time invitation link', { exact: true })).toBeVisible()
     await readyDialog.getByRole('button', { name: 'Done' }).click()
     await expect(dialog).toBeHidden()
     await expect(inviteUserButton).toBeFocused()

@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest'
 import type {
   EvaluationCapacityProfile,
   EvaluationFailureSummary,
-} from '../../types/evaluationPlane'
+} from '../../types/evaluationReport'
 import EvaluationReportDiagnostics from './EvaluationReportDiagnostics'
 
 const failureSummary: EvaluationFailureSummary = {
@@ -13,36 +13,115 @@ const failureSummary: EvaluationFailureSummary = {
   total_records: 4,
   failed: 0,
   unavailable: 0,
-  by_track: [
-    {
-      track_id: 'routing',
-      succeeded: 4,
-      failed: 0,
-      unavailable: 0,
-    },
-  ],
+  by_track: [{ track_id: 'routing', succeeded: 4, failed: 0, unavailable: 0 }],
+}
+
+function repetitions(concurrency: number, throughput: number, latency: number) {
+  return [1, 2, 3].map((repetition) => ({
+    concurrency,
+    repetition,
+    requests: 100,
+    successes: 100,
+    errors: 0,
+    elapsed_seconds: 100 / throughput,
+    throughput_rps: throughput,
+    latency_p95_ms: latency,
+  }))
 }
 
 const capacityProfile: EvaluationCapacityProfile = {
   schema_version: 'evaluation.v1',
-  kind: 'capacity-profile',
+  kind: 'repeated-closed-loop-capacity',
+  protocol: {
+    schema_version: 'evaluation.v1',
+    kind: 'closed-loop',
+    concurrency_levels: [1, 2],
+    warmup_request_multiplier: 2,
+    measurement_requests_per_repetition: 100,
+    repetitions_per_level: 3,
+    confidence_level: 0.95,
+    max_throughput_cv: 0.2,
+    max_latency_p95_cv: 0.2,
+  },
   levels: [
     {
       concurrency: 1,
-      requests: 4,
-      successes: 4,
+      warmup_requests: 2,
+      warmup_errors: 0,
+      warmup_elapsed_seconds: 1,
+      measurement_requests: 300,
+      successes: 300,
       errors: 0,
-      elapsed_seconds: 1,
-      throughput_rps: 4,
-      latency_p50_ms: 10,
-      latency_p95_ms: 12,
-      latency_p99_ms: 13,
+      elapsed_seconds: 30,
+      throughput_rps: 10,
+      throughput_cv: 0,
+      latency_p50_ms: 8,
+      latency_p95_ms: 10,
+      latency_p99_ms: 12,
+      latency_p95_cv: 0,
+      error_rate: 0,
+      error_rate_upper_bound: 0.008937872175128179,
       input_tokens: 40,
       output_tokens: 20,
       runtime_cost_usd: 0.01,
+      repetitions: repetitions(1, 10, 10),
+      throughput_scaling_efficiency: null,
+      warmup_passed: true,
+      latency_slo_passed: true,
+      error_slo_passed: true,
+      throughput_slo_passed: true,
+      scaling_slo_passed: true,
+      throughput_stability_passed: true,
+      latency_stability_passed: true,
+      qualified: true,
+    },
+    {
+      concurrency: 2,
+      warmup_requests: 4,
+      warmup_errors: 0,
+      warmup_elapsed_seconds: 1.5,
+      measurement_requests: 300,
+      successes: 300,
+      errors: 0,
+      elapsed_seconds: 18,
+      throughput_rps: 100 / 6,
+      throughput_cv: 0,
+      latency_p50_ms: 11,
+      latency_p95_ms: 13,
+      latency_p99_ms: 14,
+      latency_p95_cv: 0,
+      error_rate: 0,
+      error_rate_upper_bound: 0.008937872175128179,
+      input_tokens: 40,
+      output_tokens: 20,
+      runtime_cost_usd: 0.01,
+      repetitions: repetitions(2, 100 / 6, 13),
+      throughput_scaling_efficiency: 100 / 6 / 10 / 2,
+      warmup_passed: true,
+      latency_slo_passed: true,
+      error_slo_passed: true,
+      throughput_slo_passed: true,
+      scaling_slo_passed: true,
+      throughput_stability_passed: true,
+      latency_stability_passed: true,
+      qualified: true,
     },
   ],
-  slo: null,
+  slo: {
+    schema_version: 'evaluation.v1',
+    required_concurrency: 2,
+    max_latency_p95_ms: 20,
+    max_error_rate: 0.01,
+    min_throughput_rps: 15,
+    min_throughput_scaling_efficiency: 0.7,
+  },
+  assessment: {
+    qualified_concurrency: 2,
+    saturation_concurrency: null,
+    slo_headroom: 0,
+    verdict: 'pass',
+    failure_reasons: [],
+  },
 }
 
 describe('EvaluationReportDiagnostics', () => {
@@ -61,11 +140,9 @@ describe('EvaluationReportDiagnostics', () => {
         loading: false,
       }),
     )
-
     expect(markup).toContain('Outcome accounting by evaluation track')
     expect(markup).toContain('Capacity profile diagnostic error')
     expect(markup).toContain('Invalid diagnostic artifact')
-    expect(markup).toContain('capacity-profile.json did not match')
     expect(markup).not.toContain('This run did not publish aggregate diagnostics')
   })
 
@@ -83,13 +160,12 @@ describe('EvaluationReportDiagnostics', () => {
         loading: false,
       }),
     )
-
     expect(markup).toContain('Outcome accounting diagnostic error')
     expect(markup).toContain('Diagnostic artifact unavailable')
     expect(markup).not.toContain('Invalid diagnostic artifact')
   })
 
-  it('keeps legacy E0 diagnostics readable and integrity-only', () => {
+  it('renders the frozen protocol, repeated observations, UCB, and stability evidence', () => {
     const markup = renderToStaticMarkup(
       createElement(EvaluationReportDiagnostics, {
         failureSummary,
@@ -97,35 +173,16 @@ describe('EvaluationReportDiagnostics', () => {
         failureSummaryIssue: null,
         capacityProfileIssue: null,
         loading: false,
-        integrityOnly: true,
-        evidenceLevel: 'E0',
       }),
     )
-
-    expect(markup).toContain('Legacy worker-derived E0 / integrity-only')
-    expect(markup).toContain('Legacy report-derived capacity observations')
-    expect(markup).not.toContain('Server-attested bounded concurrency')
-  })
-
-  it('uses server-attested diagnostic language only when authorized by the report', () => {
-    const markup = renderToStaticMarkup(
-      createElement(EvaluationReportDiagnostics, {
-        failureSummary,
-        capacityProfile,
-        failureSummaryIssue: null,
-        capacityProfileIssue: null,
-        loading: false,
-        serverAttested: true,
-        evidenceLevel: 'E0',
-      }),
-    )
-
-    expect(markup).toContain('Server-attested diagnostic artifacts')
-    expect(markup).toContain('Server-attested bounded concurrency observations')
-    expect(markup).toContain('Errors')
-    expect(markup).toContain('Duration')
-    expect(markup).toContain('Tokens in / out')
+    expect(markup).toContain('SLO envelope pass')
+    expect(markup).toContain('Frozen capacity load protocol')
+    expect(markup).toContain('c1 → c2')
+    expect(markup).toContain('100 requests × 3 repetitions')
+    expect(markup).toContain('Errors / 95% UCB')
+    expect(markup).toContain('Throughput / CV')
+    expect(markup).toContain('3 independent windows')
+    expect(markup).toContain('Checks W / L / E / T / S / Tσ / Lσ')
     expect(markup).toContain('40 / 20')
-    expect(markup).not.toContain('integrity-only')
   })
 })

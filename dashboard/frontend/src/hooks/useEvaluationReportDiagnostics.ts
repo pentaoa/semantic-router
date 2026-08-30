@@ -4,7 +4,7 @@ import type {
   EvaluationCapacityProfile,
   EvaluationFailureSummary,
   EvaluationReport,
-} from '../types/evaluationPlane'
+} from '../types/evaluationReport'
 import {
   decodeEvaluationCapacityProfile,
   decodeEvaluationFailureSummary,
@@ -98,7 +98,12 @@ export default function useEvaluationReportDiagnostics(
           report.run.id,
           capacityID,
           'capacity-profile.json',
-          decodeEvaluationCapacityProfile,
+          (value) =>
+            decodeEvaluationCapacityProfile(
+              value,
+              report.run.capacity_slo,
+              report.run.capacity_load_protocol,
+            ),
           controller.signal,
         )
       : Promise.resolve<DiagnosticArtifactResult<EvaluationCapacityProfile>>({

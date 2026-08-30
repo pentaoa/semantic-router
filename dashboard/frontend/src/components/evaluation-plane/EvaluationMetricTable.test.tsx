@@ -2,7 +2,7 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 
-import type { EvaluationMetric } from '../../types/evaluationPlane'
+import type { EvaluationMetric } from '../../types/evaluationReport'
 import EvaluationMetricTable from './EvaluationMetricTable'
 
 const metrics = [
@@ -22,30 +22,13 @@ const metrics = [
   },
 ] satisfies EvaluationMetric[]
 
-describe('EvaluationMetricTable attestation labels', () => {
-  it('keeps every legacy E0 metric visible without calling any row server-reduced', () => {
+describe('EvaluationMetricTable evidence labels', () => {
+  it('distinguishes independently reduced metrics from diagnostic aggregates', () => {
     const markup = renderToStaticMarkup(
       createElement(EvaluationMetricTable, {
         metrics,
         controls: false,
         evidenceLevel: 'E0',
-        serverAttested: false,
-      }),
-    )
-
-    expect(markup).toContain('Safety violation rate')
-    expect(markup).toContain('Routing accuracy')
-    expect(markup).toContain('Legacy worker-derived E0 / integrity-only')
-    expect(markup).not.toContain('Server-reduced')
-  })
-
-  it('distinguishes the bounded server-reduced E0 set after exact attestation', () => {
-    const markup = renderToStaticMarkup(
-      createElement(EvaluationMetricTable, {
-        metrics,
-        controls: false,
-        evidenceLevel: 'E0',
-        serverAttested: true,
       }),
     )
 
@@ -53,27 +36,12 @@ describe('EvaluationMetricTable attestation labels', () => {
     expect(markup).toContain('Worker-derived E0 / diagnostic only')
   })
 
-  it('marks an unattested higher-level report integrity-only', () => {
+  it('retains the same evidence boundary at higher qualification levels', () => {
     const markup = renderToStaticMarkup(
       createElement(EvaluationMetricTable, {
         metrics,
         controls: false,
         evidenceLevel: 'E5',
-        serverAttested: false,
-      }),
-    )
-
-    expect(markup).toContain('Legacy unattested E5 / integrity-only')
-    expect(markup).not.toContain('Server-reduced')
-  })
-
-  it('keeps non-reduced E5 metrics diagnostic under the exact v2 contract', () => {
-    const markup = renderToStaticMarkup(
-      createElement(EvaluationMetricTable, {
-        metrics,
-        controls: false,
-        evidenceLevel: 'E5',
-        serverAttested: true,
       }),
     )
 

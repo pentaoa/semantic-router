@@ -15,13 +15,14 @@ def _metric(
     *,
     track_id: str,
     direction: str = "higher_is_better",
+    unit: str = "fraction",
 ) -> EvaluationMetric:
     return EvaluationMetric(
         id=metric_id,
         name=metric_id,
         track_id=track_id,
         value=value,
-        unit="fraction",
+        unit=unit,
         direction=direction,
         sample_count=20,
     )
@@ -42,12 +43,17 @@ def _qualified_metrics() -> list[EvaluationMetric]:
             track_id="joint",
             direction="lower_is_better",
         ),
-        _metric("capacity.success_rate", 1.0, track_id="capacity"),
+        _metric(
+            "capacity.slo_headroom",
+            1.0,
+            track_id="capacity",
+            unit="concurrency",
+        ),
     ]
 
 
 def test_gate_matrix_always_returns_exactly_g0_through_g9() -> None:
-    assert GATE_CONTRACT_VERSION == "evaluation-release-gates.v1"
+    assert GATE_CONTRACT_VERSION == "evaluation-release-gates.v2"
     assert change_profiles() == (
         "schema_adapter",
         "recipe",
@@ -68,7 +74,6 @@ def test_every_gate_is_self_describing_and_auditable() -> None:
     gates = compute_gates(
         _qualified_metrics(),
         has_records=True,
-        cost_accounted=True,
         change_profile="recipe",
     )
     assert all(gate.change_profile == "recipe" for gate in gates)
@@ -78,10 +83,11 @@ def test_every_gate_is_self_describing_and_auditable() -> None:
 
 
 def test_missing_qualification_evidence_never_becomes_a_pass() -> None:
+    metrics = _qualified_metrics()
+    metrics[-1] = metrics[-1].model_copy(update={"value": None})
     gates = compute_gates(
-        _qualified_metrics(),
+        metrics,
         has_records=True,
-        cost_accounted=True,
         change_profile="online_adaptation",
     )
     verdicts = {gate.id: gate.verdict for gate in gates}
@@ -112,7 +118,6 @@ def test_observed_hard_policy_violation_remains_diagnostic_without_static_proof(
     gates = compute_gates(
         metrics,
         has_records=True,
-        cost_accounted=True,
         change_profile="recipe",
     )
     hard_policy = next(gate for gate in gates if gate.id == "G2")
@@ -122,52 +127,95 @@ def test_observed_hard_policy_violation_remains_diagnostic_without_static_proof(
     assert metrics[0].value == 0.05
 
 
-def test_low_capacity_success_remains_diagnostic_without_slo_qualification() -> None:
+def test_negative_capacity_headroom_is_an_exact_failure_without_a_boolean_proxy() -> (
+    None
+):
     metrics = _qualified_metrics()
-    metrics[-1] = metrics[-1].model_copy(update={"value": 0.5})
+    metrics[-1] = metrics[-1].model_copy(update={"value": -1.0})
     gates = compute_gates(
         metrics,
         has_records=True,
-        cost_accounted=True,
         change_profile="runtime_capacity",
     )
     capacity = next(gate for gate in gates if gate.id == "G7")
-    assert capacity.verdict == "unavailable"
-    assert capacity.observed is None
-    assert capacity.threshold is None
-    assert metrics[-1].value == 0.5
+    assert capacity.verdict == "fail"
+    assert capacity.observed == -1.0
+    assert capacity.threshold is not None
+    assert capacity.threshold.value == 0
+    assert capacity.threshold.unit == "concurrency"
+    assert metrics[-1].value == -1.0
 
 
-def test_full_qualified_online_context_can_pass_all_required_gates() -> None:
+def test_full_qualified_online_context_leaves_comparative_g3_to_campaign() -> None:
     context = GateEvidenceContext(
         manifest_validated=True,
         snapshots_complete=True,
         artifact_lineage_complete=True,
         hard_policy_static_passed=True,
-        baseline_qualified=True,
         robustness_qualified=True,
         live_fidelity_qualified=True,
         trajectory_qualified=True,
-        capacity_slo_qualified=True,
-        shadow_canary_qualified=True,
+        recovery_pass_rate_lower_bound=0.9,
+        recovery_minimum_pass_rate_lower_bound=0.8,
+        production_candidate_safe=True,
         online_preference_qualified=True,
+        production_assignment_support=1.0,
+        production_balance_p_value=1.0,
+        production_risk_event_rate=0.0,
+        production_risk_event_upper_confidence_bound=0.01,
+        production_risk_budget_max_rate=0.01,
+        online_outcome_coverage=1.0,
+        online_effective_sample_size=100.0,
+        online_minimum_effective_sample_size=50.0,
+        online_effective_sample_ratio=1.0,
+        online_minimum_effective_sample_ratio=0.5,
+        online_segment_coverage=1.0,
+        online_snips_reward=0.75,
+        online_reference_snips_reward=0.5,
+        online_causal_eligible=True,
+        online_reward_lift=0.25,
+        online_reward_lift_lower_bound=0.15,
+        online_minimum_reward_lift=0.1,
     )
     gates = compute_gates(
         _qualified_metrics(),
         has_records=True,
-        cost_accounted=True,
         change_profile="online_adaptation",
         evidence=context,
     )
     assert all(gate.disposition == "required" for gate in gates)
-    assert all(gate.verdict == "pass" for gate in gates)
+    assert all(gate.verdict == "pass" for gate in gates if gate.id != "G3")
+    comparative = next(gate for gate in gates if gate.id == "G3")
+    assert comparative.verdict == "unavailable"
+    assert comparative.observed is None
+    assert comparative.threshold is None
+    capacity = next(gate for gate in gates if gate.id == "G7")
+    assert capacity.observed == 1.0
+    assert capacity.threshold is not None
+    assert capacity.threshold.unit == "concurrency"
+    assert capacity.threshold.value == 0
+
+
+def test_qualified_capacity_gate_is_decided_by_exact_slo_headroom() -> None:
+    metrics = _qualified_metrics()
+    metrics[-1] = metrics[-1].model_copy(update={"value": -1.0})
+    gates = compute_gates(
+        metrics,
+        has_records=True,
+        change_profile="runtime_capacity",
+    )
+    capacity = next(gate for gate in gates if gate.id == "G7")
+    assert capacity.verdict == "fail"
+    assert capacity.observed == -1.0
+    assert capacity.threshold is not None
+    assert capacity.threshold.unit == "concurrency"
+    assert capacity.threshold.value == 0
 
 
 def test_not_applicable_is_explicit_not_omitted() -> None:
     gates = compute_gates(
         [],
         has_records=True,
-        cost_accounted=False,
         change_profile="schema_adapter",
     )
     by_id = {gate.id: gate for gate in gates}

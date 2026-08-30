@@ -8,17 +8,21 @@ import {
   baselineCohortIssue,
   compatibleEvaluationSuites,
   exactCohortFromRun,
-  minimumEvidenceClaimCeiling,
-  newEvaluationClientRequestID,
+  minimumCatalogEvidenceClass,
+  reconcileEvaluationScope,
   selectedSuiteTracks,
   toggleEvaluationSuite,
   validateEvaluationDraft,
 } from './evaluationExperiment'
+import { newEvaluationClientRequestID } from '../../utils/evaluationIdentity'
 
 const catalog: EvaluationCatalog = {
   schema_version: 'evaluation.v1',
-  gate_contract_version: 'evaluation-gates.v1',
-  change_profiles: [{ id: 'recipe', name: 'Recipe', description: 'Recipe change' }],
+  gate_contract_version: 'evaluation-release-gates.v2',
+  generated_at: '2026-08-30T00:00:00Z',
+  change_profiles: [
+    { id: 'recipe', name: 'Recipe', description: 'Recipe change', campaign_slots: [] },
+  ],
   tracks: [
     {
       id: 'routing',
@@ -26,6 +30,7 @@ const catalog: EvaluationCatalog = {
       description: 'Routing evidence',
       modes: ['replay'],
       metrics: ['routing.accuracy'],
+      evidence_levels: ['E4'],
     },
     {
       id: 'joint',
@@ -33,6 +38,7 @@ const catalog: EvaluationCatalog = {
       description: 'Joint evidence',
       modes: ['replay'],
       metrics: ['joint.quality'],
+      evidence_levels: ['E2', 'E4'],
     },
     {
       id: 'model_pool',
@@ -40,32 +46,89 @@ const catalog: EvaluationCatalog = {
       description: 'Pool evidence',
       modes: ['replay'],
       metrics: ['model_pool.oracle_gain'],
+      evidence_levels: ['E2'],
     },
   ],
   suites: [
     {
       id: 'routing-suite',
+      executors: { replay: 'fixture-replay.v1' },
       name: 'Routing suite',
       description: 'Routing and joint cases',
       track_ids: ['routing', 'joint'],
       modes: ['replay'],
       evidence_level: 'E4',
+      campaign_eligible: false,
+      campaign_minimum_cases: 0,
+      revision: 'routing-suite.v1',
+      tags: ['fixture'],
+      methods: [
+        {
+          id: 'fixture.routing.v1',
+          track_id: 'routing',
+          qualified_gate_ids: [],
+          evidence_source: 'diagnostic_fixture',
+          status: 'configured',
+        },
+        {
+          id: 'fixture.joint.v1',
+          track_id: 'joint',
+          qualified_gate_ids: [],
+          evidence_source: 'diagnostic_fixture',
+          status: 'configured',
+        },
+      ],
     },
     {
       id: 'pool-suite',
+      executors: { replay: 'fixture-replay.v1' },
       name: 'Pool suite',
       description: 'Joint and pool cases',
       track_ids: ['joint', 'model_pool'],
       modes: ['replay'],
       evidence_level: 'E2',
+      campaign_eligible: false,
+      campaign_minimum_cases: 0,
+      revision: 'pool-suite.v1',
+      tags: ['fixture'],
+      methods: [
+        {
+          id: 'fixture.pool.v1',
+          track_id: 'model_pool',
+          qualified_gate_ids: [],
+          evidence_source: 'diagnostic_fixture',
+          status: 'configured',
+        },
+        {
+          id: 'fixture.pool-joint.v1',
+          track_id: 'joint',
+          qualified_gate_ids: [],
+          evidence_source: 'diagnostic_fixture',
+          status: 'configured',
+        },
+      ],
     },
     {
       id: 'live-suite',
+      executors: { live: 'live-runtime.v1' },
       name: 'Live suite',
       description: 'Not compatible with the replay target',
       track_ids: ['routing'],
       modes: ['live'],
       evidence_level: 'E5',
+      campaign_eligible: false,
+      campaign_minimum_cases: 0,
+      revision: 'live-suite.v1',
+      tags: [],
+      methods: [
+        {
+          id: 'live.routing.v1',
+          track_id: 'routing',
+          qualified_gate_ids: [],
+          evidence_source: 'live_runtime',
+          status: 'configured',
+        },
+      ],
     },
   ],
   targets: [
@@ -76,6 +139,7 @@ const catalog: EvaluationCatalog = {
       kind: 'fixture',
       track_ids: ['routing', 'joint', 'model_pool'],
       modes: ['replay'],
+      accepted_executors: { replay: ['fixture-replay.v1'] },
       healthy: true,
     },
   ],
@@ -84,11 +148,13 @@ const catalog: EvaluationCatalog = {
 const baseline: EvaluationRun = {
   schema_version: 'evaluation.v1',
   id: 'baseline-1',
+  client_request_id: 'baseline-1',
   name: 'Baseline',
   description: 'Reference cohort',
   status: 'completed',
   mode: 'replay',
   evidence_level: 'E2',
+  track_evidence_levels: { routing: 'E2', joint: 'E2', model_pool: 'E2' },
   target_id: 'fixture',
   change_profile: 'recipe',
   suite_ids: ['routing-suite', 'pool-suite'],
@@ -102,10 +168,10 @@ const baseline: EvaluationRun = {
 }
 
 describe('evaluation experiment cohort helpers', () => {
-  it('uses the least-qualified selected suite as the evidence claim ceiling', () => {
-    expect(minimumEvidenceClaimCeiling(catalog, ['routing-suite', 'pool-suite'])).toBe('E2')
-    expect(minimumEvidenceClaimCeiling(catalog, ['routing-suite'])).toBe('E4')
-    expect(minimumEvidenceClaimCeiling(catalog, ['missing-suite'])).toBeNull()
+  it('uses the least-selected catalog evidence class without promising a run claim', () => {
+    expect(minimumCatalogEvidenceClass(catalog, ['routing-suite', 'pool-suite'])).toBe('E2')
+    expect(minimumCatalogEvidenceClass(catalog, ['routing-suite'])).toBe('E4')
+    expect(minimumCatalogEvidenceClass(catalog, ['missing-suite'])).toBeNull()
   })
 
   it('creates backend-valid, collision-resistant idempotency tokens', () => {
@@ -142,6 +208,67 @@ describe('evaluation experiment cohort helpers', () => {
       suiteIDs: [],
       trackIDs: [],
     })
+  })
+
+  it('keeps one target-approved executor cohort and switches cohorts deliberately', () => {
+    const mixedCatalog: EvaluationCatalog = {
+      ...catalog,
+      suites: [
+        ...catalog.suites,
+        {
+          id: 'normalized-routing',
+          executors: { replay: 'normalized-suite-replay.v1' },
+          name: 'Normalized routing',
+          description: 'Pinned exploratory import; native execution is not attested',
+          track_ids: ['routing'],
+          modes: ['replay'],
+          evidence_level: 'E0',
+          campaign_eligible: false,
+          campaign_minimum_cases: 0,
+          revision: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          tags: ['normalized'],
+          methods: [
+            {
+              id: 'normalized.routing.v1',
+              track_id: 'routing',
+              qualified_gate_ids: [],
+              evidence_source: 'normalized_import',
+              status: 'configured',
+            },
+          ],
+        },
+      ],
+      targets: [
+        {
+          ...catalog.targets[0],
+          accepted_executors: {
+            replay: ['fixture-replay.v1', 'normalized-suite-replay.v1'],
+          },
+        },
+      ],
+    }
+    expect(
+      compatibleEvaluationSuites(mixedCatalog, 'fixture', 'replay').map((suite) => suite.id),
+    ).toEqual(['routing-suite', 'pool-suite', 'normalized-routing'])
+    expect(
+      reconcileEvaluationScope(
+        mixedCatalog,
+        'fixture',
+        'replay',
+        ['routing-suite', 'normalized-routing'],
+        ['routing'],
+      ),
+    ).toEqual({ suiteIDs: ['routing-suite'], trackIDs: ['routing'] })
+    expect(
+      toggleEvaluationSuite(
+        mixedCatalog,
+        'fixture',
+        'replay',
+        ['routing-suite'],
+        ['routing', 'joint'],
+        'normalized-routing',
+      ),
+    ).toEqual({ suiteIDs: ['normalized-routing'], trackIDs: ['routing'] })
   })
 
   it('copies all eight exact cohort dimensions and rejects unavailable baselines', () => {
@@ -209,15 +336,158 @@ describe('evaluation experiment cohort helpers', () => {
 })
 
 describe('EvaluationExperimentForm contract', () => {
+  it('prefers a healthy live Mixture and opens it as a frozen routing, pool, and joint cohort', () => {
+    const mixture = {
+      id: 'mom-live',
+      entrypoint_model: 'vllm-sr/auto',
+      aliases: ['smart-model'],
+      recipe_name: 'balanced',
+      recipe_description: 'Balanced routing.',
+      recipe_digest: `sha256:${'1'.repeat(64)}`,
+      pool_digest: `sha256:${'2'.repeat(64)}`,
+      selector_policy_digest: `sha256:${'4'.repeat(64)}`,
+      selector_digest: `sha256:${'5'.repeat(64)}`,
+      adaptation_digest: `sha256:${'6'.repeat(64)}`,
+      binding_digest: `sha256:${'3'.repeat(64)}`,
+      model_arms: [
+        {
+          id: 'fast',
+          model: 'models/fast',
+          provider_model_id_digest: `sha256:${'4'.repeat(64)}`,
+          input_cost_per_million_tokens_usd: 0.1,
+          output_cost_per_million_tokens_usd: 0.2,
+        },
+        {
+          id: 'strong',
+          model: 'models/strong',
+          provider_model_id_digest: `sha256:${'5'.repeat(64)}`,
+          input_cost_per_million_tokens_usd: 0.4,
+          output_cost_per_million_tokens_usd: 0.8,
+        },
+      ],
+      support_models: [],
+      fallback_arm_id: 'fast',
+      decisions: [{ name: 'reasoning', algorithm: 'confidence', arm_ids: ['fast', 'strong'] }],
+    }
+    const liveCatalog: EvaluationCatalog = {
+      ...catalog,
+      tracks: catalog.tracks.map((track) => ({ ...track, modes: ['replay', 'live'] })),
+      suites: [
+        {
+          ...catalog.suites[0],
+          id: 'live-mom-core',
+          executors: { replay: 'mom-cohort-replay.v1', live: 'live-runtime.v1' },
+          track_ids: ['routing', 'model_pool', 'joint'],
+          modes: ['replay', 'live'],
+          evidence_level: 'E0',
+          case_count: 64,
+          campaign_eligible: true,
+          campaign_minimum_cases: 59,
+          revision: 'mom-campaign-cohort-v1',
+          tags: ['campaign', 'mom', 'hidden-label', 'paired-live'],
+        },
+      ],
+      targets: [
+        {
+          id: 'mom-live',
+          name: 'vllm-sr/auto',
+          description: 'Balanced routing.',
+          kind: 'mixture-of-models',
+          track_ids: ['routing', 'model_pool', 'joint'],
+          modes: ['replay', 'live'],
+          accepted_executors: {
+            replay: ['mom-cohort-replay.v1'],
+            live: ['live-runtime.v1'],
+          },
+          healthy: true,
+          mixture,
+        },
+      ],
+    }
+    const markup = renderToStaticMarkup(
+      createElement(EvaluationExperimentForm, {
+        catalog: liveCatalog,
+        runs: [],
+        totalRuns: 0,
+        canCreate: true,
+        canAutoStart: true,
+        runLedgerAvailable: true,
+        runLedgerComplete: true,
+        hasMoreRuns: false,
+        loadingMoreRuns: false,
+        pending: false,
+        onLoadMoreRuns: () => undefined,
+        onSubmit: async () => true,
+      }),
+    )
+    expect(markup).toContain('checked="" value="live"')
+    expect(markup).toContain('Selected Mixture-of-Models')
+    expect(markup).toContain('vllm-sr/auto')
+    expect(markup).toContain('balanced')
+    expect(markup).toContain('2 pool arms')
+    expect(markup).toContain('3 tracks')
+  })
+
+  it('falls back to the healthy replay diagnostics target when no live Mixture exists', () => {
+    const markup = renderToStaticMarkup(
+      createElement(EvaluationExperimentForm, {
+        catalog,
+        runs: [],
+        totalRuns: 0,
+        canCreate: true,
+        canAutoStart: true,
+        runLedgerAvailable: true,
+        runLedgerComplete: true,
+        hasMoreRuns: false,
+        loadingMoreRuns: false,
+        pending: false,
+        onLoadMoreRuns: () => undefined,
+        onSubmit: async () => true,
+      }),
+    )
+    expect(markup).toContain('checked="" value="replay"')
+    expect(markup).toContain('<option value="fixture" selected="">Fixture</option>')
+  })
+
+  it('does not substitute replay evidence for a missing Mixture deep link', () => {
+    const markup = renderToStaticMarkup(
+      createElement(EvaluationExperimentForm, {
+        catalog,
+        runs: [],
+        totalRuns: 0,
+        canCreate: true,
+        canAutoStart: true,
+        runLedgerAvailable: true,
+        runLedgerComplete: true,
+        hasMoreRuns: false,
+        loadingMoreRuns: false,
+        pending: false,
+        initialEntrypoint: 'removed-mixture',
+        onLoadMoreRuns: () => undefined,
+        onSubmit: async () => true,
+      }),
+    )
+    expect(markup).toContain('checked="" value="live"')
+    expect(markup).toContain('Requested Mixture is not in the current Evaluation catalog')
+    expect(markup).toContain('removed-mixture')
+    expect(markup).toContain('<option value="" selected="">Select target</option>')
+    expect(markup).not.toContain('Replay fixture</small>')
+  })
+
   it('locks the complete form while pending and exposes backend-aligned input bounds', () => {
     const markup = renderToStaticMarkup(
       createElement(EvaluationExperimentForm, {
         catalog,
         runs: [baseline],
+        totalRuns: 1,
         canCreate: true,
         canAutoStart: true,
+        runLedgerAvailable: true,
         runLedgerComplete: true,
+        hasMoreRuns: false,
+        loadingMoreRuns: false,
         pending: true,
+        onLoadMoreRuns: () => undefined,
         onSubmit: async () => true,
       }),
     )
@@ -227,7 +497,19 @@ describe('EvaluationExperimentForm contract', () => {
     expect(markup).toContain('maxLength="4000"')
     expect(markup).toContain('max="128"')
     expect(markup).toContain('max="4294967295"')
-    expect(markup).toContain('Claim ceiling E4')
+    expect(markup).toContain('Catalog evidence class E4')
+    expect(markup).toContain('<details')
+    expect(markup).toContain('Review G0–G9 applicability')
+    expect(markup.indexOf('Identity and execution')).toBeLessThan(
+      markup.indexOf('Change profile and G0–G9 contract'),
+    )
+    expect(markup.indexOf('Change profile and G0–G9 contract')).toBeLessThan(
+      markup.indexOf('Benchmark suites'),
+    )
+    expect(markup.indexOf('Benchmark suites')).toBeLessThan(markup.indexOf('Evaluation tracks'))
+    expect(markup.indexOf('Evaluation tracks')).toBeLessThan(
+      markup.indexOf('Budget and reproducibility'),
+    )
   })
 
   it('explains when the selected target has no compatible suites or tracks', () => {
@@ -243,10 +525,15 @@ describe('EvaluationExperimentForm contract', () => {
           ],
         },
         runs: [],
+        totalRuns: 0,
         canCreate: true,
         canAutoStart: false,
+        runLedgerAvailable: true,
         runLedgerComplete: true,
+        hasMoreRuns: false,
+        loadingMoreRuns: false,
         pending: false,
+        onLoadMoreRuns: () => undefined,
         onSubmit: async () => true,
       }),
     )
@@ -254,6 +541,6 @@ describe('EvaluationExperimentForm contract', () => {
       'Select a healthy catalog target that supports replay, or choose another mode.',
     )
     expect(markup).toContain('Select a compatible benchmark suite to make its tracks available.')
-    expect(markup).toContain('Evidence pending')
+    expect(markup).toContain('Evidence class pending')
   })
 })

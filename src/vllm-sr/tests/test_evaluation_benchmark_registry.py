@@ -13,12 +13,19 @@ from cli.evaluation.benchmark_sources import (
     SourceVerificationError,
     verify_benchmark_source,
 )
+from cli.evaluation.canonical import digest_value
 from cli.evaluation.contracts import ArtifactRef
 from cli.evaluation.suite_contract import (
     SUITE_CONTRACT_VERSION,
     BenchmarkSourceReceipt,
     BenchmarkSuiteManifest,
     SuiteArtifactSet,
+    qualification_manifest_subject_digest,
+)
+from cli.evaluation.suite_qualification import (
+    NORMALIZED_REPLAY_EXECUTOR_DIGEST,
+    BenchmarkQualificationReceipt,
+    UnqualifiedBenchmarkEvidence,
 )
 from pydantic import ValidationError
 
@@ -135,6 +142,33 @@ def test_suite_manifest_rejects_unverified_or_label_collocated_input() -> None:
         grading_cases=_ref("b"),
         license_manifest=_ref("c"),
     )
+    subject = {
+        "id": "routerarena-test",
+        "name": "RouterArena test",
+        "adapter_id": "routerarena",
+        "source_receipt": receipt,
+        "decision_unit": "query",
+        "action_space": "one model",
+        "track_ids": ("routing",),
+        "split_protocol": "test",
+        "case_count": 1,
+        "arm_ids": (),
+        "data_classification": "public",
+        "redistribution": "metadata_only",
+        "artifacts": artifacts,
+        "limitations": ("fixture",),
+    }
+    qualification = BenchmarkQualificationReceipt(
+        evidence_level="E0",
+        manifest_subject_digest=qualification_manifest_subject_digest(subject),
+        source_receipt_digest=digest_value(receipt),
+        artifact_set_digest=digest_value(artifacts),
+        executor_digest=NORMALIZED_REPLAY_EXECUTOR_DIGEST,
+        qualification=UnqualifiedBenchmarkEvidence(
+            origin="user_provided_import",
+            parser_verified=False,
+        ),
+    )
     with pytest.raises(ValidationError, match="must be verified"):
         BenchmarkSuiteManifest(
             id="routerarena-test",
@@ -145,7 +179,7 @@ def test_suite_manifest_rejects_unverified_or_label_collocated_input() -> None:
             decision_unit="query",
             action_space="one model",
             track_ids=("routing",),
-            evidence_level_ceiling="E4",
+            qualification_receipt=qualification,
             split_protocol="test",
             case_count=1,
             data_classification="public",

@@ -47,9 +47,12 @@ func newAuthenticatedRouterFixture(t *testing.T) authenticatedRouterFixture {
 		t.Fatalf("NewService: %v", serviceErr)
 	}
 	run, createErr := service.CreateRun(context.Background(), CreateRunRequest{
-		Name: "capacity live", SuiteIDs: []string{"live-capacity"}, TrackIDs: []TrackID{"capacity"},
-		Mode: ModeLive, TargetID: "runtime", ChangeProfile: "runtime_capacity",
-		SampleLimit: 4, Concurrency: 1, Seed: 17,
+		ClientRequestID: newTestClientRequestID(),
+		Name:            "capacity live", SuiteIDs: []string{"live-capacity"}, TrackIDs: []TrackID{"capacity"},
+		Mode: ModeLive, TargetID: mixtureTargetID("default"), ChangeProfile: "runtime_capacity",
+		SampleLimit: 4, Concurrency: 2, Seed: 17,
+		CapacitySLO:          testCapacitySLO(1),
+		CapacityLoadProtocol: defaultCapacityLoadProtocol(2),
 	})
 	if createErr != nil {
 		t.Fatalf("CreateRun: %v", createErr)
@@ -71,8 +74,8 @@ func assertAuthenticatedRouterManifestIsRedacted(t *testing.T, fixture authentic
 	if manifest.Target.EnvoyAPIKey == nil || manifest.Target.EnvoyAPIKey.Env != "VLLM_SR_EVALUATION_ENVOY_API_KEY" {
 		t.Fatalf("Envoy SecretRef = %#v", manifest.Target.EnvoyAPIKey)
 	}
-	if len(manifest.Target.ModelArms) != 2 {
-		t.Fatalf("model arms = %#v, want two server-owned arms", manifest.Target.ModelArms)
+	if manifest.Target.Mixture == nil || len(manifest.Target.Mixture.ModelArms) != 2 {
+		t.Fatalf("mixture = %#v, want two server-owned arms", manifest.Target.Mixture)
 	}
 	if !digestPattern.MatchString(manifest.Target.BackendTopologyDigest) {
 		t.Fatalf("backend topology digest = %q", manifest.Target.BackendTopologyDigest)
@@ -94,8 +97,9 @@ func assertAuthenticatedRouterManifestIsRedacted(t *testing.T, fixture authentic
 func assertGenericRoutingFailsClosed(t *testing.T, service *Service) {
 	t.Helper()
 	if _, err := service.CreateRun(context.Background(), CreateRunRequest{
-		Name: "blocked routing", SuiteIDs: []string{"live-routing-core"}, TrackIDs: []TrackID{"routing"},
-		Mode: ModeLive, TargetID: "runtime", ChangeProfile: "recipe",
+		ClientRequestID: newTestClientRequestID(),
+		Name:            "blocked routing", SuiteIDs: []string{"live-mom-core"}, TrackIDs: []TrackID{"routing"},
+		Mode: ModeLive, TargetID: mixtureTargetID("default"), ChangeProfile: "recipe",
 		SampleLimit: 4, Concurrency: 1, Seed: 17,
 	}); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("generic runtime accepted routing with broad Router auth: %v", err)
@@ -114,7 +118,8 @@ func assertWorkerCredentialScope(t *testing.T, manifestPath string) *CommandProc
 	t.Setenv("VLLM_SR_EVALUATION_ENVOY_API_KEY", "server-owned-envoy-token")
 	worker := NewCommandProcess("python3")
 	worker.envoyAPIKeyEnv = "VLLM_SR_EVALUATION_ENVOY_API_KEY"
-	environment, environmentErr := worker.workerEnvironment(manifestPath)
+	sandboxRoot := t.TempDir()
+	environment, environmentErr := worker.workerEnvironment(manifestPath, sandboxRoot)
 	if environmentErr != nil {
 		t.Fatalf("workerEnvironment: %v", environmentErr)
 	}
@@ -124,8 +129,15 @@ func assertWorkerCredentialScope(t *testing.T, manifestPath string) *CommandProc
 	if value, ok := environmentValue(environment, routerEvaluationCredentialEnv); ok || value != "" {
 		t.Fatal("broad Router credential leaked to the worker")
 	}
-	if value, ok := environmentValue(environment, "VLLM_SR_EVALUATION_ENVOY_API_KEY"); !ok || value != "server-owned-envoy-token" {
-		t.Fatalf("configured Envoy credential = %q, present=%v", value, ok)
+	if value, ok := environmentValue(environment, "VLLM_SR_EVALUATION_ENVOY_API_KEY"); ok || value != "" {
+		t.Fatalf("Envoy credential leaked to worker environment: value=%q present=%v", value, ok)
+	}
+	manifest, _, manifestErr := readRunManifestStrict(manifestPath)
+	if manifestErr != nil {
+		t.Fatalf("read worker manifest: %v", manifestErr)
+	}
+	if value, credentialErr := worker.envoyCredential(manifest); credentialErr != nil || value != "server-owned-envoy-token" {
+		t.Fatalf("server-owned broker credential = %q err=%v", value, credentialErr)
 	}
 	if got := os.Getenv(routerEvaluationCredentialEnv); got != "stale-evaluation-token" {
 		t.Fatalf("worker environment mutated the server process: %q", got)
@@ -134,6 +146,14 @@ func assertWorkerCredentialScope(t *testing.T, manifestPath string) *CommandProc
 		if value, present := environmentValue(environment, key); present || value != "" {
 			t.Fatalf("non-worker credential %s leaked: value=%q present=%v", key, value, present)
 		}
+	}
+	for _, key := range []string{"PATH", "PYTHONPATH"} {
+		if value, present := environmentValue(environment, key); present || value != "" {
+			t.Fatalf("ambient process environment %s leaked: value=%q present=%v", key, value, present)
+		}
+	}
+	if value, present := environmentValue(environment, "HOME"); !present || value != filepath.Join(sandboxRoot, "home") {
+		t.Fatalf("worker HOME=%q present=%v, want private sandbox home", value, present)
 	}
 	return worker
 }
@@ -150,7 +170,7 @@ func assertTamperedEnvoyCredentialRefIsRejected(t *testing.T, worker *CommandPro
 		t.Fatalf("stage tampered Envoy ref: %v", err)
 	}
 	t.Setenv("OTHER_ENVOY_CREDENTIAL", "other-token")
-	if _, err := worker.workerEnvironment(manifestPath); err == nil || !strings.Contains(err.Error(), "unsupported Envoy credential") {
+	if _, err := worker.workerEnvironment(manifestPath, t.TempDir()); err == nil || !strings.Contains(err.Error(), "unsupported Envoy credential") {
 		t.Fatalf("tampered Envoy credential ref error=%v", err)
 	}
 }
@@ -179,7 +199,9 @@ func TestReplayAndAuthDisabledRunsDoNotRequireRouterCredentials(t *testing.T) {
 	t.Setenv("VLLM_SR_EVALUATION_ENVOY_API_KEY", "must-not-reach-replay")
 	worker := NewCommandProcess("python3")
 	worker.envoyAPIKeyEnv = "VLLM_SR_EVALUATION_ENVOY_API_KEY"
-	environment, environmentErr := worker.workerEnvironment(filepath.Join(root, "runs", run.ID, manifestFileName))
+	environment, environmentErr := worker.workerEnvironment(
+		filepath.Join(root, "runs", run.ID, manifestFileName), t.TempDir(),
+	)
 	if environmentErr != nil {
 		t.Fatalf("replay worker environment: %v", environmentErr)
 	}
@@ -189,10 +211,14 @@ func TestReplayAndAuthDisabledRunsDoNotRequireRouterCredentials(t *testing.T) {
 }
 
 func TestPendingRoutingRunCannotStartAfterRouterAuthBecomesRequired(t *testing.T) {
-	service, _ := newTestService(t, &controlledProcess{}, 1)
+	service, root := newTestService(t, &controlledProcess{}, 1)
+	if err := os.WriteFile(filepath.Join(root, "config.yaml"), []byte(modelArmTestYAML), 0o600); err != nil {
+		t.Fatalf("write live Router config: %v", err)
+	}
 	run, err := service.CreateRun(context.Background(), CreateRunRequest{
-		Name: "routing before auth", SuiteIDs: []string{"live-routing-core"}, TrackIDs: []TrackID{"routing"},
-		Mode: ModeLive, TargetID: "runtime", ChangeProfile: "recipe",
+		ClientRequestID: newTestClientRequestID(),
+		Name:            "routing before auth", SuiteIDs: []string{"live-mom-core"}, TrackIDs: []TrackID{"routing"},
+		Mode: ModeLive, TargetID: mixtureTargetID("default"), ChangeProfile: "recipe",
 		SampleLimit: 4, Concurrency: 1, Seed: 17,
 	})
 	if err != nil {
@@ -210,6 +236,10 @@ func TestPendingRoutingRunCannotStartAfterRouterAuthBecomesRequired(t *testing.T
 
 func TestTargetContractRejectsLiteralLikeAndInvalidEnvironmentReferences(t *testing.T) {
 	validArm := catalogTestArm("arm", []string{"text"})
+	crossCollisionA := catalogTestArm("first", []string{"text"})
+	crossCollisionA.Model = "second"
+	crossCollisionB := catalogTestArm("second", []string{"text"})
+	crossCollisionB.Model = "third"
 	for _, options := range []RegistryOptions{
 		{RouterAPIKey: &SecretRef{SchemaVersion: SchemaVersion, Env: "literal-secret"}},
 		{EnvoyAPIKey: &SecretRef{SchemaVersion: "evaluation.v2", Env: "VALID_ENV"}},
@@ -218,12 +248,23 @@ func TestTargetContractRejectsLiteralLikeAndInvalidEnvironmentReferences(t *test
 			RouterAPIKey: &SecretRef{SchemaVersion: SchemaVersion, Env: "SHARED_ENV"},
 			EnvoyAPIKey:  &SecretRef{SchemaVersion: SchemaVersion, Env: "SHARED_ENV"},
 		},
-		{ModelArms: []ModelArm{{ID: "arm", Model: "model", ProviderModelIDDigest: "raw-provider-id"}}},
-		{ModelArms: []ModelArm{validArm, validArm}},
+		{Mixtures: []MixtureTargetSnapshot{catalogTestMixtureSnapshot([]ModelArm{{ID: "arm", Model: "model", ProviderModelIDDigest: "raw-provider-id"}}, catalogTopologyDigest)}},
+		{Mixtures: []MixtureTargetSnapshot{catalogTestMixtureSnapshot([]ModelArm{validArm, validArm}, catalogTopologyDigest)}},
+		{Mixtures: []MixtureTargetSnapshot{catalogTestMixtureSnapshot([]ModelArm{crossCollisionA, crossCollisionB}, catalogTopologyDigest)}},
 	} {
 		if _, err := NewRegistry("http://router.test", "http://envoy.test", options); err == nil {
 			t.Fatalf("unsafe target options accepted: %#v", options)
 		}
+	}
+	if _, err := NewRegistry("", "http://envoy.test", RegistryOptions{
+		RouterAPIKey: &SecretRef{SchemaVersion: SchemaVersion, Env: "ROUTER_EVAL_KEY"},
+	}); err == nil {
+		t.Fatal("Router credential reference without Router URL was accepted")
+	}
+	if _, err := NewRegistry("http://router.test", "", RegistryOptions{
+		EnvoyAPIKey: &SecretRef{SchemaVersion: SchemaVersion, Env: "ENVOY_EVAL_KEY"},
+	}); err == nil {
+		t.Fatal("Envoy credential reference without Envoy URL was accepted")
 	}
 }
 

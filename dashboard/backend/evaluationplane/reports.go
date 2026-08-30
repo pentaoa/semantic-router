@@ -12,6 +12,32 @@ import (
 
 const publicChecksumArtifactName = "checksums.sha256"
 
+// workerReport is the untrusted worker-to-server evidence envelope. It has no
+// attestation field: only the server can publish the externally readable
+// Report contract after every evidence validator succeeds.
+type workerReport struct {
+	SchemaVersion   string        `json:"schema_version"`
+	Run             Run           `json:"run"`
+	Summary         ReportSummary `json:"summary"`
+	Tracks          []TrackReport `json:"tracks"`
+	Metrics         []Metric      `json:"metrics"`
+	Gates           []Gate        `json:"gates"`
+	Costs           CostLedgers   `json:"costs"`
+	Recommendations []string      `json:"recommendations"`
+	Provenance      Provenance    `json:"provenance"`
+	Artifacts       []Artifact    `json:"artifacts"`
+}
+
+func workerReportFromReport(report Report) workerReport {
+	return workerReport{
+		SchemaVersion: report.SchemaVersion,
+		Run:           report.Run, Summary: report.Summary, Tracks: report.Tracks,
+		Metrics: report.Metrics, Gates: report.Gates, Costs: report.Costs,
+		Recommendations: report.Recommendations, Provenance: report.Provenance,
+		Artifacts: report.Artifacts,
+	}
+}
+
 func (s *Service) ReportJSON(runID string) ([]byte, error) {
 	release, err := s.acquireEvidenceRead()
 	if err != nil {
@@ -58,58 +84,88 @@ func decodeReportStrict(runID string, data []byte) (Report, error) {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&report); err != nil {
-		return Report{}, fmt.Errorf("decode evaluation report: %w", err)
+		return Report{}, fmt.Errorf("%w: decode evaluation report: %w", ErrInvalid, err)
 	}
 	if err := ensureJSONEOF(decoder); err != nil {
-		return Report{}, err
+		return Report{}, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
-	if report.SchemaVersion != SchemaVersion {
-		return Report{}, fmt.Errorf("evaluation report schema_version must be %q", SchemaVersion)
+	if report.AttestationRevision != ServerAttestationRevision {
+		return Report{}, fmt.Errorf("%w: evaluation report attestation_revision must be %q", ErrInvalid, ServerAttestationRevision)
 	}
-	if !validServerAttestationRevision(report.AttestationRevision) {
-		return Report{}, fmt.Errorf("evaluation report attestation_revision is invalid")
-	}
-	if report.Run.SchemaVersion != SchemaVersion || report.Provenance.SchemaVersion != SchemaVersion {
-		return Report{}, fmt.Errorf("evaluation report nested schema_version must be %q", SchemaVersion)
-	}
-	if report.Run.ID != runID {
-		return Report{}, fmt.Errorf("evaluation report run identity mismatch")
-	}
-	if !validChangeProfile(report.Run.ChangeProfile) {
-		return Report{}, fmt.Errorf("evaluation report change_profile is invalid")
-	}
-	if report.Provenance.TargetID != report.Run.TargetID || report.Provenance.Seed != report.Run.Seed {
-		return Report{}, fmt.Errorf("evaluation report provenance identity mismatch")
-	}
-	if report.Run.SuiteIDs == nil || report.Run.TrackIDs == nil || report.Tracks == nil ||
-		report.Metrics == nil || report.Gates == nil || report.Recommendations == nil || report.Artifacts == nil {
-		return Report{}, fmt.Errorf("evaluation report required collections cannot be null")
-	}
-	for _, track := range report.Tracks {
-		if track.Metrics == nil || track.Gates == nil {
-			return Report{}, fmt.Errorf("evaluation track report required collections cannot be null")
-		}
-		for _, gate := range track.Gates {
-			if err := validateReportGate(gate, report.Run.ChangeProfile); err != nil {
-				return Report{}, err
-			}
-		}
-	}
-	if err := validateReportMetrics(report.Metrics, report.Run.TrackIDs); err != nil {
-		return Report{}, err
-	}
-	for _, gate := range report.Gates {
-		if err := validateReportGate(gate, report.Run.ChangeProfile); err != nil {
-			return Report{}, err
-		}
+	if err := validateReportShape(runID, report); err != nil {
+		return Report{}, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
 	return report, nil
 }
 
+func decodeWorkerReportStrict(runID string, data []byte) (Report, error) {
+	var draft workerReport
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&draft); err != nil {
+		return Report{}, fmt.Errorf("%w: decode evaluation worker report: %w", ErrInvalid, err)
+	}
+	if err := ensureJSONEOF(decoder); err != nil {
+		return Report{}, fmt.Errorf("%w: %w", ErrInvalid, err)
+	}
+	report := Report{
+		SchemaVersion: draft.SchemaVersion,
+		Run:           draft.Run, Summary: draft.Summary, Tracks: draft.Tracks,
+		Metrics: draft.Metrics, Gates: draft.Gates, Costs: draft.Costs,
+		Recommendations: draft.Recommendations, Provenance: draft.Provenance,
+		Artifacts: draft.Artifacts,
+	}
+	if err := validateReportShape(runID, report); err != nil {
+		return Report{}, fmt.Errorf("%w: %w", ErrInvalid, err)
+	}
+	return report, nil
+}
+
+func validateReportShape(runID string, report Report) error {
+	if report.SchemaVersion != SchemaVersion {
+		return fmt.Errorf("evaluation report schema_version must be %q", SchemaVersion)
+	}
+	if report.Run.SchemaVersion != SchemaVersion || report.Provenance.SchemaVersion != SchemaVersion {
+		return fmt.Errorf("evaluation report nested schema_version must be %q", SchemaVersion)
+	}
+	if report.Run.ID != runID || report.Run.ClientRequestID != runID {
+		return fmt.Errorf("evaluation report run identity mismatch")
+	}
+	if !validChangeProfile(report.Run.ChangeProfile) {
+		return fmt.Errorf("evaluation report change_profile is invalid")
+	}
+	if report.Provenance.TargetID != report.Run.TargetID || report.Provenance.Seed != report.Run.Seed {
+		return fmt.Errorf("evaluation report provenance identity mismatch")
+	}
+	if report.Run.SuiteIDs == nil || report.Run.TrackIDs == nil || report.Tracks == nil ||
+		report.Metrics == nil || report.Gates == nil || report.Recommendations == nil || report.Artifacts == nil {
+		return fmt.Errorf("evaluation report required collections cannot be null")
+	}
+	for _, track := range report.Tracks {
+		if track.Metrics == nil || track.Gates == nil {
+			return fmt.Errorf("evaluation track report required collections cannot be null")
+		}
+		for _, gate := range track.Gates {
+			if err := validateReportGate(gate, report.Run.ChangeProfile); err != nil {
+				return err
+			}
+		}
+	}
+	if err := validateReportMetrics(report.Metrics, report.Run.TrackIDs); err != nil {
+		return err
+	}
+	for _, gate := range report.Gates {
+		if err := validateReportGate(gate, report.Run.ChangeProfile); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *Service) Compare(baselineRunID, candidateRunID string) (Comparison, error) {
-	release, err := s.acquireEvidenceRead()
-	if err != nil {
-		return Comparison{}, err
+	release, acquireErr := s.acquireEvidenceRead()
+	if acquireErr != nil {
+		return Comparison{}, acquireErr
 	}
 	defer release()
 	if ledgerErr := s.RequireCompleteRunLedger(); ledgerErr != nil {
@@ -118,15 +174,42 @@ func (s *Service) Compare(baselineRunID, candidateRunID string) (Comparison, err
 	if baselineRunID == candidateRunID {
 		return Comparison{}, fmt.Errorf("%w: baseline and candidate runs must be distinct", ErrInvalid)
 	}
-	baseline, err := s.decodedReport(baselineRunID)
-	if err != nil {
-		return Comparison{}, err
+	baseline, baselineErr := s.decodedReport(baselineRunID)
+	if baselineErr != nil {
+		return Comparison{}, baselineErr
 	}
-	candidate, err := s.decodedReport(candidateRunID)
-	if err != nil {
-		return Comparison{}, err
+	candidate, candidateErr := s.decodedReport(candidateRunID)
+	if candidateErr != nil {
+		return Comparison{}, candidateErr
 	}
-	return comparePairedReports(baseline, candidate)
+	if baseline.Run.TargetID != candidate.Run.TargetID {
+		baselineEvidence, err := s.loadCampaignRunEvidence(campaignEvidenceBinding{
+			slotID: "g3", gateID: "G3", bindingRole: "baseline", runID: baselineRunID,
+		}, nil)
+		if err != nil {
+			return Comparison{}, err
+		}
+		candidateEvidence, err := s.loadCampaignRunEvidence(campaignEvidenceBinding{
+			slotID: "g3", gateID: "G3", bindingRole: "candidate", runID: candidateRunID,
+			candidate: true,
+		}, nil)
+		if err != nil {
+			return Comparison{}, err
+		}
+		return compareControlledPairReports(baselineEvidence, candidateEvidence)
+	}
+	if cohortErr := validatePairedReportCohort(baseline, candidate); cohortErr != nil {
+		return Comparison{}, cohortErr
+	}
+	baselineRecords, baselineRecordsErr := s.loadPrivateComparisonRecords(baselineRunID)
+	if baselineRecordsErr != nil {
+		return Comparison{}, baselineRecordsErr
+	}
+	candidateRecords, candidateRecordsErr := s.loadPrivateComparisonRecords(candidateRunID)
+	if candidateRecordsErr != nil {
+		return Comparison{}, candidateRecordsErr
+	}
+	return comparePairedReports(baseline, candidate, baselineRecords, candidateRecords)
 }
 
 func (s *Service) OpenArtifact(runID, artifactID string) (*OpenedArtifact, error) {

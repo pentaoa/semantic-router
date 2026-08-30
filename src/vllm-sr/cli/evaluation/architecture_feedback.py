@@ -12,6 +12,9 @@ _POOL_ORACLE_GAIN_FLOOR = 0.02
 _MIN_SELECTION_ARM_COVERAGE = 0.50
 _MAX_NORMALIZED_REGRET = 0.20
 _MIN_AGENT_SUCCESS = 0.90
+_MIN_ORACLE_CAPTURE = 0.90
+_MIN_EFFECTIVE_SAMPLE_RATIO = 0.50
+_MAX_FAILURE_OVERLAP = 0.50
 
 
 @dataclass(frozen=True)
@@ -60,7 +63,9 @@ def _routing_findings(values: dict[str, float | None]) -> list[ArchitectureFindi
     return findings
 
 
-def _pool_findings(values: dict[str, float | None]) -> list[ArchitectureFinding]:
+def _pool_value_findings(
+    values: dict[str, float | None],
+) -> list[ArchitectureFinding]:
     findings: list[ArchitectureFinding] = []
     oracle_gain = values.get("model_pool.oracle_gain")
     if oracle_gain is not None and oracle_gain <= _POOL_ORACLE_GAIN_FLOOR:
@@ -101,7 +106,86 @@ def _pool_findings(values: dict[str, float | None]) -> list[ArchitectureFinding]
     return findings
 
 
-def _workload_findings(values: dict[str, float | None]) -> list[ArchitectureFinding]:
+def _pool_health_findings(
+    values: dict[str, float | None],
+) -> list[ArchitectureFinding]:
+    findings: list[ArchitectureFinding] = []
+    dominated_arms = values.get("model_pool.quality_dominated_arm_count")
+    if dominated_arms is not None and dominated_arms > 0:
+        findings.append(
+            ArchitectureFinding(
+                "AF-POOL-DOMINANCE",
+                "Model-pool owner",
+                "PoolDefinition / ModelArm lifecycle",
+                f"model_pool.quality_dominated_arm_count={dominated_arms:.0f}",
+                "verify the common-case dominance slice, then remove or quarantine arms that add no quality, cost, policy, modality, or failure-domain value",
+            )
+        )
+    pareto_dominated = values.get("model_pool.pareto_dominated_arm_count")
+    if pareto_dominated is not None and pareto_dominated > 0:
+        findings.append(
+            ArchitectureFinding(
+                "AF-POOL-PARETO-DOMINANCE",
+                "Model-pool owner",
+                "PoolDefinition quality-cost frontier",
+                f"model_pool.pareto_dominated_arm_count={pareto_dominated:.0f}",
+                "remove or quarantine arms dominated on the complete common-case quality-cost frontier unless they provide an explicit policy, modality, or failure-domain benefit",
+            )
+        )
+    failure_overlap = values.get("model_pool.mean_pairwise_failure_jaccard")
+    if failure_overlap is not None and failure_overlap > _MAX_FAILURE_OVERLAP:
+        findings.append(
+            ArchitectureFinding(
+                "AF-POOL-CORRELATED-FAILURE",
+                "Model-pool owner",
+                "provider and capability failure diversity",
+                f"model_pool.mean_pairwise_failure_jaccard={failure_overlap:.3f}",
+                "admit an arm with a distinct failure domain or tighten admission for cases where the current arms fail together",
+            )
+        )
+    worst_arm_reliability = values.get("model_pool.worst_arm_reliability")
+    if worst_arm_reliability is not None and worst_arm_reliability < 1:
+        findings.append(
+            ArchitectureFinding(
+                "AF-POOL-WEAK-ARM",
+                "Model-pool owner",
+                "PoolDefinition arm admission and health",
+                f"model_pool.worst_arm_reliability={worst_arm_reliability:.3f}",
+                "inspect per-arm failure rates and slices, then repair or quarantine the least reliable arm before pool availability masks its degradation",
+            )
+        )
+    all_arm_failure = values.get("model_pool.all_arm_failure_rate")
+    if all_arm_failure is not None and all_arm_failure > 0:
+        findings.append(
+            ArchitectureFinding(
+                "AF-POOL-CAPABILITY-GAP",
+                "Model-pool owner",
+                "PoolDefinition capability coverage",
+                f"model_pool.all_arm_failure_rate={all_arm_failure:.3f}",
+                "cluster cases where every arm fails and admit a qualified capability or reject those requests at a typed admission boundary",
+            )
+        )
+    oracle_capture = values.get("joint.oracle_capture_ratio")
+    if oracle_capture is not None and oracle_capture < _MIN_ORACLE_CAPTURE:
+        findings.append(
+            ArchitectureFinding(
+                "AF-ORACLE-CAPTURE",
+                "Router recipe and selector owners",
+                "features / projections / selector calibration",
+                f"joint.oracle_capture_ratio={oracle_capture:.3f}",
+                "hold the pool and utility contract fixed, then recover missed oracle value by slice before adding selector complexity",
+            )
+        )
+    return findings
+
+
+def _pool_findings(values: dict[str, float | None]) -> list[ArchitectureFinding]:
+    return _pool_value_findings(values) + _pool_health_findings(values)
+
+
+def _agent_safety_findings(
+    values: dict[str, float | None],
+) -> list[ArchitectureFinding]:
     findings: list[ArchitectureFinding] = []
     agent_success = values.get("agentic.success_rate")
     if agent_success is not None and agent_success < _MIN_AGENT_SUCCESS:
@@ -136,6 +220,35 @@ def _workload_findings(values: dict[str, float | None]) -> list[ArchitectureFind
                 "block promotion, identify the violating slice and enforcement path, and add a non-waivable regression case",
             )
         )
+    false_negatives = values.get("safety.false_negative_rate")
+    if false_negatives is not None and false_negatives > 0:
+        findings.append(
+            ArchitectureFinding(
+                "AF-SAFETY-FALSE-NEGATIVE",
+                "Security and recipe owners",
+                "unsafe-request detection and non-waivable enforcement",
+                f"safety.false_negative_rate={false_negatives:.3f}",
+                "block promotion, inspect unsafe cases that reached a backend, and move the invariant to static enforcement where possible",
+            )
+        )
+    privacy_exposures = values.get("agentic.privacy_exposures_per_trajectory")
+    if privacy_exposures is not None and privacy_exposures > 0:
+        findings.append(
+            ArchitectureFinding(
+                "AF-AGENT-PRIVACY",
+                "Agent security and Router session owners",
+                "tool arguments / session state / cross-model handoff",
+                f"agentic.privacy_exposures_per_trajectory={privacy_exposures:.3f}",
+                "block promotion and trace each exposure to its exact step, tool boundary, and model handoff before changing routing quality policy",
+            )
+        )
+    return findings
+
+
+def _capacity_preference_findings(
+    values: dict[str, float | None],
+) -> list[ArchitectureFinding]:
+    findings: list[ArchitectureFinding] = []
     saturation = values.get("capacity.saturation_concurrency")
     if saturation is not None:
         findings.append(
@@ -158,7 +271,55 @@ def _workload_findings(values: dict[str, float | None]) -> list[ArchitectureFind
                 "do not train or claim causal preference lift until every eligible exposure records its behavior propensity and executed action",
             )
         )
+    effective_sample_ratio = values.get("preference.effective_sample_ratio")
+    if (
+        effective_sample_ratio is not None
+        and effective_sample_ratio < _MIN_EFFECTIVE_SAMPLE_RATIO
+    ):
+        findings.append(
+            ArchitectureFinding(
+                "AF-PREFERENCE-SUPPORT",
+                "Online experimentation owner",
+                "assignment support and propensity policy",
+                f"preference.effective_sample_ratio={effective_sample_ratio:.3f}",
+                "treat the apparent lift as weakly supported, cap extreme weights, and redesign assignment coverage before updating the router online",
+            )
+        )
     return findings
+
+
+def _modality_slice_findings(
+    values: dict[str, float | None],
+) -> list[ArchitectureFinding]:
+    findings: list[ArchitectureFinding] = []
+    for metric_id, support in sorted(values.items()):
+        if (
+            metric_id.startswith("multimodal.")
+            and metric_id.endswith(".support_rate")
+            and support is not None
+            and support < 1.0
+        ):
+            modality = metric_id.removeprefix("multimodal.").removesuffix(
+                ".support_rate"
+            )
+            findings.append(
+                ArchitectureFinding(
+                    f"AF-MODALITY-{modality.upper().replace('_', '-')}",
+                    "Router, model-pool, and serving owners",
+                    "typed modality admission and ModelArm capability mask",
+                    f"{metric_id}={support:.3f}",
+                    f"separate {modality} admission, routing, transport, generation, and privacy failures before changing the shared multimodal policy",
+                )
+            )
+    return findings
+
+
+def _workload_findings(values: dict[str, float | None]) -> list[ArchitectureFinding]:
+    return (
+        _agent_safety_findings(values)
+        + _capacity_preference_findings(values)
+        + _modality_slice_findings(values)
+    )
 
 
 def _metric_findings(values: dict[str, float | None]) -> list[ArchitectureFinding]:
@@ -175,9 +336,9 @@ def _gate_findings(gates: list[EvaluationGate]) -> list[ArchitectureFinding]:
             ArchitectureFinding(
                 "AF-LIVE-FIDELITY-EVIDENCE",
                 "Evaluation owner",
-                "paired replay/live campaign",
+                "qualified reference-to-fresh-live Campaign slot",
                 "G5=unavailable",
-                "run the same frozen cases and grading contract in replay and live modes and retain failures in the paired denominator",
+                "bind an unchanged candidate to a qualified reference and a fresh live run over the exact frozen cases and grading contract, retaining every failure in the paired denominator",
             )
         )
     if by_id.get("G7") and by_id["G7"].verdict == "unavailable":

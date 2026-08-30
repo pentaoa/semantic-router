@@ -64,7 +64,6 @@ class CLITestBase(unittest.TestCase):
     ROUTER_CONTAINER_NAME = "vllm-sr-router-container"
     ENVOY_CONTAINER_NAME = "vllm-sr-envoy-container"
     DASHBOARD_CONTAINER_NAME = "vllm-sr-dashboard-container"
-    SIM_CONTAINER_NAME = "vllm-sr-sim-container"
     REDIS_CONTAINER_NAME = "vllm-sr-redis"
     POSTGRES_CONTAINER_NAME = "vllm-sr-postgres"
     MILVUS_CONTAINER_NAME = "vllm-sr-milvus"
@@ -100,7 +99,6 @@ class CLITestBase(unittest.TestCase):
         cls.ROUTER_CONTAINER_NAME = cls.runtime_stack.router_container_name
         cls.ENVOY_CONTAINER_NAME = cls.runtime_stack.envoy_container_name
         cls.DASHBOARD_CONTAINER_NAME = cls.runtime_stack.dashboard_container_name
-        cls.SIM_CONTAINER_NAME = cls.runtime_stack.fleet_sim_container_name
         cls.REDIS_CONTAINER_NAME = cls.runtime_stack.redis_container_name
         cls.POSTGRES_CONTAINER_NAME = cls.runtime_stack.postgres_container_name
         cls.MILVUS_CONTAINER_NAME = cls.runtime_stack.milvus_container_name
@@ -209,7 +207,6 @@ class CLITestBase(unittest.TestCase):
             cls.ROUTER_CONTAINER_NAME,
             cls.ENVOY_CONTAINER_NAME,
             cls.DASHBOARD_CONTAINER_NAME,
-            cls.SIM_CONTAINER_NAME,
             cls.PROBE_CONTAINER_NAME,
             *cls.AUXILIARY_CONTAINER_NAMES,
         )

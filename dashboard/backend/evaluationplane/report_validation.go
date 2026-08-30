@@ -13,23 +13,23 @@ import (
 var requiredGateIDs = []string{"G0", "G1", "G2", "G3", "G4", "G5", "G6", "G7", "G8", "G9"}
 
 var gateNames = []string{
-	"Reproducibility", "Static correctness", "Hard policy", "Offline value", "Robustness / OOD",
-	"Live fidelity", "Reliability / trajectory", "Cost / latency / capacity", "Shadow / canary", "Online preference",
+	"Reproducibility", "Static correctness", "Hard policy", "Offline value", "Declared-shift robustness",
+	"Live fidelity", "Live fault-recovery continuity", "Cost / latency / capacity", "Shadow / canary", "Online preference",
 }
 
-var gateTracks = []TrackID{"", "", "safety", "joint", "routing", "joint", "agentic", "capacity", "", "preference"}
+var gateTracks = []TrackID{"", "", "safety", "joint", "routing", "joint", "agentic", "capacity", "preference", "preference"}
 
 var gateEvidenceRefs = [][]string{
 	{manifestFileName, "lineage.json", "provenance.json", publicChecksumArtifactName},
 	{manifestFileName, "records.jsonl"},
-	{"records.jsonl", "metric:safety.violation_rate"},
+	{"records.jsonl", "metric:safety.violation_rate", "metric:safety.block_accuracy", "method:evaluation-hard-policy-proof.v1"},
 	{"metrics.json", "metric:joint.normalized_regret"},
-	{"records.jsonl", "metric:routing.accuracy"},
+	{"records.jsonl", "metric:routing.robustness_pass_rate", "metric:routing.robustness_worst_slice_pass_rate"},
 	{"records.jsonl", "provenance.json"},
-	{"records.jsonl", "metric:agentic.success_rate"},
-	{"records.jsonl", "metrics.json"},
-	{manifestFileName, "records.jsonl"},
-	{"records.jsonl", "metric:preference.propensity_coverage"},
+	{"records.jsonl", "metric:agentic.recovery_pass_rate_lower_95"},
+	{manifestFileName, capacityProfileArtifactName, "metric:capacity.slo_headroom"},
+	{manifestFileName, "records.jsonl", "metric:experiment.assignment_balance_p_value", "metric:experiment.risk_event_upper_confidence_bound", "metric:experiment.risk_budget_max_rate", "metric:experiment.candidate_safe"},
+	{"records.jsonl", "metric:preference.online_reward_lift", "metric:preference.online_effective_sample_size", "metric:preference.online_segment_coverage"},
 }
 
 var gateDispositionMatrix = map[ChangeProfile][]string{
@@ -38,93 +38,8 @@ var gateDispositionMatrix = map[ChangeProfile][]string{
 	"selector":          {"required", "required", "required", "required", "required", "required", "advisory", "required", "required", "not_applicable"},
 	"model_pool":        {"required", "required", "required", "required", "required", "required", "advisory", "required", "required", "not_applicable"},
 	"runtime_capacity":  {"required", "required", "required", "advisory", "advisory", "required", "advisory", "required", "required", "not_applicable"},
-	"agent_multimodal":  {"required", "required", "required", "required", "required", "required", "required", "required", "required", "advisory"},
+	"agent_multimodal":  {"required", "required", "required", "not_applicable", "required", "required", "required", "required", "required", "advisory"},
 	"online_adaptation": {"required", "required", "required", "required", "required", "required", "required", "required", "required", "required"},
-}
-
-func (s *Service) validateAndAnchorReport(runID string) error {
-	run, err := s.store.GetRun(runID)
-	if err != nil {
-		return err
-	}
-	if run.Status != StatusRunning {
-		return fmt.Errorf("%w: only a running evaluation can seal a report", ErrConflict)
-	}
-	data, err := s.store.ReadReport(runID)
-	if err != nil {
-		return err
-	}
-	if secretErr := s.rejectConfiguredSecretBytes(data); secretErr != nil {
-		return secretErr
-	}
-	report, err := decodeReportStrict(runID, data)
-	if err != nil {
-		return err
-	}
-	if report.Run.Status != StatusCompleted || report.Run.Error != "" {
-		return fmt.Errorf("%w: worker report must describe a successful completed run", ErrInvalid)
-	}
-	if report.AttestationRevision != "" {
-		return fmt.Errorf("%w: worker report cannot claim a server-owned attestation revision", ErrInvalid)
-	}
-	manifest, manifestBytes, err := s.readDurableManifest(runID)
-	if err != nil {
-		return err
-	}
-	checksums, err := s.validatePrivateReceipt(runID)
-	if err != nil {
-		return err
-	}
-	if bundleErr := s.validateReportBundle(runID, manifest, report, checksums); bundleErr != nil {
-		return bundleErr
-	}
-	completedAt := time.Now().UTC()
-	canonicalizeReportRun(run, &report, completedAt)
-	run.CompletedAt = &completedAt
-	if frozenFieldsErr := validateReportFrozenFields(run, manifest, report); frozenFieldsErr != nil {
-		return frozenFieldsErr
-	}
-	canonicalData, err := json.Marshal(report)
-	if err != nil {
-		return fmt.Errorf("encode canonical evaluation report: %w", err)
-	}
-	if secretErr := s.rejectConfiguredSecretBytes(canonicalData); secretErr != nil {
-		return secretErr
-	}
-	evidenceFiles, err := s.buildSealedEvidenceSnapshot(runID, checksums)
-	if err != nil {
-		return err
-	}
-	manifestDigest, _ := digestAndSize(manifestBytes)
-	privateReceipt, err := readEvidenceBytes(filepath.Join(s.store.runsRoot, runID, privateChecksumArtifactName), maxStructuredArtifactBytes)
-	if err != nil {
-		return err
-	}
-	privateReceiptDigest, _ := digestAndSize(privateReceipt)
-	sealedAt := time.Now().UTC()
-	if timestampErr := validateReportExecutionTimestamp(run, manifest, report.Provenance.GeneratedAt, sealedAt); timestampErr != nil {
-		return timestampErr
-	}
-	// The revision is exclusively server-owned and is published only after all
-	// worker bundle and canonical report validators have succeeded.
-	report.AttestationRevision = ServerAttestationRevision
-	if writeErr := s.store.WriteReport(runID, report); writeErr != nil {
-		return writeErr
-	}
-	data, err = s.store.ReadReport(runID)
-	if err != nil {
-		return err
-	}
-	reportDigest, reportSize := digestAndSize(data)
-	if err := s.store.writeReportAnchor(runID, reportAnchor{
-		SchemaVersion: SchemaVersion, AttestationRevision: ServerAttestationRevision,
-		RunID: runID, ReportDigest: reportDigest,
-		ReportSize: reportSize, ManifestDigest: manifestDigest, PrivateReceiptDigest: privateReceiptDigest,
-		EvidenceFiles: evidenceFiles, CreatedAt: sealedAt,
-	}); err != nil {
-		return err
-	}
-	return s.store.UpdateRun(run)
 }
 
 func validateReportExecutionTimestamp(run Run, manifest RunManifest, generatedAt, sealedAt time.Time) error {
@@ -158,7 +73,44 @@ func (s *Service) readDurableManifest(runID string) (RunManifest, []byte, error)
 	if manifest.RunID != runID {
 		return RunManifest{}, nil, fmt.Errorf("%w: run manifest identity mismatch", ErrInvalid)
 	}
+	run, err := s.store.GetRun(runID)
+	if err != nil {
+		return RunManifest{}, nil, err
+	}
+	if err := validateRunManifestFrozenFields(run, manifest); err != nil {
+		return RunManifest{}, nil, err
+	}
 	return manifest, raw, nil
+}
+
+func validateRunManifestFrozenFields(run Run, manifest RunManifest) error {
+	checks := []struct {
+		name string
+		ok   bool
+	}{
+		{"identity", manifest.RunID == run.ID},
+		{"name", manifest.Name == run.Name},
+		{"description", manifest.Description == run.Description},
+		{"mode", manifest.Mode == run.Mode},
+		{"target", manifest.Target.ID == run.TargetID},
+		{"mixture", reflect.DeepEqual(run.Mixture, catalogMixtureFromManifest(manifest.Target.Mixture))},
+		{"change_profile", manifest.ChangeProfile == run.ChangeProfile},
+		{"suites", reflect.DeepEqual(manifest.SuiteIDs, run.SuiteIDs)},
+		{"tracks", reflect.DeepEqual(manifest.TrackIDs, run.TrackIDs)},
+		{"sample_limit", manifest.SampleLimit == run.SampleLimit},
+		{"concurrency", manifest.Concurrency == run.Concurrency},
+		{"capacity_slo", reflect.DeepEqual(manifest.CapacitySLO, run.CapacitySLO)},
+		{"capacity_load_protocol", reflect.DeepEqual(manifest.CapacityLoadProtocol, run.CapacityLoadProtocol)},
+		{"seed", manifest.Seed == run.Seed},
+		{"baseline", manifest.BaselineRunID == run.BaselineRunID},
+		{"created_at", manifest.CreatedAt.Equal(run.CreatedAt)},
+	}
+	for _, check := range checks {
+		if !check.ok {
+			return fmt.Errorf("%w: run manifest %s does not match durable status", ErrInvalid, check.name)
+		}
+	}
+	return nil
 }
 
 func validateReportFrozenFields(run Run, manifest RunManifest, report Report) error {
@@ -175,12 +127,16 @@ func validateReportFrozenFields(run Run, manifest RunManifest, report Report) er
 		{"client_request_id", reportRunClientRequestIDMatches(run, report.Run)},
 		{"mode", run.Mode == manifest.Mode && report.Run.Mode == run.Mode},
 		{"target", run.TargetID == manifest.Target.ID && report.Run.TargetID == run.TargetID},
+		{"mixture", reflect.DeepEqual(run.Mixture, catalogMixtureFromManifest(manifest.Target.Mixture)) && reflect.DeepEqual(report.Run.Mixture, run.Mixture)},
 		{"change_profile", run.ChangeProfile == manifest.ChangeProfile && report.Run.ChangeProfile == run.ChangeProfile},
 		{"sample_limit", run.SampleLimit == manifest.SampleLimit && report.Run.SampleLimit == run.SampleLimit},
 		{"concurrency", run.Concurrency == manifest.Concurrency && report.Run.Concurrency == run.Concurrency},
+		{"capacity_slo", reflect.DeepEqual(run.CapacitySLO, manifest.CapacitySLO) && reflect.DeepEqual(report.Run.CapacitySLO, run.CapacitySLO)},
+		{"capacity_load_protocol", reflect.DeepEqual(run.CapacityLoadProtocol, manifest.CapacityLoadProtocol) && reflect.DeepEqual(report.Run.CapacityLoadProtocol, run.CapacityLoadProtocol)},
 		{"seed", run.Seed == manifest.Seed && report.Run.Seed == run.Seed},
 		{"baseline", run.BaselineRunID == manifest.BaselineRunID && report.Run.BaselineRunID == run.BaselineRunID},
 		{"evidence_level", run.EvidenceLevel == report.Run.EvidenceLevel},
+		{"track_evidence_levels", reflect.DeepEqual(run.TrackEvidenceLevels, report.Run.TrackEvidenceLevels)},
 		{"suites", reflect.DeepEqual(run.SuiteIDs, manifest.SuiteIDs) && reflect.DeepEqual(report.Run.SuiteIDs, run.SuiteIDs)},
 		{"tracks", reflect.DeepEqual(run.TrackIDs, manifest.TrackIDs) && reflect.DeepEqual(report.Run.TrackIDs, run.TrackIDs)},
 		{"created_at", run.CreatedAt.Equal(manifest.CreatedAt) && report.Run.CreatedAt.Equal(run.CreatedAt.Truncate(time.Microsecond))},
@@ -208,48 +164,68 @@ func validateReportFrozenFields(run Run, manifest RunManifest, report Report) er
 	return nil
 }
 
-func (s *Service) validateReportBundle(runID string, manifest RunManifest, report Report, checksums map[string]string) error {
+func (s *Service) validateReportBundle(
+	runID string,
+	manifest RunManifest,
+	report Report,
+	checksums map[string]string,
+	executionContract resolvedExecutionContract,
+	executionAttestation *executionAttestation,
+) (sealedEvidenceLevels, error) {
 	runDir, err := s.store.checkedRunDir(runID)
 	if err != nil {
-		return err
+		return sealedEvidenceLevels{}, err
 	}
-	records, err := validateRecordsAndFailureSummary(runDir, manifest)
+	records, err := validateRecordsAndFailureSummary(runDir, manifest, executionContract.Executor)
 	if err != nil {
-		return err
+		return sealedEvidenceLevels{}, err
 	}
-	if err := validateReportMetricsAndGates(runDir, report, records); err != nil {
-		return err
+	qualification, err := resolveSuiteGateQualification(s.suiteStorePath, manifest, executionContract.Executor)
+	if err != nil {
+		return sealedEvidenceLevels{}, err
 	}
-	if err := validateReportGateEvidence(report, checksums); err != nil {
-		return err
+	if evidenceErr := validateReportGateEvidence(report, checksums); evidenceErr != nil {
+		return sealedEvidenceLevels{}, evidenceErr
 	}
-	if err := s.validatePublicArtifacts(runID, manifest, report, checksums, records); err != nil {
-		return err
+	if artifactErr := s.validatePublicArtifacts(runID, manifest, report, checksums, records); artifactErr != nil {
+		return sealedEvidenceLevels{}, artifactErr
 	}
-	if err := validateCapacityProfileArtifact(runDir, manifest, report, records); err != nil {
-		return err
+	capacitySLO, err := validateCapacityProfileArtifact(runDir, manifest, report, records)
+	if err != nil {
+		return sealedEvidenceLevels{}, err
 	}
-	return validateReportProvenance(runDir, manifest, report, checksums)
+	sealedLevels, err := deriveSealedEvidenceLevels(
+		runDir,
+		manifest,
+		records,
+		qualification,
+		executionContract.Executor,
+		capacitySLO,
+		executionAttestation,
+	)
+	if err != nil {
+		return sealedEvidenceLevels{}, err
+	}
+	if err := validateReportMetricsAndGates(runDir, report, records, qualification, sealedLevels, capacitySLO); err != nil {
+		return sealedEvidenceLevels{}, err
+	}
+	if err := validateReportProvenance(runDir, manifest, report, checksums, executionContract); err != nil {
+		return sealedEvidenceLevels{}, err
+	}
+	return sealedLevels, nil
 }
 
-func validateReportMetricsAndGates(runDir string, report Report, records recordAttestation) error {
-	var metricFile struct {
-		SchemaVersion string   `json:"schema_version"`
-		Metrics       []Metric `json:"metrics"`
-	}
-	if err := decodeStrictEvidence(filepath.Join(runDir, "metrics.json"), &metricFile); err != nil {
+func validateReportMetricsAndGates(
+	runDir string,
+	report Report,
+	records recordAttestation,
+	qualification suiteGateQualification,
+	sealedLevels sealedEvidenceLevels,
+	capacitySLO *capacitySLOAttestation,
+) error {
+	qualification = qualification.withSealedEvidenceLevels(sealedLevels)
+	if err := validateReportMetricAndGateFiles(runDir, report); err != nil {
 		return err
-	}
-	var gateFile struct {
-		SchemaVersion string `json:"schema_version"`
-		Gates         []Gate `json:"gates"`
-	}
-	if err := decodeStrictEvidence(filepath.Join(runDir, "gates.json"), &gateFile); err != nil {
-		return err
-	}
-	if metricFile.SchemaVersion != SchemaVersion || gateFile.SchemaVersion != SchemaVersion ||
-		!reflect.DeepEqual(metricFile.Metrics, report.Metrics) || !reflect.DeepEqual(gateFile.Gates, report.Gates) {
-		return fmt.Errorf("%w: report metrics or gates do not match their verified evidence files", ErrInvalid)
 	}
 	if len(report.Gates) != len(requiredGateIDs) {
 		return fmt.Errorf("%w: report must contain the complete G0-G9 gate set", ErrInvalid)
@@ -263,9 +239,60 @@ func validateReportMetricsAndGates(runDir string, report Report, records recordA
 	if err := validateServerReducedMetrics(report, records.Metrics); err != nil {
 		return err
 	}
+	if err := validateServerReducedMethodMetrics(report, records.Methods); err != nil {
+		return err
+	}
+	if err := validateCapacitySLOMetric(report, capacitySLO); err != nil {
+		return err
+	}
 	if err := validateServerReducedCosts(report.Costs, records.Costs); err != nil {
 		return err
 	}
+	if err := validateReportGateInventory(report); err != nil {
+		return err
+	}
+	if err := validateServerOwnedGateSemantics(report, records, qualification, capacitySLO); err != nil {
+		return err
+	}
+	if err := validatePromotionSummary(report); err != nil {
+		return err
+	}
+	if len(report.Tracks) != len(report.Run.TrackIDs) {
+		return fmt.Errorf("%w: report track coverage does not match the run", ErrInvalid)
+	}
+	if err := validateTrackReportMirrors(report); err != nil {
+		return err
+	}
+	return validateServerOwnedReportPresentation(report, records, sealedLevels)
+}
+
+type reportMetricEvidenceFile struct {
+	SchemaVersion string   `json:"schema_version"`
+	Metrics       []Metric `json:"metrics"`
+}
+
+type reportGateEvidenceFile struct {
+	SchemaVersion string `json:"schema_version"`
+	Gates         []Gate `json:"gates"`
+}
+
+func validateReportMetricAndGateFiles(runDir string, report Report) error {
+	var metricFile reportMetricEvidenceFile
+	if err := decodeStrictEvidence(filepath.Join(runDir, "metrics.json"), &metricFile); err != nil {
+		return err
+	}
+	var gateFile reportGateEvidenceFile
+	if err := decodeStrictEvidence(filepath.Join(runDir, "gates.json"), &gateFile); err != nil {
+		return err
+	}
+	if metricFile.SchemaVersion != SchemaVersion || gateFile.SchemaVersion != SchemaVersion ||
+		!reflect.DeepEqual(metricFile.Metrics, report.Metrics) || !reflect.DeepEqual(gateFile.Gates, report.Gates) {
+		return fmt.Errorf("%w: report metrics or gates do not match their verified evidence files", ErrInvalid)
+	}
+	return nil
+}
+
+func validateReportGateInventory(report Report) error {
 	passed, failed, unavailable := 0, 0, 0
 	dispositions := gateDispositionMatrix[report.Run.ChangeProfile]
 	requiredVerdict := GateVerdict("pass")
@@ -304,21 +331,6 @@ func validateReportMetricsAndGates(runDir string, report Report, records recordA
 	if report.Summary.Verdict != requiredVerdict {
 		return fmt.Errorf("%w: report summary verdict does not match required gates", ErrInvalid)
 	}
-	if err := validateServerOwnedGateSemantics(report, records); err != nil {
-		return err
-	}
-	if err := validatePromotionSummary(report); err != nil {
-		return err
-	}
-	if len(report.Tracks) != len(report.Run.TrackIDs) {
-		return fmt.Errorf("%w: report track coverage does not match the run", ErrInvalid)
-	}
-	if err := validateTrackReportMirrors(report); err != nil {
-		return err
-	}
-	if err := validateServerOwnedReportPresentation(report, records); err != nil {
-		return err
-	}
 	return nil
 }
 
@@ -355,9 +367,12 @@ func validateWorkerSingleRunMetricOwnership(metrics []Metric) error {
 	return nil
 }
 
-func validateServerOwnedReportPresentation(report Report, records recordAttestation) error {
+func validateServerOwnedReportPresentation(report Report, records recordAttestation, sealedLevels sealedEvidenceLevels) error {
 	if err := validateServerCoverage("report summary", report.Summary.Coverage, records.expectedSummaryCoverage()); err != nil {
 		return err
+	}
+	if report.Run.EvidenceLevel != sealedLevels.Run {
+		return fmt.Errorf("%w: run evidence level does not match server-sealed case-track evidence", ErrInvalid)
 	}
 	for _, track := range report.Tracks {
 		if err := validateServerCoverage("track "+string(track.TrackID), track.Coverage, records.expectedTrackCoverage(track.TrackID)); err != nil {
@@ -377,8 +392,8 @@ func validateServerOwnedReportPresentation(report Report, records recordAttestat
 		if track.Status != expectedStatus || track.Summary != expectedSummary || track.Error != "" {
 			return fmt.Errorf("%w: track %s presentation does not match records", ErrInvalid, track.TrackID)
 		}
-		if report.Run.EvidenceLevel == "E0" && track.EvidenceLevel != "E0" {
-			return fmt.Errorf("%w: E0 run track %s cannot claim evidence level %s", ErrInvalid, track.TrackID, track.EvidenceLevel)
+		if track.EvidenceLevel != sealedLevels.ByTrack[track.TrackID] {
+			return fmt.Errorf("%w: track %s evidence level does not match server-sealed case evidence", ErrInvalid, track.TrackID)
 		}
 	}
 	return nil
@@ -516,6 +531,9 @@ func validateReportGateEvidence(report Report, checksums map[string]string) erro
 				continue
 			}
 			if checksums[ref] == "" {
+				if gate.Verdict == "unavailable" || gate.Verdict == "not_applicable" {
+					continue
+				}
 				return fmt.Errorf("%w: gate %s references unverified artifact evidence", ErrInvalid, gate.ID)
 			}
 		}

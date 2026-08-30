@@ -1,25 +1,121 @@
 import type { Page, Route } from '@playwright/test'
 
 import type {
-  CreateEvaluationRunRequest,
+  CreateEvaluationRunPayload,
+  EvaluationCapacityLoadProtocol,
+  EvaluationCapacitySLO,
   EvaluationCatalog,
+  EvaluationCatalogCampaignSlot,
+  EvaluationCatalogMethod,
   EvaluationChangeProfileId,
-  EvaluationComparison,
-  EvaluationFailureSummary,
-  EvaluationGate,
-  EvaluationMetric,
+  EvaluationMixture,
   EvaluationMode,
-  EvaluationReport,
   EvaluationRun,
   EvaluationRunLedgerWarning,
   EvaluationTrackId,
   EvidenceLevel,
 } from '../../src/types/evaluationPlane'
-import { EVALUATION_TRACK_IDS, TRACK_PRESENTATION } from '../../src/types/evaluationPlane'
+import type {
+  CreateEvaluationCampaignPayload,
+  EvaluationCampaign,
+} from '../../src/types/evaluationCampaign'
+import type {
+  EvaluationComparison,
+  EvaluationFailureSummary,
+  EvaluationGate,
+  EvaluationMetric,
+  EvaluationReport,
+} from '../../src/types/evaluationReport'
+import type { CreateEvaluationControlledPairPayload } from '../../src/types/evaluationControlledPair'
+import {
+  EVALUATION_ATTESTATION_REVISION,
+  EVALUATION_TRACK_IDS,
+  TRACK_PRESENTATION,
+} from '../../src/types/evaluationPlane'
 import {
   gateApplicabilityForProfile,
   SUPPORTED_GATE_CONTRACT_VERSION,
 } from '../../src/components/evaluation-plane/evaluationGateContract'
+import {
+  decodeEvaluationCapacityLoadProtocol,
+  defaultEvaluationCapacityLoadProtocol,
+  equalEvaluationCapacityLoadProtocol,
+} from '../../src/utils/evaluationCapacitySLOContract'
+import { evaluationCampaignExpectedAnchors } from '../../src/utils/evaluationCampaignBindingContract'
+import { evaluationFidelityEvidence, evaluationPairedLiveEvidence } from './evaluationCampaign'
+
+export function evaluationRunID(serial: number): string {
+  if (!Number.isSafeInteger(serial) || serial < 0 || serial > 999_999_999_999) {
+    throw new Error('Evaluation test run serial is outside the canonical UUID fixture range.')
+  }
+  return `00000000-0000-4000-8000-${String(serial).padStart(12, '0')}`
+}
+
+export const EVALUATION_RUN_IDS = {
+  candidate: evaluationRunID(1),
+  baseline: evaluationRunID(2),
+  unpaired: evaluationRunID(3),
+  live: evaluationRunID(4),
+  failed: evaluationRunID(5),
+  cancelled: evaluationRunID(6),
+  olderBaseline: evaluationRunID(7),
+  olderCandidate: evaluationRunID(8),
+  secondBaseline: evaluationRunID(9),
+  secondCandidate: evaluationRunID(10),
+  campaign: evaluationRunID(11),
+  candidateLive: evaluationRunID(12),
+  baselineLive: evaluationRunID(13),
+  candidateConfirmation: evaluationRunID(14),
+  campaignG2: evaluationRunID(15),
+  campaignG4: evaluationRunID(16),
+  campaignG5Reference: evaluationRunID(17),
+  campaignG5Live: evaluationRunID(18),
+  campaignG7: evaluationRunID(19),
+} as const
+
+export const EVALUATION_MOM_ID =
+  'mom-37a8eec1ce19687d132fe29051dca629d164e2c4958ba141d5f4133a33f0688f'
+export const EVALUATION_BASELINE_MOM_TARGET_ID = `baseline--${EVALUATION_MOM_ID}`
+export const EVALUATION_MOM_TARGET_ID = `candidate--${EVALUATION_MOM_ID}`
+
+export const EVALUATION_MOM: EvaluationMixture = {
+  id: EVALUATION_MOM_ID,
+  entrypoint_model: 'test-mom',
+  aliases: ['test-mom'],
+  recipe_name: 'default',
+  recipe_description: 'Recipe-scoped Mixture-of-Models evaluation target.',
+  recipe_digest: `sha256:${'1'.repeat(64)}`,
+  pool_digest: `sha256:${'2'.repeat(64)}`,
+  selector_policy_digest: `sha256:${'4'.repeat(64)}`,
+  selector_digest: `sha256:${'5'.repeat(64)}`,
+  adaptation_digest: `sha256:${'6'.repeat(64)}`,
+  binding_digest: `sha256:${'3'.repeat(64)}`,
+  model_arms: [
+    {
+      id: 'arm-fast',
+      model: 'model-fast',
+      provider_model_id_digest: `sha256:${'4'.repeat(64)}`,
+      input_cost_per_million_tokens_usd: 0.1,
+      output_cost_per_million_tokens_usd: 0.2,
+      capabilities: ['chat'],
+      modalities: ['text'],
+      config_digest: `sha256:${'6'.repeat(64)}`,
+    },
+    {
+      id: 'arm-strong',
+      model: 'model-strong',
+      provider_model_id_digest: `sha256:${'5'.repeat(64)}`,
+      input_cost_per_million_tokens_usd: 0.4,
+      output_cost_per_million_tokens_usd: 0.8,
+      capabilities: ['chat', 'vision'],
+      modalities: ['text', 'image'],
+      config_digest: `sha256:${'7'.repeat(64)}`,
+    },
+  ],
+  support_models: [],
+  fallback_arm_id: 'arm-fast',
+  decisions: [{ name: 'route', algorithm: 'static', arm_ids: ['arm-fast', 'arm-strong'] }],
+}
 
 const trackContracts: Record<
   EvaluationTrackId,
@@ -66,7 +162,7 @@ const trackContracts: Record<
   multimodal: {
     modes: ['replay', 'live'],
     metrics: ['multimodal.support_rate', 'multimodal.quality'],
-    evidenceLevels: ['E0', 'E5'],
+    evidenceLevels: ['E0', 'E4', 'E5'],
   },
   preference: {
     modes: ['replay'],
@@ -90,6 +186,154 @@ const trackContracts: Record<
   },
 }
 
+function diagnosticMethods(
+  suiteID: string,
+  trackIDs: readonly EvaluationTrackId[],
+): EvaluationCatalogMethod[] {
+  return trackIDs.map((trackID) => ({
+    id: `${suiteID}.${trackID}.diagnostic.v1`,
+    track_id: trackID,
+    qualified_gate_ids: [],
+    evidence_source: 'diagnostic_fixture',
+    status: 'configured',
+  }))
+}
+
+const CAMPAIGN_SLOT_NAMES = {
+  G2: 'Hard policy',
+  G3: 'Controlled paired-live value',
+  G4: 'Declared-shift robustness',
+  G5: 'Live fidelity',
+  G6: 'Live fault-recovery continuity',
+  G7: 'Cost / latency / capacity',
+  G8: 'Shadow / canary',
+  G9: 'Online preference',
+} as const
+
+const CAMPAIGN_DISPOSITIONS: Record<
+  EvaluationChangeProfileId,
+  readonly EvaluationCatalogCampaignSlot['disposition'][]
+> = {
+  schema_adapter: [
+    'advisory',
+    'advisory',
+    'required',
+    'advisory',
+    'not_applicable',
+    'advisory',
+    'not_applicable',
+    'not_applicable',
+  ],
+  recipe: [
+    'required',
+    'required',
+    'required',
+    'required',
+    'not_applicable',
+    'required',
+    'advisory',
+    'not_applicable',
+  ],
+  selector: [
+    'required',
+    'required',
+    'required',
+    'required',
+    'advisory',
+    'required',
+    'required',
+    'not_applicable',
+  ],
+  model_pool: [
+    'required',
+    'required',
+    'required',
+    'required',
+    'advisory',
+    'required',
+    'required',
+    'not_applicable',
+  ],
+  runtime_capacity: [
+    'required',
+    'advisory',
+    'advisory',
+    'required',
+    'advisory',
+    'required',
+    'required',
+    'not_applicable',
+  ],
+  agent_multimodal: [
+    'required',
+    'not_applicable',
+    'required',
+    'required',
+    'required',
+    'required',
+    'required',
+    'advisory',
+  ],
+  online_adaptation: [
+    'required',
+    'required',
+    'required',
+    'required',
+    'required',
+    'required',
+    'required',
+    'required',
+  ],
+}
+
+function campaignSlots(profile: EvaluationChangeProfileId): EvaluationCatalogCampaignSlot[] {
+  return (Object.keys(CAMPAIGN_SLOT_NAMES) as Array<keyof typeof CAMPAIGN_SLOT_NAMES>).map(
+    (gateID, index) => {
+      const disposition = CAMPAIGN_DISPOSITIONS[profile][index]
+      const binding_kind =
+        gateID === 'G3' ? 'controlled_pair' : gateID === 'G5' ? 'fidelity_pair' : 'run'
+      const track_id = {
+        G2: 'safety',
+        G3: 'joint',
+        G4: 'routing',
+        G5: profile === 'agent_multimodal' ? 'multimodal' : 'joint',
+        G6: 'agentic',
+        G7: 'capacity',
+        G8: 'preference',
+        G9: 'preference',
+      }[gateID] as EvaluationTrackId
+      const minimum_evidence_level = {
+        G2: 'E3',
+        G3: 'E4',
+        G4: 'E4',
+        G5: profile === 'agent_multimodal' ? 'E4' : 'E5',
+        G6: 'E5',
+        G7: 'E5',
+        G8: 'E5',
+        G9: 'E5',
+      }[gateID] as EvidenceLevel
+      return {
+        gate_id: gateID,
+        name: CAMPAIGN_SLOT_NAMES[gateID],
+        description: `${CAMPAIGN_SLOT_NAMES[gateID]} evidence selected under the server campaign contract.`,
+        disposition,
+        binding_kind,
+        track_id,
+        mode: 'live' as const,
+        minimum_evidence_level,
+        accepted_executor_ids:
+          gateID === 'G5'
+            ? profile === 'agent_multimodal'
+              ? ['normalized-suite-live.v1']
+              : ['normalized-suite-live.v1', 'live-runtime.v1']
+            : gateID === 'G4'
+              ? ['normalized-suite-live.v1']
+              : ['live-runtime.v1'],
+      }
+    },
+  )
+}
+
 export const evaluationCatalog: EvaluationCatalog = {
   schema_version: 'evaluation.v1',
   gate_contract_version: SUPPORTED_GATE_CONTRACT_VERSION,
@@ -99,36 +343,43 @@ export const evaluationCatalog: EvaluationCatalog = {
       id: 'schema_adapter',
       name: 'Schema / adapter',
       description: 'Strict schema and adapter parity changes.',
+      campaign_slots: campaignSlots('schema_adapter'),
     },
     {
       id: 'recipe',
       name: 'Routing recipe',
       description: 'Recipe signal, decision, algorithm, and policy changes.',
+      campaign_slots: campaignSlots('recipe'),
     },
     {
       id: 'selector',
       name: 'Selector / binding',
       description: 'Selector, projection, classifier, and binding changes.',
+      campaign_slots: campaignSlots('selector'),
     },
     {
       id: 'model_pool',
       name: 'Model pool',
       description: 'Logical arm composition, capability, quality, and price changes.',
+      campaign_slots: campaignSlots('model_pool'),
     },
     {
       id: 'runtime_capacity',
       name: 'Runtime / capacity',
       description: 'Serving runtime, placement, capacity, and transport changes.',
+      campaign_slots: campaignSlots('runtime_capacity'),
     },
     {
       id: 'agent_multimodal',
       name: 'Agent / multimodal',
       description: 'Agent trajectory, tool, state, and multimodal changes.',
+      campaign_slots: campaignSlots('agent_multimodal'),
     },
     {
       id: 'online_adaptation',
       name: 'Online adaptation',
       description: 'Online assignment, preference, feedback, and adaptive policy changes.',
+      campaign_slots: campaignSlots('online_adaptation'),
     },
   ],
   tracks: EVALUATION_TRACK_IDS.map((id) => ({
@@ -142,58 +393,180 @@ export const evaluationCatalog: EvaluationCatalog = {
   suites: [
     {
       id: 'evaluation-smoke',
+      executors: { replay: 'fixture-replay.v1' },
       name: 'Evaluation harness smoke',
       description: 'Deterministic plumbing evidence; it is not a live model-quality claim.',
       track_ids: [...EVALUATION_TRACK_IDS],
       modes: ['replay'],
       evidence_level: 'E0',
       case_count: 4,
+      campaign_eligible: false,
+      campaign_minimum_cases: 0,
       revision: 'builtin-v1',
+      tags: ['smoke', 'deterministic'],
+      methods: diagnosticMethods('evaluation-smoke', EVALUATION_TRACK_IDS),
     },
     {
-      id: 'live-routing-core',
-      name: 'Live routing core',
-      description: 'Diagnostic routing smoke using bounded live probes; no promotion claim.',
-      track_ids: ['routing'],
-      modes: ['live'],
-      evidence_level: 'E0',
-      revision: 'executor-v1',
-    },
-    {
-      id: 'live-model-pool',
-      name: 'Live model pool',
-      description: 'Requires an attested direct-arm target unavailable on the generic runtime.',
-      track_ids: ['model_pool'],
-      modes: ['live'],
-      evidence_level: 'E0',
-      revision: 'executor-v1',
-    },
-    {
-      id: 'live-joint',
-      name: 'Live routing + pool',
-      description: 'Requires attested route correlation and direct-arm execution.',
+      id: 'live-mom-core',
+      executors: { replay: 'mom-cohort-replay.v1', live: 'live-runtime.v1' },
+      name: 'Live Mixture-of-Models core',
+      description:
+        'One hidden-label cohort for Recipe routing, dense per-arm outcomes, and routed end-to-end utility.',
       track_ids: ['routing', 'model_pool', 'joint'],
-      modes: ['live'],
+      modes: ['replay', 'live'],
       evidence_level: 'E0',
-      revision: 'executor-v1',
+      case_count: 64,
+      campaign_eligible: true,
+      campaign_minimum_cases: 59,
+      revision: 'mom-campaign-cohort-v1',
+      tags: ['campaign', 'mom', 'hidden-label', 'paired-live'],
+      methods: [
+        {
+          id: 'routing.live-diagnostic.v1',
+          track_id: 'routing',
+          qualified_gate_ids: [],
+          evidence_source: 'live_runtime',
+          status: 'configured',
+        },
+        {
+          id: 'model-pool.live-dense.v1',
+          track_id: 'model_pool',
+          qualified_gate_ids: [],
+          evidence_source: 'live_runtime',
+          status: 'configured',
+        },
+        {
+          id: 'joint.live-routed-outcome.v1',
+          track_id: 'joint',
+          qualified_gate_ids: [],
+          evidence_source: 'live_runtime',
+          status: 'configured',
+        },
+      ],
     },
     {
       id: 'live-multimodal',
+      executors: { live: 'live-runtime.v1' },
       name: 'Live multimodal',
       description: 'Diagnostic single-probe multimodal smoke; no grounding or privacy claim.',
       track_ids: ['multimodal'],
       modes: ['live'],
       evidence_level: 'E0',
+      campaign_eligible: false,
+      campaign_minimum_cases: 0,
       revision: 'executor-v1',
+      tags: [],
+      methods: [
+        {
+          id: 'live-multimodal.multimodal.live.v1',
+          track_id: 'multimodal',
+          qualified_gate_ids: [],
+          evidence_source: 'live_runtime',
+          status: 'configured',
+        },
+      ],
+    },
+    {
+      id: 'normalized-promotion-cohort',
+      executors: {
+        replay: 'normalized-suite-replay.v1',
+        live: 'normalized-suite-live.v1',
+      },
+      name: 'Normalized promotion cohort',
+      description: 'Server-declared declared-shift and reference-to-live collection capability.',
+      track_ids: ['routing', 'joint'],
+      modes: ['replay', 'live'],
+      evidence_level: 'E0',
+      campaign_eligible: false,
+      campaign_minimum_cases: 0,
+      revision: 'normalized-promotion.v1',
+      tags: ['normalized'],
+      methods: [
+        {
+          id: 'normalized-promotion.routing.live.v1',
+          track_id: 'routing',
+          qualified_gate_ids: ['G4'],
+          evidence_source: 'server_brokered_live',
+          status: 'configured',
+        },
+        {
+          id: 'normalized-promotion.joint.v1',
+          track_id: 'joint',
+          qualified_gate_ids: [],
+          evidence_source: 'normalized_import',
+          status: 'configured',
+        },
+      ],
     },
     {
       id: 'live-capacity',
+      executors: { live: 'live-runtime.v1' },
       name: 'Live capacity',
-      description: 'Diagnostic bounded concurrency smoke without repeats or a declared SLO.',
+      description: 'Repeated closed-loop capacity envelope against a frozen service objective.',
       track_ids: ['capacity'],
       modes: ['live'],
-      evidence_level: 'E0',
+      evidence_level: 'E5',
+      campaign_eligible: false,
+      campaign_minimum_cases: 0,
       revision: 'executor-v1',
+      tags: [],
+      methods: [
+        {
+          id: 'capacity.slo-envelope.v1',
+          track_id: 'capacity',
+          qualified_gate_ids: ['G7'],
+          evidence_source: 'live_runtime',
+          status: 'configured',
+        },
+      ],
+    },
+    {
+      id: 'live-hard-policy',
+      executors: { live: 'live-runtime.v1' },
+      name: 'Live hard-policy enforcement',
+      description: 'Requires server-owned policy configuration and enforcement observations.',
+      track_ids: ['safety'],
+      modes: ['live'],
+      evidence_level: 'E5',
+      campaign_eligible: false,
+      campaign_minimum_cases: 0,
+      revision: 'executor-v1',
+      tags: ['policy-ledger'],
+      methods: [
+        {
+          id: 'safety.hard-policy-enforcement.v1',
+          track_id: 'safety',
+          qualified_gate_ids: ['G2'],
+          evidence_source: 'live_runtime',
+          status: 'data_required',
+          reason:
+            'Configure a server-owned hard-policy ledger endpoint with static rule proofs and dynamic enforcement observations.',
+        },
+      ],
+    },
+    {
+      id: 'live-production-experiment',
+      executors: { live: 'live-runtime.v1' },
+      name: 'Live production experiment',
+      description: 'Requires a sealed randomized production assignment and exposure ledger.',
+      track_ids: ['preference'],
+      modes: ['live'],
+      evidence_level: 'E5',
+      campaign_eligible: false,
+      campaign_minimum_cases: 0,
+      revision: 'executor-v1',
+      tags: ['production-ledger'],
+      methods: [
+        {
+          id: 'preference.online-policy-evaluation.v1',
+          track_id: 'preference',
+          qualified_gate_ids: ['G8', 'G9'],
+          evidence_source: 'live_production',
+          status: 'data_required',
+          reason:
+            'Configure a sealed production experiment ledger with policy arms, assignments, exposures, outcomes, and propensities.',
+        },
+      ],
     },
   ],
   targets: [
@@ -204,19 +577,68 @@ export const evaluationCatalog: EvaluationCatalog = {
       kind: 'builtin-fixture',
       track_ids: [...EVALUATION_TRACK_IDS],
       modes: ['replay'],
+      accepted_executors: { replay: ['fixture-replay.v1'] },
       evidence_level: 'E0',
       healthy: true,
     },
     {
-      id: 'runtime',
-      name: 'Active vLLM-SR runtime',
-      description: 'Server-managed endpoints; the catalog advertises only qualified capabilities.',
-      kind: 'runtime',
-      track_ids: ['routing', 'multimodal', 'capacity'],
-      modes: ['live'],
+      id: EVALUATION_BASELINE_MOM_TARGET_ID,
+      name: 'test-mom · Baseline',
+      description: 'Recipe-scoped Mixture-of-Models evaluation target.',
+      kind: 'mixture-of-models',
+      track_ids: [
+        'routing',
+        'model_pool',
+        'joint',
+        'agentic',
+        'multimodal',
+        'preference',
+        'safety',
+        'capacity',
+      ],
+      modes: ['replay', 'live'],
+      accepted_executors: {
+        replay: ['mom-cohort-replay.v1', 'normalized-suite-replay.v1'],
+        live: ['live-runtime.v1', 'normalized-suite-live.v1'],
+      },
       healthy: true,
+      labels: { deployment: 'Baseline' },
+      mixture: EVALUATION_MOM,
+    },
+    {
+      id: EVALUATION_MOM_TARGET_ID,
+      name: 'test-mom · Candidate',
+      description: 'Recipe-scoped Mixture-of-Models evaluation target.',
+      kind: 'mixture-of-models',
+      track_ids: [
+        'routing',
+        'model_pool',
+        'joint',
+        'agentic',
+        'multimodal',
+        'preference',
+        'safety',
+        'capacity',
+      ],
+      modes: ['replay', 'live'],
+      accepted_executors: {
+        replay: ['mom-cohort-replay.v1', 'normalized-suite-replay.v1'],
+        live: ['live-runtime.v1', 'normalized-suite-live.v1'],
+      },
+      healthy: true,
+      labels: { deployment: 'Candidate' },
+      mixture: EVALUATION_MOM,
     },
   ],
+}
+
+const DEFAULT_CAPACITY_SLO: EvaluationCapacitySLO = {
+  schema_version: 'evaluation.v1',
+  required_concurrency: 4,
+  max_latency_p95_ms: 750,
+  max_error_rate: 0.02,
+  min_throughput_rps: 10,
+  min_throughput_scaling_efficiency: 0.7,
 }
 
 export function evaluationRun(
@@ -227,39 +649,43 @@ export function evaluationRun(
   changeProfile: EvaluationChangeProfileId = 'recipe',
   overrides: Partial<EvaluationRun> = {},
 ): EvaluationRun {
-  const mode = overrides.mode || (status === 'running' ? 'live' : 'replay')
+  const active = status === 'running' || status === 'sealing'
+  const mode = overrides.mode || (active ? 'live' : 'replay')
   const live = mode === 'live'
   const trackIDs: EvaluationTrackId[] = live
     ? ['routing', 'multimodal', 'capacity']
     : [...EVALUATION_TRACK_IDS]
   const suiteIDs = live
-    ? ['live-routing-core', 'live-multimodal', 'live-capacity']
+    ? ['live-mom-core', 'live-multimodal', 'live-capacity']
     : ['evaluation-smoke']
   const terminal = ['completed', 'failed', 'cancelled'].includes(status)
   const progress = {
-    percent: status === 'completed' ? 100 : status === 'running' ? 45 : terminal ? 55 : 0,
-    completed: status === 'completed' ? trackIDs.length : status === 'running' || terminal ? 3 : 0,
+    percent: status === 'completed' ? 100 : active ? 45 : terminal ? 55 : 0,
+    completed: status === 'completed' ? trackIDs.length : active || terminal ? 3 : 0,
     total: trackIDs.length,
     message:
       status === 'running'
         ? 'Executing capacity track'
-        : status === 'failed'
-          ? 'Worker exited before report publication'
-          : status === 'cancelled'
-            ? 'Execution cancelled'
-            : status === 'completed'
-              ? 'Evidence complete'
-              : 'Awaiting execution',
+        : status === 'sealing'
+          ? 'Sealing evaluation evidence'
+          : status === 'failed'
+            ? 'Worker exited before report publication'
+            : status === 'cancelled'
+              ? 'Execution cancelled'
+              : status === 'completed'
+                ? 'Evidence complete'
+                : 'Awaiting execution',
   }
   const run: EvaluationRun = {
     schema_version: 'evaluation.v1',
     id,
+    client_request_id: id,
     name,
     description: `${name} description`,
     status,
     mode,
     evidence_level: 'E0',
-    target_id: live ? 'runtime' : 'fixture',
+    target_id: live ? EVALUATION_MOM_TARGET_ID : 'fixture',
     change_profile: changeProfile,
     suite_ids: suiteIDs,
     track_ids: trackIDs,
@@ -271,36 +697,70 @@ export function evaluationRun(
     started_at: status === 'pending' ? undefined : createdAt,
     completed_at: terminal ? '2026-08-29T00:10:00Z' : undefined,
     error: status === 'failed' ? 'Evaluation worker exited before a report was sealed.' : undefined,
+    mixture: live ? EVALUATION_MOM : undefined,
   }
-  return {
+  const merged = {
     ...run,
     ...overrides,
+    client_request_id: overrides.id || id,
     progress: { ...progress, ...overrides.progress },
+  }
+  const trackEvidenceLevels =
+    overrides.track_evidence_levels ||
+    Object.fromEntries(merged.track_ids.map((trackID) => [trackID, merged.evidence_level]))
+  const capacitySLORequired = merged.mode === 'live' && merged.track_ids.includes('capacity')
+  const capacityLoadProtocol = capacitySLORequired
+    ? overrides.capacity_load_protocol || defaultEvaluationCapacityLoadProtocol(merged.concurrency)
+    : undefined
+  return {
+    ...merged,
+    track_evidence_levels: trackEvidenceLevels,
+    ...(capacitySLORequired
+      ? {
+          capacity_slo: overrides.capacity_slo || DEFAULT_CAPACITY_SLO,
+          capacity_load_protocol: capacityLoadProtocol,
+        }
+      : { capacity_slo: undefined, capacity_load_protocol: undefined }),
   }
 }
 
 export const defaultEvaluationRuns = [
   evaluationRun(
-    'candidate-run',
+    EVALUATION_RUN_IDS.candidate,
     'Candidate recipe',
     'completed',
     '2026-08-29T00:00:00Z',
     'recipe',
     {
-      baseline_run_id: 'baseline-run',
+      baseline_run_id: EVALUATION_RUN_IDS.baseline,
     },
   ),
-  evaluationRun('baseline-run', 'Production baseline', 'completed', '2026-08-28T00:00:00Z'),
-  evaluationRun('unpaired-run', 'Unpaired diagnostic', 'completed', '2026-08-27T12:00:00Z'),
   evaluationRun(
-    'live-run',
+    EVALUATION_RUN_IDS.baseline,
+    'Production baseline',
+    'completed',
+    '2026-08-28T00:00:00Z',
+  ),
+  evaluationRun(
+    EVALUATION_RUN_IDS.unpaired,
+    'Unpaired diagnostic',
+    'completed',
+    '2026-08-27T12:00:00Z',
+  ),
+  evaluationRun(
+    EVALUATION_RUN_IDS.live,
     'Live AMD validation',
     'running',
     '2026-08-27T00:00:00Z',
     'runtime_capacity',
   ),
-  evaluationRun('failed-run', 'Failed diagnostic', 'failed', '2026-08-26T00:00:00Z'),
-  evaluationRun('cancelled-run', 'Cancelled diagnostic', 'cancelled', '2026-08-25T00:00:00Z'),
+  evaluationRun(EVALUATION_RUN_IDS.failed, 'Failed diagnostic', 'failed', '2026-08-26T00:00:00Z'),
+  evaluationRun(
+    EVALUATION_RUN_IDS.cancelled,
+    'Cancelled diagnostic',
+    'cancelled',
+    '2026-08-25T00:00:00Z',
+  ),
 ]
 
 const gateTrackIDs: Partial<Record<`G${number}`, EvaluationGate['track_id']>> = {
@@ -484,7 +944,7 @@ export function evaluationReport(run = defaultEvaluationRuns[0]): EvaluationRepo
   const digest = 'sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
   return {
     schema_version: 'evaluation.v1',
-    attestation_revision: 'evaluation-server-attestation.v2',
+    attestation_revision: EVALUATION_ATTESTATION_REVISION,
     run,
     summary: {
       verdict: gates.some(
@@ -599,9 +1059,9 @@ export function evaluationReport(run = defaultEvaluationRuns[0]): EvaluationRepo
 
 export const evaluationComparison: EvaluationComparison = {
   schema_version: 'evaluation.v1',
-  attestation_revision: 'evaluation-server-attestation.v2',
-  baseline_run_id: 'baseline-run',
-  candidate_run_id: 'candidate-run',
+  attestation_revision: EVALUATION_ATTESTATION_REVISION,
+  baseline_run_id: EVALUATION_RUN_IDS.baseline,
+  candidate_run_id: EVALUATION_RUN_IDS.candidate,
   verdict: 'unavailable',
   summary: 'Diagnostic deltas are favorable, but E0 evidence cannot support promotion.',
   metrics: [
@@ -628,21 +1088,172 @@ export const evaluationComparison: EvaluationComparison = {
       sample_count: 4,
     },
   ],
-  gates: evaluationReport().gates.filter((gate) => gate.id === 'G4'),
+  statistics: [
+    {
+      id: 'joint.normalized_regret',
+      track_id: 'joint',
+      analysis_unit: 'case_normalized_regret',
+      direction: 'lower_is_better',
+      non_inferiority_margin: 0.05,
+      baseline_value: 0.12,
+      candidate_value: 0.1,
+      delta: -0.02,
+      confidence_level: 0.95,
+      delta_confidence_interval: [],
+      candidate_confidence_interval: [],
+      sample_count: 4,
+      verdict: 'unavailable',
+    },
+  ],
+  gates: evaluationReport().gates.map((gate) =>
+    gate.id === 'G3'
+      ? {
+          ...gate,
+          verdict: 'unavailable',
+          evidence_refs: [
+            'server-reduction:comparative-g3.v1',
+            `run:baseline:${EVALUATION_RUN_IDS.baseline}`,
+            `run:candidate:${EVALUATION_RUN_IDS.candidate}`,
+            'comparison-statistic:joint.normalized_regret',
+          ],
+          evidence_level: 'E4',
+          observed: undefined,
+          threshold: undefined,
+          sample_count: 4,
+          owner: 'recipe-and-model-pool',
+          rationale: 'The paired sample is below the minimum analysis-unit requirement.',
+        }
+      : gate,
+  ),
   recommendations: ['Collect qualified robustness evidence before a guarded live trial.'],
+  created_at: '2026-08-29T00:10:00Z',
+}
+
+function evaluationCampaign(request: CreateEvaluationCampaignPayload): EvaluationCampaign {
+  const campaignDigest = `sha256:${'c'.repeat(64)}`
+  const evidence = evaluationCampaignExpectedAnchors(request.gate_bindings).map((anchor, index) => {
+    const digit = ((index + 1) % 15).toString(16)
+    return {
+      ...anchor,
+      ...(anchor.slot_id === 'g3' && anchor.binding_role === 'baseline'
+        ? {}
+        : { candidate_subject_digest: `sha256:${'e'.repeat(64)}` }),
+      manifest_semantic_digest: `sha256:${digit.repeat(64)}`,
+      manifest_artifact_digest: `sha256:${((index + 2) % 15).toString(16).repeat(64)}`,
+      report_digest: `sha256:${((index + 4) % 15).toString(16).repeat(64)}`,
+      private_receipt_digest: `sha256:${((index + 7) % 15).toString(16).repeat(64)}`,
+      execution_attestation_digest: `sha256:${((index + 10) % 15).toString(16).repeat(64)}`,
+    }
+  })
+  const baselineLive = evidence.find(
+    (anchor) => anchor.slot_id === 'g3' && anchor.binding_role === 'baseline',
+  )
+  const candidateLive = evidence.find(
+    (anchor) => anchor.slot_id === 'g3' && anchor.binding_role === 'candidate',
+  )
+  const fidelityReference = evidence.find(
+    (anchor) => anchor.slot_id === 'g5' && anchor.binding_role === 'reference',
+  )
+  const fidelityLive = evidence.find(
+    (anchor) => anchor.slot_id === 'g5' && anchor.binding_role === 'live',
+  )
+  const profile = evaluationCatalog.change_profiles.find(
+    (candidate) => candidate.id === request.change_profile,
+  )!
+  const gateDefinitions = [
+    { id: 'G0', name: 'Reproducibility', disposition: 'required' as const },
+    { id: 'G1', name: 'Static correctness', disposition: 'required' as const },
+    ...profile.campaign_slots.map((slot) => ({
+      id: slot.gate_id,
+      name: slot.name,
+      disposition: slot.disposition,
+    })),
+  ]
+  const gates = gateDefinitions.map((gate) => {
+    const disposition = gate.disposition
+    if (disposition === 'not_applicable') {
+      return {
+        id: gate.id,
+        name: gate.name,
+        disposition,
+        verdict: 'not_applicable' as const,
+        evidence_level: 'E5' as const,
+        source: 'campaign_contract',
+        evidence_refs: [],
+        rationale: 'The gate is not applicable to this change profile.',
+      }
+    }
+    return {
+      id: gate.id,
+      name: gate.name,
+      disposition,
+      verdict: 'pass' as const,
+      evidence_level: 'E5' as const,
+      source: gate.id === 'G0' || gate.id === 'G1' ? 'server_anchors' : 'gate_binding',
+      evidence_refs: [],
+      rationale: `${gate.name} is supported by sealed campaign evidence.`,
+    }
+  })
+  const requiredGates = gates.filter((gate) => gate.disposition === 'required')
+  const verdict = requiredGates.some((gate) => gate.verdict === 'fail')
+    ? ('fail' as const)
+    : requiredGates.every((gate) => gate.verdict === 'pass')
+      ? ('pass' as const)
+      : ('unavailable' as const)
+  return {
+    schema_version: 'evaluation.v1',
+    contract_version: 'evaluation-campaign.v2',
+    id: request.client_request_id,
+    name: request.name,
+    description: request.description,
+    change_profile: request.change_profile,
+    status: 'decided',
+    gate_bindings: request.gate_bindings,
+    manifest_digest: campaignDigest,
+    created_at: '2026-08-30T02:00:00Z',
+    decision: {
+      schema_version: 'evaluation.v1',
+      contract_version: 'evaluation-campaign.v2',
+      attestation_revision: EVALUATION_ATTESTATION_REVISION,
+      campaign_id: request.client_request_id,
+      campaign_digest: campaignDigest,
+      decision_digest: `sha256:${'d'.repeat(64)}`,
+      verdict,
+      summary:
+        verdict === 'pass'
+          ? 'All required promotion campaign gates passed.'
+          : 'One or more required promotion campaign gates remain unavailable.',
+      gates,
+      evidence,
+      ...(baselineLive && candidateLive
+        ? {
+            paired_live_evidence: evaluationPairedLiveEvidence(baselineLive, candidateLive),
+          }
+        : {}),
+      ...(fidelityReference && fidelityLive
+        ? { fidelity_evidence: evaluationFidelityEvidence(fidelityReference, fidelityLive) }
+        : {}),
+      recommendations: ['Advance through the guarded rollout defined for this change profile.'],
+      created_at: '2026-08-30T02:00:00Z',
+    },
+  }
 }
 
 interface MockEvaluationPlaneOptions {
   mutationDelayMs?: number
+  campaignGetDelayMs?: number
   catalogDelayMs?: number
   ledgerDelayMs?: number
+  runPageSize?: number
   reportDelayMs?: number
-  reportDelayByID?: Record<string, number>
   reportMetricCount?: number
   ledgerWarnings?: EvaluationRunLedgerWarning[]
-  legacyReportRunIdentity?: boolean
-  unattestedPromotionClaim?: boolean
+  ledgerWarningCount?: number
+  failFirstLoadMore?: boolean
+  failFirstCancel?: boolean
+  failFirstControlledPair?: boolean
   eventStreamCloseOnce?: boolean
+  completeRunOnEventStream?: string
   reportFailureIDs?: string[]
   reportFailureStatus?: number
   diagnosticArtifactBodies?: {
@@ -658,6 +1269,34 @@ function sameMembers(left: readonly string[], right: readonly string[]): boolean
   return sortedLeft.every((value, index) => value === sortedRight[index])
 }
 
+function equalCapacitySLO(
+  left: EvaluationCapacitySLO | undefined,
+  right: EvaluationCapacitySLO | undefined,
+): boolean {
+  if (!left || !right) return left === right
+  return (
+    left.schema_version === right.schema_version &&
+    left.required_concurrency === right.required_concurrency &&
+    left.max_latency_p95_ms === right.max_latency_p95_ms &&
+    left.max_error_rate === right.max_error_rate &&
+    left.min_throughput_rps === right.min_throughput_rps &&
+    left.min_throughput_scaling_efficiency === right.min_throughput_scaling_efficiency
+  )
+}
+
+function validCapacityLoadProtocol(
+  value: EvaluationCapacityLoadProtocol | undefined,
+  concurrency: number,
+): boolean {
+  if (!value) return false
+  try {
+    decodeEvaluationCapacityLoadProtocol(value, concurrency)
+    return true
+  } catch {
+    return false
+  }
+}
+
 function exactCohortMatches(left: EvaluationRun, right: EvaluationRun): boolean {
   return (
     left.mode === right.mode &&
@@ -665,13 +1304,38 @@ function exactCohortMatches(left: EvaluationRun, right: EvaluationRun): boolean 
     left.change_profile === right.change_profile &&
     left.sample_limit === right.sample_limit &&
     left.concurrency === right.concurrency &&
+    equalCapacitySLO(left.capacity_slo, right.capacity_slo) &&
+    equalEvaluationCapacityLoadProtocol(
+      left.capacity_load_protocol,
+      right.capacity_load_protocol,
+    ) &&
     left.seed === right.seed &&
     sameMembers(left.suite_ids, right.suite_ids) &&
     sameMembers(left.track_ids, right.track_ids)
   )
 }
 
-function createRequestMatchesRun(request: CreateEvaluationRunRequest, run: EvaluationRun): boolean {
+function controlledPairCohortMatches(left: EvaluationRun, right: EvaluationRun): boolean {
+  return (
+    left.target_id !== right.target_id &&
+    left.mixture?.id === right.mixture?.id &&
+    left.mixture?.recipe_name === right.mixture?.recipe_name &&
+    left.mode === right.mode &&
+    left.change_profile === right.change_profile &&
+    left.sample_limit === right.sample_limit &&
+    left.concurrency === right.concurrency &&
+    equalCapacitySLO(left.capacity_slo, right.capacity_slo) &&
+    equalEvaluationCapacityLoadProtocol(
+      left.capacity_load_protocol,
+      right.capacity_load_protocol,
+    ) &&
+    left.seed === right.seed &&
+    sameMembers(left.suite_ids, right.suite_ids) &&
+    sameMembers(left.track_ids, right.track_ids)
+  )
+}
+
+function createRequestMatchesRun(request: CreateEvaluationRunPayload, run: EvaluationRun): boolean {
   return (
     request.name.trim() === run.name &&
     request.description.trim() === run.description &&
@@ -680,6 +1344,11 @@ function createRequestMatchesRun(request: CreateEvaluationRunRequest, run: Evalu
     request.change_profile === run.change_profile &&
     request.sample_limit === run.sample_limit &&
     request.concurrency === run.concurrency &&
+    equalCapacitySLO(request.capacity_slo, run.capacity_slo) &&
+    equalEvaluationCapacityLoadProtocol(
+      request.capacity_load_protocol,
+      run.capacity_load_protocol,
+    ) &&
     request.seed === run.seed &&
     (request.baseline_run_id || '') === (run.baseline_run_id || '') &&
     sameMembers(request.suite_ids, run.suite_ids) &&
@@ -720,15 +1389,27 @@ export async function mockEvaluationPlane(
   options: MockEvaluationPlaneOptions = {},
 ) {
   let runs = [...initialRuns]
-  const createAttempts: CreateEvaluationRunRequest[] = []
-  const createdRequests: CreateEvaluationRunRequest[] = []
+  const createAttempts: CreateEvaluationRunPayload[] = []
+  const createdRequests: CreateEvaluationRunPayload[] = []
   const reportRequests: string[] = []
   const comparisonRequests: Array<{ baselineRunID: string; candidateRunID: string }> = []
+  const campaignRequests: CreateEvaluationCampaignPayload[] = []
+  const controlledPairRequests: CreateEvaluationControlledPairPayload[] = []
+  const campaignGetRequests: string[] = []
+  const campaigns = new Map<string, EvaluationCampaign>()
+  const runRequests: string[] = []
   let cancelCount = 0
   let deleteCount = 0
   let startCount = 0
   let eventStreamCount = 0
+  let rejectCampaignGets = false
   const ledgerWarnings = options.ledgerWarnings || []
+  const ledgerWarningCount = options.ledgerWarningCount ?? ledgerWarnings.length
+  let firstLoadMorePending = options.failFirstLoadMore === true
+  let firstCancelPending = options.failFirstCancel === true
+  let firstControlledPairPending = options.failFirstControlledPair === true
+  const controlledPairRunIDs = new Set<string>()
+  let ledgerRequestCount = 0
   const mutationDelay = () =>
     new Promise<void>((resolve) => setTimeout(resolve, options.mutationDelayMs || 0))
 
@@ -736,21 +1417,239 @@ export async function mockEvaluationPlane(
     await new Promise<void>((resolve) => setTimeout(resolve, options.catalogDelayMs || 0))
     await fulfillJSON(route, 200, evaluationCatalog)
   })
-  await page.route('**/api/evaluation/v1/run-ledger', async (route) => {
-    if (route.request().method() !== 'GET') {
+  await page.route('**/api/evaluation/v1/controlled-pairs', async (route) => {
+    if (route.request().method() !== 'POST') {
       await fulfillError(route, 405, 'method not allowed')
       return
     }
-    await new Promise<void>((resolve) => setTimeout(resolve, options.ledgerDelayMs || 0))
-    await fulfillJSON(route, 200, {
+    const raw = route.request().postDataJSON() as Record<string, unknown>
+    const request = raw as unknown as CreateEvaluationControlledPairPayload
+    controlledPairRequests.push(request)
+    const allowed = [
+      'client_request_id',
+      'baseline_source_run_id',
+      'candidate_source_run_id',
+      'baseline_run_id',
+      'candidate_run_id',
+    ]
+    const ids = allowed.map((field) => raw[field])
+    const canonical = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+    const baselineSource = runs.find((run) => run.id === request.baseline_source_run_id)
+    const candidateSource = runs.find((run) => run.id === request.candidate_source_run_id)
+    if (
+      Object.keys(raw).length !== allowed.length ||
+      Object.keys(raw).some((field) => !allowed.includes(field)) ||
+      ids.some((id) => typeof id !== 'string' || !canonical.test(id)) ||
+      new Set(ids).size !== ids.length ||
+      !baselineSource ||
+      !candidateSource ||
+      baselineSource.status !== 'completed' ||
+      candidateSource.status !== 'completed' ||
+      baselineSource.mode !== 'live' ||
+      candidateSource.mode !== 'live' ||
+      !controlledPairCohortMatches(baselineSource, candidateSource)
+    ) {
+      await fulfillError(
+        route,
+        400,
+        'invalid evaluation request: controlled pair contract rejected',
+      )
+      return
+    }
+    if (firstControlledPairPending) {
+      firstControlledPairPending = false
+      await fulfillError(
+        route,
+        409,
+        'controlled pairing is unavailable because two worker slots are required',
+      )
+      return
+    }
+    const controlledProgress = {
+      percent: 35,
+      completed: Math.max(1, Math.floor(baselineSource.track_ids.length / 2)),
+      total: baselineSource.track_ids.length,
+      message: 'AB/BA block admitted by server coordinator',
+    }
+    const baselineRun: EvaluationRun = {
+      ...baselineSource,
+      id: request.baseline_run_id,
+      client_request_id: request.baseline_run_id,
+      name: 'Controlled baseline AB/BA',
+      description: 'Server-owned abba-interleaved.v1 execution',
+      status: 'running',
+      baseline_run_id: undefined,
+      progress: controlledProgress,
+      created_at: '2026-08-31T01:00:00Z',
+      started_at: '2026-08-31T01:00:01Z',
+      completed_at: undefined,
+    }
+    const candidateRun: EvaluationRun = {
+      ...candidateSource,
+      id: request.candidate_run_id,
+      client_request_id: request.candidate_run_id,
+      name: 'Controlled candidate AB/BA',
+      description: 'Server-owned abba-interleaved.v1 execution',
+      status: 'running',
+      baseline_run_id: baselineRun.id,
+      progress: controlledProgress,
+      created_at: '2026-08-31T01:00:00Z',
+      started_at: '2026-08-31T01:00:01Z',
+      completed_at: undefined,
+    }
+    controlledPairRunIDs.add(baselineRun.id)
+    controlledPairRunIDs.add(candidateRun.id)
+    runs = [candidateRun, baselineRun, ...runs]
+    await fulfillJSON(route, 201, {
       schema_version: 'evaluation.v1',
-      runs,
-      ledger_complete: ledgerWarnings.length === 0,
-      warnings: ledgerWarnings,
+      contract_version: 'evaluation-controlled-pair.v1',
+      id: request.client_request_id,
+      protocol: 'abba-interleaved.v1',
+      baseline_source_run_id: request.baseline_source_run_id,
+      candidate_source_run_id: request.candidate_source_run_id,
+      baseline_run: baselineRun,
+      candidate_run: candidateRun,
     })
   })
+  await page.route(
+    /\/api\/evaluation\/v1\/campaigns(?:\/[^/?]+(?:\/decision)?)?(?:\?.*)?$/,
+    async (route) => {
+      const url = new URL(route.request().url())
+      const parts = url.pathname.split('/').filter(Boolean)
+      const campaignIndex = parts.indexOf('campaigns')
+      const id = campaignIndex >= 0 ? decodeURIComponent(parts[campaignIndex + 1] || '') : ''
+      if (route.request().method() === 'GET') {
+        campaignGetRequests.push(id)
+        const shouldFail = rejectCampaignGets
+        await new Promise<void>((resolve) => setTimeout(resolve, options.campaignGetDelayMs || 0))
+        if (shouldFail) {
+          await fulfillError(route, 503, 'temporary campaign read failure')
+          return
+        }
+        const campaign = campaigns.get(id)
+        if (!campaign) {
+          await fulfillError(route, 404, 'not found: evaluation campaign')
+          return
+        }
+        await fulfillJSON(
+          route,
+          200,
+          parts[campaignIndex + 2] === 'decision' ? campaign.decision : campaign,
+        )
+        return
+      }
+      if (route.request().method() !== 'POST' || id) {
+        await fulfillError(route, 405, 'method not allowed')
+        return
+      }
+      const raw = route.request().postDataJSON() as Record<string, unknown>
+      const request = raw as unknown as CreateEvaluationCampaignPayload
+      campaignRequests.push(request)
+      const allowed = new Set([
+        'client_request_id',
+        'name',
+        'description',
+        'change_profile',
+        'gate_bindings',
+      ])
+      const profile = evaluationCatalog.change_profiles.find(
+        (candidate) => candidate.id === request.change_profile,
+      )
+      const bindings = request.gate_bindings
+      const bindingIDs = {
+        G2: bindings?.g2_run_id ? [bindings.g2_run_id] : [],
+        G3: bindings?.g3_controlled_pair
+          ? [
+              bindings.g3_controlled_pair.baseline_run_id,
+              bindings.g3_controlled_pair.candidate_run_id,
+            ]
+          : [],
+        G4: bindings?.g4_run_id ? [bindings.g4_run_id] : [],
+        G5: bindings?.g5_fidelity
+          ? [bindings.g5_fidelity.reference_run_id, bindings.g5_fidelity.live_run_id]
+          : [],
+        G6: bindings?.g6_run_id ? [bindings.g6_run_id] : [],
+        G7: bindings?.g7_run_id ? [bindings.g7_run_id] : [],
+        G8: bindings?.g8_run_id ? [bindings.g8_run_id] : [],
+        G9: bindings?.g9_run_id ? [bindings.g9_run_id] : [],
+      }
+      const selectedIDs = Object.values(bindingIDs).flat()
+      const selectedRuns = selectedIDs.map((runID) => runs.find((run) => run.id === runID))
+      const baselineLive = bindings?.g3_controlled_pair
+        ? runs.find((run) => run.id === bindings.g3_controlled_pair?.baseline_run_id)
+        : undefined
+      const candidateLive = bindings?.g3_controlled_pair
+        ? runs.find((run) => run.id === bindings.g3_controlled_pair?.candidate_run_id)
+        : undefined
+      const fidelityReference = bindings?.g5_fidelity
+        ? runs.find((run) => run.id === bindings.g5_fidelity?.reference_run_id)
+        : undefined
+      const fidelityLive = bindings?.g5_fidelity
+        ? runs.find((run) => run.id === bindings.g5_fidelity?.live_run_id)
+        : undefined
+      const invalid =
+        Object.keys(raw).some((key) => !allowed.has(key)) ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(
+          request.client_request_id || '',
+        ) ||
+        !request.name ||
+        request.name.trim() !== request.name ||
+        request.description.trim() !== request.description ||
+        !profile ||
+        !bindings ||
+        profile?.campaign_slots.some(
+          (slot) => slot.disposition === 'required' && bindingIDs[slot.gate_id].length === 0,
+        ) ||
+        selectedRuns.some(
+          (run) =>
+            !run || run.status !== 'completed' || run.change_profile !== request.change_profile,
+        ) ||
+        new Set(selectedIDs).size !== selectedIDs.length ||
+        (bindings?.g3_controlled_pair !== undefined &&
+          (!baselineLive ||
+            !candidateLive ||
+            baselineLive.id === candidateLive.id ||
+            baselineLive.mode !== 'live' ||
+            candidateLive.mode !== 'live' ||
+            candidateLive.baseline_run_id !== baselineLive.id ||
+            !controlledPairCohortMatches(baselineLive, candidateLive))) ||
+        (bindings?.g5_fidelity !== undefined &&
+          (!fidelityReference ||
+            !fidelityLive ||
+            fidelityReference.mode !== 'live' ||
+            fidelityLive.mode !== 'live' ||
+            !fidelityReference.completed_at ||
+            !fidelityLive.started_at ||
+            Date.parse(fidelityLive.started_at) <= Date.parse(fidelityReference.completed_at) ||
+            fidelityReference.sample_limit !== fidelityLive.sample_limit ||
+            fidelityReference.seed !== fidelityLive.seed ||
+            !sameMembers(fidelityReference.suite_ids, fidelityLive.suite_ids) ||
+            !sameMembers(fidelityReference.track_ids, fidelityLive.track_ids)))
+      if (invalid) {
+        await fulfillError(route, 400, 'invalid evaluation request: campaign contract rejected')
+        return
+      }
+      if (ledgerWarningCount > 0) {
+        await fulfillError(
+          route,
+          409,
+          'conflict: evaluation run ledger is incomplete; repair quarantined evidence before deciding',
+        )
+        return
+      }
+      const existing = campaigns.get(request.client_request_id)
+      if (existing) {
+        await fulfillJSON(route, 201, existing)
+        return
+      }
+      const campaign = evaluationCampaign(request)
+      campaigns.set(campaign.id, campaign)
+      await mutationDelay()
+      await fulfillJSON(route, 201, campaign)
+    },
+  )
   await page.route('**/api/evaluation/v1/compare?*', async (route) => {
-    if (ledgerWarnings.length) {
+    if (ledgerWarningCount > 0) {
       await fulfillError(
         route,
         409,
@@ -792,7 +1691,19 @@ export async function mockEvaluationPlane(
       ...evaluationComparison,
       baseline_run_id: baseline.id,
       candidate_run_id: candidate.id,
-      gates: evaluationReport(candidate).gates.filter((gate) => gate.id === 'G4'),
+      gates: evaluationComparison.gates.map((gate) =>
+        gate.id === 'G3'
+          ? {
+              ...gate,
+              evidence_refs: [
+                'server-reduction:comparative-g3.v1',
+                `run:baseline:${baseline.id}`,
+                `run:candidate:${candidate.id}`,
+                'comparison-statistic:joint.normalized_regret',
+              ],
+            }
+          : gate,
+      ),
     })
   })
   await page.route('**/api/evaluation/v1/runs/*/events', async (route) => {
@@ -808,24 +1719,50 @@ export async function mockEvaluationPlane(
       await fulfillError(route, 404, 'not found: evaluation run')
       return
     }
-    const event = {
-      id: 'sse-event-1',
-      run_id: id,
-      type: 'progress',
-      timestamp: '2026-08-29T00:05:00Z',
-      message: 'Executing routing track from SSE',
+    const completesRun = options.completeRunOnEventStream === id
+    const completedRun = completesRun
+      ? {
+          ...run,
+          status: 'completed' as const,
+          completed_at: '2026-08-29T00:06:00Z',
+          progress: {
+            percent: 100,
+            completed: run.track_ids.length,
+            total: run.track_ids.length,
+            message: 'Evaluation completed',
+          },
+        }
+      : null
+    if (completedRun) {
+      runs = runs.map((candidate) => (candidate.id === id ? completedRun : candidate))
     }
+    const event = completesRun
+      ? {
+          id: '2',
+          run_id: id,
+          type: 'completed',
+          timestamp: '2026-08-29T00:06:00Z',
+          message: 'Evaluation completed',
+          progress: completedRun?.progress,
+        }
+      : {
+          id: '2',
+          run_id: id,
+          type: 'progress',
+          timestamp: '2026-08-29T00:05:00Z',
+          message: 'Executing routing track from SSE',
+        }
     await route.fulfill({
       status: 200,
       contentType: 'text/event-stream',
       headers: { 'Cache-Control': 'no-cache' },
-      body: `id: sse-event-1\nevent: progress\ndata: ${JSON.stringify(event)}\n\n`,
+      body: `id: 2\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`,
     })
   })
   await page.route('**/api/evaluation/v1/runs/*/report', async (route) => {
     const parts = new URL(route.request().url()).pathname.split('/')
     const id = decodeURIComponent(parts[parts.length - 2] || '')
-    const reportDelay = options.reportDelayByID?.[id] ?? options.reportDelayMs ?? 0
+    const reportDelay = options.reportDelayMs ?? 0
     await new Promise<void>((resolve) => setTimeout(resolve, reportDelay))
     reportRequests.push(id)
     if (options.reportFailureIDs?.includes(id)) {
@@ -858,27 +1795,6 @@ export async function mockEvaluationPlane(
         id: `diagnostic.metric_${String(index + 1).padStart(2, '0')}`,
         name: `Diagnostic metric ${index + 1}`,
       }))
-    }
-    if (options.legacyReportRunIdentity) {
-      delete report.attestation_revision
-      report.run = {
-        ...report.run,
-        name: report.run.id,
-        description: `Evaluation suites: ${report.run.suite_ids.join(', ')}`,
-      }
-    }
-    if (options.unattestedPromotionClaim) {
-      delete report.attestation_revision
-      report.summary = {
-        ...report.summary,
-        verdict: 'pass',
-        passed_gates: report.gates.filter((gate) => gate.disposition === 'required').length,
-        failed_gates: 0,
-        unavailable_gates: 0,
-      }
-      report.gates = report.gates.map((gate) =>
-        gate.disposition === 'required' ? { ...gate, verdict: 'pass' as const } : gate,
-      )
     }
     if (typeof options.diagnosticArtifactBodies?.capacityProfile === 'string') {
       report.artifacts = [
@@ -954,6 +1870,15 @@ export async function mockEvaluationPlane(
       await fulfillError(route, 404, 'not found: evaluation run')
       return
     }
+    if (current.status !== 'running') {
+      await fulfillError(route, 409, `conflict: run cannot be cancelled from ${current.status}`)
+      return
+    }
+    if (firstCancelPending) {
+      firstCancelPending = false
+      await fulfillError(route, 503, 'temporary cancellation failure')
+      return
+    }
     await mutationDelay()
     const cancelled = {
       ...current,
@@ -997,15 +1922,32 @@ export async function mockEvaluationPlane(
       return
     }
     if (route.request().method() === 'GET') {
-      await fulfillJSON(route, 200, current)
+      runRequests.push(id)
+      const response = controlledPairRunIDs.has(id)
+        ? {
+            ...current,
+            status: 'completed' as const,
+            progress: {
+              percent: 100,
+              completed: current.track_ids.length,
+              total: current.track_ids.length,
+              message: 'Controlled AB/BA evidence complete',
+            },
+            completed_at: '2026-08-31T01:05:00Z',
+          }
+        : current
+      if (controlledPairRunIDs.has(id)) {
+        runs = runs.map((run) => (run.id === id ? response : run))
+      }
+      await fulfillJSON(route, 200, response)
       return
     }
     if (route.request().method() !== 'DELETE') {
       await fulfillError(route, 405, 'method not allowed')
       return
     }
-    if (current.status === 'running') {
-      await fulfillError(route, 409, 'conflict: cancel a running evaluation before deletion')
+    if (current.status === 'running' || current.status === 'sealing') {
+      await fulfillError(route, 409, 'conflict: evaluation execution is still active')
       return
     }
     await mutationDelay()
@@ -1013,9 +1955,26 @@ export async function mockEvaluationPlane(
     deleteCount += 1
     await route.fulfill({ status: 204 })
   })
-  await page.route('**/api/evaluation/v1/runs', async (route) => {
+  await page.route(/\/api\/evaluation\/v1\/runs(?:\?.*)?$/, async (route) => {
     if (route.request().method() === 'POST') {
-      const request = route.request().postDataJSON() as CreateEvaluationRunRequest
+      const rawRequest = route.request().postDataJSON() as Record<string, unknown>
+      const request = rawRequest as unknown as CreateEvaluationRunPayload
+      const allowedCreateFields = new Set([
+        'client_request_id',
+        'name',
+        'description',
+        'suite_ids',
+        'track_ids',
+        'mode',
+        'target_id',
+        'change_profile',
+        'sample_limit',
+        'concurrency',
+        'capacity_slo',
+        'capacity_load_protocol',
+        'seed',
+        'baseline_run_id',
+      ])
       createAttempts.push(request)
       const target = evaluationCatalog.targets.find(
         (candidate) => candidate.id === request.target_id,
@@ -1024,6 +1983,24 @@ export async function mockEvaluationPlane(
         evaluationCatalog.suites.find((candidate) => candidate.id === id),
       )
       const suiteTrackIDs = new Set(suites.flatMap((suite) => suite?.track_ids || []))
+      const capacitySLORequired = request.mode === 'live' && request.track_ids.includes('capacity')
+      const capacitySLO = request.capacity_slo
+      const capacityLoadProtocol = request.capacity_load_protocol
+      const capacitySLOValid =
+        capacitySLO?.schema_version === 'evaluation.v1' &&
+        Number.isInteger(capacitySLO.required_concurrency) &&
+        capacitySLO.required_concurrency >= 1 &&
+        capacitySLO.required_concurrency <= request.concurrency &&
+        Number.isFinite(capacitySLO.max_latency_p95_ms) &&
+        capacitySLO.max_latency_p95_ms > 0 &&
+        Number.isFinite(capacitySLO.max_error_rate) &&
+        capacitySLO.max_error_rate >= 0 &&
+        capacitySLO.max_error_rate < 1 &&
+        Number.isFinite(capacitySLO.min_throughput_rps) &&
+        capacitySLO.min_throughput_rps > 0 &&
+        Number.isFinite(capacitySLO.min_throughput_scaling_efficiency) &&
+        capacitySLO.min_throughput_scaling_efficiency > 0 &&
+        capacitySLO.min_throughput_scaling_efficiency <= 1
       const utf8Length = (value: string) => new TextEncoder().encode(value).length
       const invalid =
         !request.name.trim() ||
@@ -1038,11 +2015,18 @@ export async function mockEvaluationPlane(
         !Number.isInteger(request.seed) ||
         request.seed < 0 ||
         request.seed > 4294967295 ||
-        (Boolean(request.client_request_id) &&
-          !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
-            request.client_request_id || '',
+        (capacitySLORequired
+          ? !capacitySLOValid ||
+            !validCapacityLoadProtocol(capacityLoadProtocol, request.concurrency)
+          : capacitySLO !== undefined || capacityLoadProtocol !== undefined) ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(
+          request.client_request_id,
+        ) ||
+        Object.keys(rawRequest).some((field) => !allowedCreateFields.has(field)) ||
+        (request.baseline_run_id !== undefined &&
+          !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(
+            request.baseline_run_id,
           )) ||
-        request.auto_start !== false ||
         !evaluationCatalog.change_profiles.some(
           (profile) => profile.id === request.change_profile,
         ) ||
@@ -1069,7 +2053,7 @@ export async function mockEvaluationPlane(
         await fulfillError(route, 400, 'invalid evaluation request: create contract rejected')
         return
       }
-      if (request.baseline_run_id && ledgerWarnings.length) {
+      if (request.baseline_run_id && ledgerWarningCount > 0) {
         await fulfillError(
           route,
           409,
@@ -1100,9 +2084,7 @@ export async function mockEvaluationPlane(
         )
         return
       }
-      const idempotentRun = request.client_request_id
-        ? runs.find((run) => run.client_request_id === request.client_request_id)
-        : null
+      const idempotentRun = runs.find((run) => run.client_request_id === request.client_request_id)
       if (idempotentRun) {
         if (!createRequestMatchesRun(request, idempotentRun)) {
           await fulfillError(
@@ -1118,13 +2100,12 @@ export async function mockEvaluationPlane(
       }
       createdRequests.push(request)
       const created = evaluationRun(
-        `created-run-${createdRequests.length}`,
+        request.client_request_id,
         request.name.trim(),
         'pending',
         '2026-08-29T01:00:00Z',
         request.change_profile,
         {
-          client_request_id: request.client_request_id,
           description: request.description.trim(),
           mode: request.mode,
           target_id: request.target_id,
@@ -1132,6 +2113,8 @@ export async function mockEvaluationPlane(
           track_ids: request.track_ids,
           sample_limit: request.sample_limit,
           concurrency: request.concurrency,
+          capacity_slo: request.capacity_slo,
+          capacity_load_protocol: request.capacity_load_protocol,
           seed: request.seed,
           baseline_run_id: request.baseline_run_id,
           evidence_level: 'E0',
@@ -1142,18 +2125,56 @@ export async function mockEvaluationPlane(
       await fulfillJSON(route, 201, created)
       return
     }
-    await fulfillJSON(route, 200, runs)
+    if (route.request().method() !== 'GET') {
+      await fulfillError(route, 405, 'method not allowed')
+      return
+    }
+    const url = new URL(route.request().url())
+    const offset = Number.parseInt(url.searchParams.get('cursor') || '0', 10)
+    ledgerRequestCount += 1
+    if (offset > 0 && firstLoadMorePending) {
+      firstLoadMorePending = false
+      await fulfillError(route, 503, 'temporary ledger page failure')
+      return
+    }
+    const pageSize = options.runPageSize || 50
+    const pageRuns = runs.slice(offset, offset + pageSize)
+    const nextOffset = offset + pageRuns.length
+    await new Promise<void>((resolve) => setTimeout(resolve, options.ledgerDelayMs || 0))
+    await fulfillJSON(route, 200, {
+      schema_version: 'evaluation.v1',
+      runs: pageRuns,
+      ...(nextOffset < runs.length ? { next_cursor: String(nextOffset) } : {}),
+      total_runs: runs.length,
+      ledger_complete: ledgerWarningCount === 0,
+      warning_count: ledgerWarningCount,
+      warnings: ledgerWarnings,
+    })
   })
 
   return {
     createAttempts,
     createdRequests,
     comparisonRequests,
+    campaignRequests,
+    controlledPairRequests,
+    campaignGetRequests,
+    runRequests,
     reportRequests,
     getCancelCount: () => cancelCount,
     getDeleteCount: () => deleteCount,
     getStartCount: () => startCount,
     getEventStreamCount: () => eventStreamCount,
+    getLedgerRequestCount: () => ledgerRequestCount,
     getRuns: () => [...runs],
+    addRun: (run: EvaluationRun) => {
+      runs = [run, ...runs.filter((candidate) => candidate.id !== run.id)]
+    },
+    rejectCampaignGets: () => {
+      rejectCampaignGets = true
+    },
+    allowCampaignGets: () => {
+      rejectCampaignGets = false
+    },
   }
 }

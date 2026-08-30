@@ -121,7 +121,7 @@ RUN set -eux; \
       done; \
       return 1; \
     }; \
-    apt_get_install_with_retry ca-certificates curl docker.io gosu wget
+    apt_get_install_with_retry ca-certificates curl docker.io gosu libseccomp2 wget
 WORKDIR /app
 COPY --from=backend-builder /app/dashboard-backend /app/dashboard-backend
 COPY --from=backend-builder /app/dashboard-backend /usr/local/bin/dashboard-backend

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -18,19 +17,32 @@ import (
 const evaluationAPIBase = "/api/evaluation/v1"
 
 type EvaluationPlaneHandler struct {
-	service  *evaluationplane.Service
-	readonly bool
+	service             *evaluationplane.Service
+	readonly            bool
+	internalSystemActor bool
 }
 
 func NewEvaluationPlaneHandler(service *evaluationplane.Service, readonly bool) *EvaluationPlaneHandler {
 	return &EvaluationPlaneHandler{service: service, readonly: readonly}
 }
 
+// NewInternalEvaluationPlaneHandler is reserved for in-process tests and
+// trusted server-owned callers that do not cross the authenticated HTTP
+// boundary. Production routes must use NewEvaluationPlaneHandler.
+func NewInternalEvaluationPlaneHandler(service *evaluationplane.Service, readonly bool) *EvaluationPlaneHandler {
+	return &EvaluationPlaneHandler{service: service, readonly: readonly, internalSystemActor: true}
+}
+
 func (h *EvaluationPlaneHandler) Catalog(w http.ResponseWriter, r *http.Request) {
 	if preflightOrMethod(w, r, http.MethodGet) {
 		return
 	}
-	writeEvaluationJSON(w, http.StatusOK, h.service.Catalog())
+	catalog, err := h.service.Catalog()
+	if err != nil {
+		writeEvaluationError(w, err)
+		return
+	}
+	writeEvaluationJSON(w, http.StatusOK, catalog)
 }
 
 func (h *EvaluationPlaneHandler) Runs(w http.ResponseWriter, r *http.Request) {
@@ -39,30 +51,36 @@ func (h *EvaluationPlaneHandler) Runs(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodGet:
-		// Preserve the original evaluation.v1 collection contract for API clients.
-		// Ledger integrity metadata lives at the additive /run-ledger endpoint.
-		runs, err := h.service.ListRuns()
+		query, err := evaluationRunListQuery(r)
 		if err != nil {
 			writeEvaluationError(w, err)
 			return
 		}
-		writeEvaluationJSON(w, http.StatusOK, runs)
+		ledger, err := h.service.ListRunLedgerPage(query)
+		if err != nil {
+			writeEvaluationError(w, err)
+			return
+		}
+		writeEvaluationJSON(w, http.StatusOK, ledger)
 	case http.MethodPost:
 		if h.denyReadonly(w) {
 			return
 		}
-		var request evaluationplane.CreateRunRequest
-		if err := decodeStrictJSON(r, &request); err != nil {
+		var wire evaluationCreateRunWireRequest
+		if err := decodeStrictJSON(r, &wire); err != nil {
 			writeEvaluationError(w, fmt.Errorf("%w: %w", evaluationplane.ErrInvalid, err))
 			return
 		}
-		if strings.TrimSpace(request.BaselineRunID) != "" {
-			if err := h.service.RequireCompleteRunLedger(); err != nil {
-				writeEvaluationError(w, err)
-				return
-			}
+		request, err := wire.domainRequest()
+		if err != nil {
+			writeEvaluationError(w, fmt.Errorf("%w: %w", evaluationplane.ErrInvalid, err))
+			return
 		}
-		run, err := h.service.CreateRun(r.Context(), request)
+		actor, ok := h.evaluationActor(w, r)
+		if !ok {
+			return
+		}
+		run, err := h.service.CreateRunAs(r.Context(), actor, request)
 		if err != nil {
 			writeEvaluationError(w, err)
 			return
@@ -73,16 +91,23 @@ func (h *EvaluationPlaneHandler) Runs(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *EvaluationPlaneHandler) RunLedger(w http.ResponseWriter, r *http.Request) {
-	if preflightOrMethod(w, r, http.MethodGet) {
-		return
+func evaluationRunListQuery(r *http.Request) (evaluationplane.RunListQuery, error) {
+	if !onlyQueryKeys(r, "limit", "cursor") {
+		return evaluationplane.RunListQuery{}, fmt.Errorf("%w: unsupported run list query field", evaluationplane.ErrInvalid)
 	}
-	ledger, err := h.service.ListRunLedger()
-	if err != nil {
-		writeEvaluationError(w, err)
-		return
+	values := r.URL.Query()
+	if len(values["limit"]) > 1 || len(values["cursor"]) > 1 {
+		return evaluationplane.RunListQuery{}, fmt.Errorf("%w: run list query fields cannot be repeated", evaluationplane.ErrInvalid)
 	}
-	writeEvaluationJSON(w, http.StatusOK, ledger)
+	query := evaluationplane.RunListQuery{Cursor: strings.TrimSpace(values.Get("cursor"))}
+	if raw := strings.TrimSpace(values.Get("limit")); raw != "" {
+		limit, err := strconv.Atoi(raw)
+		if err != nil {
+			return evaluationplane.RunListQuery{}, fmt.Errorf("%w: run list limit must be an integer", evaluationplane.ErrInvalid)
+		}
+		query.Limit = limit
+	}
+	return query, nil
 }
 
 func (h *EvaluationPlaneHandler) RunRoute(w http.ResponseWriter, r *http.Request) {
@@ -110,6 +135,8 @@ func (h *EvaluationPlaneHandler) RunRoute(w http.ResponseWriter, r *http.Request
 			h.report(w, r, runID)
 		case "events":
 			h.events(w, r, runID)
+		case "lifecycle":
+			h.runLifecycle(w, r, runID)
 		default:
 			http.NotFound(w, r)
 		}
@@ -157,7 +184,11 @@ func (h *EvaluationPlaneHandler) runResource(w http.ResponseWriter, r *http.Requ
 		if h.denyReadonly(w) {
 			return
 		}
-		if err := h.service.DeleteRun(runID); err != nil {
+		actor, ok := h.evaluationActor(w, r)
+		if !ok {
+			return
+		}
+		if err := h.service.DeleteRunAs(actor, runID); err != nil {
 			writeEvaluationError(w, err)
 			return
 		}
@@ -179,10 +210,14 @@ func (h *EvaluationPlaneHandler) runAction(w http.ResponseWriter, r *http.Reques
 		run evaluationplane.Run
 		err error
 	)
+	actor, ok := h.evaluationActor(w, r)
+	if !ok {
+		return
+	}
 	if action == "start" {
-		run, err = h.service.StartRun(r.Context(), runID)
+		run, err = h.service.StartRunAs(r.Context(), actor, runID)
 	} else {
-		run, err = h.service.CancelRun(runID)
+		run, err = h.service.CancelRunAs(actor, runID)
 	}
 	if err != nil {
 		writeEvaluationError(w, err)
@@ -234,23 +269,6 @@ func (h *EvaluationPlaneHandler) denyReadonly(w http.ResponseWriter) bool {
 	return true
 }
 
-func decodeStrictJSON(r *http.Request, destination any) error {
-	defer func() { _ = r.Body.Close() }()
-	decoder := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(destination); err != nil {
-		return err
-	}
-	var extra any
-	if err := decoder.Decode(&extra); err != io.EOF {
-		if err == nil {
-			return fmt.Errorf("request contains trailing JSON")
-		}
-		return err
-	}
-	return nil
-}
-
 func writeEvaluationJSON(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -266,6 +284,10 @@ func writeEvaluationError(w http.ResponseWriter, err error) {
 		status = http.StatusNotFound
 	case errors.Is(err, evaluationplane.ErrConflict):
 		status = http.StatusConflict
+	case errors.Is(err, evaluationplane.ErrForbidden):
+		status = http.StatusForbidden
+	case errors.Is(err, evaluationplane.ErrQuota):
+		status = http.StatusInsufficientStorage
 	}
 	message := err.Error()
 	if status == http.StatusInternalServerError {

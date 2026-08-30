@@ -1,11 +1,8 @@
 package evaluationplane
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,14 +14,49 @@ import (
 type controlledProcess struct {
 	started     chan ProcessSpec
 	release     chan struct{}
+	returned    chan struct{}
 	writeReport bool
 	err         error
 	calls       atomic.Int32
 }
 
+type failOnceTerminalStatusPersistence struct {
+	delegate            runStatusPersistence
+	commitBeforeFailure bool
+	failed              atomic.Bool
+}
+
+type alwaysFailTerminalStatusPersistence struct {
+	delegate  runStatusPersistence
+	attempted chan struct{}
+	signaled  atomic.Bool
+}
+
+func (p *failOnceTerminalStatusPersistence) Write(path string, run Run) error {
+	if terminalStatus(run.Status) && p.failed.CompareAndSwap(false, true) {
+		if p.commitBeforeFailure {
+			if err := p.delegate.Write(path, run); err != nil {
+				return err
+			}
+		}
+		return errors.New("injected terminal status persistence failure")
+	}
+	return p.delegate.Write(path, run)
+}
+
+func (p *alwaysFailTerminalStatusPersistence) Write(path string, run Run) error {
+	if terminalStatus(run.Status) {
+		if p.signaled.CompareAndSwap(false, true) {
+			close(p.attempted)
+		}
+		return errors.New("injected permanent terminal status persistence failure")
+	}
+	return p.delegate.Write(path, run)
+}
+
 const testSourceRevision = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
-func (p *controlledProcess) Run(ctx context.Context, spec ProcessSpec, emit func(WorkerEvent) error) error {
+func (p *controlledProcess) Run(ctx context.Context, spec ProcessSpec, emit func(WorkerEvent) error) (ProcessResult, error) {
 	p.calls.Add(1)
 	if p.started != nil {
 		p.started <- spec
@@ -33,345 +65,33 @@ func (p *controlledProcess) Run(ctx context.Context, spec ProcessSpec, emit func
 		Type: "progress", Message: "fixture running",
 		Progress: &RunProgress{Percent: 50, Completed: 0, Total: 1, CurrentTrackID: "routing"},
 	}); err != nil {
-		return err
+		return ProcessResult{}, err
 	}
 	if p.release != nil {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return ProcessResult{}, ctx.Err()
 		case <-p.release:
 		}
 	} else {
 		<-ctx.Done()
-		return ctx.Err()
+		return ProcessResult{}, ctx.Err()
 	}
 	if p.err != nil {
-		return p.err
+		return ProcessResult{}, p.err
 	}
 	if p.writeReport {
-		return writeProcessReport(spec)
-	}
-	return nil
-}
-
-type processReportFixture struct {
-	run         Run
-	manifest    RunManifest
-	runDir      string
-	workload    map[string]any
-	policy      map[string]any
-	binding     map[string]any
-	pool        map[string]any
-	arms        []any
-	environment map[string]any
-}
-
-func prepareProcessReportFixture(spec ProcessSpec) (processReportFixture, error) {
-	var run Run
-	if err := readJSON(filepath.Join(filepath.Dir(spec.ManifestPath), runFileName), &run); err != nil {
-		return processReportFixture{}, err
-	}
-	var manifest RunManifest
-	if err := readJSON(spec.ManifestPath, &manifest); err != nil {
-		return processReportFixture{}, err
-	}
-	runDir := filepath.Dir(spec.ManifestPath)
-	core := map[string][]byte{
-		"cases.jsonl":         []byte("{\"schema_version\":\"evaluation.v1\",\"id\":\"case-1\",\"messages\":[{\"role\":\"user\",\"content\":\"test\"}],\"modality\":\"text\",\"tags\":[]}\n"),
-		"grading-cases.jsonl": []byte("{\"case_id\":\"case-1\"}\n"),
-		"records.jsonl":       []byte("{\"schema_version\":\"evaluation.v1\",\"id\":\"routing-case-1\",\"track_id\":\"routing\",\"case_id\":\"case-1\",\"attempt_id\":\"attempt-case-1\",\"status\":\"succeeded\"}\n"),
-		"failure-cases.jsonl": {},
-	}
-	for name, data := range core {
-		if err := os.WriteFile(filepath.Join(runDir, name), data, 0o600); err != nil {
-			return processReportFixture{}, err
+		result := ProcessResult{publishEvidence: func() error {
+			runEvidencePublicationMu.Lock()
+			defer runEvidencePublicationMu.Unlock()
+			return writeProcessReport(spec)
+		}}
+		if p.returned != nil {
+			close(p.returned)
 		}
+		return result, nil
 	}
-	visibleSnapshot, _ := json.Marshal(map[string]any{
-		"schema_version": SchemaVersion, "cases": []json.RawMessage{bytes.TrimSpace(core["cases.jsonl"])},
-	})
-	gradingSnapshot, _ := json.Marshal(map[string]any{
-		"schema_version": SchemaVersion, "cases": []json.RawMessage{bytes.TrimSpace(core["grading-cases.jsonl"])},
-	})
-	visibleRef := testArtifactRef(visibleSnapshot)
-	gradingRef := testArtifactRef(gradingSnapshot)
-	fixtureRef := testArtifactRef(core["records.jsonl"])
-	casValues := make([][]byte, 0, len(core)+2)
-	for _, data := range core {
-		casValues = append(casValues, data)
-	}
-	casValues = append(casValues, visibleSnapshot, gradingSnapshot)
-	for _, data := range casValues {
-		hex := strings.TrimPrefix(digestBytes(data), "sha256:")
-		if err := os.WriteFile(filepath.Join(spec.StorePath, "objects", "sha256", hex), data, 0o600); err != nil {
-			return processReportFixture{}, err
-		}
-	}
-	workloadDigest, err := canonicalValueDigest(map[string]any{
-		"visible_cases": visibleRef["digest"], "grading_cases": gradingRef["digest"],
-	})
-	if err != nil {
-		return processReportFixture{}, err
-	}
-	workload := map[string]any{
-		"schema_version": SchemaVersion, "id": "workload-" + strings.TrimPrefix(workloadDigest, "sha256:")[:16],
-		"visible_cases": visibleRef, "grading_cases": gradingRef,
-	}
-	policy := map[string]any{
-		"schema_version": SchemaVersion, "id": "fixture-policy", "entrypoint_model": "fixture-entrypoint",
-		"recipe_digest": manifest.PolicySnapshotDigest,
-	}
-	fixtureArms, err := builtinFixtureModelArms()
-	if err != nil {
-		return processReportFixture{}, err
-	}
-	pool := map[string]any{"schema_version": SchemaVersion, "id": "fixture-pool", "arm_ids": []string{"arm-fast", "arm-strong"}}
-	arms, err := modelArmsCanonicalValue(fixtureArms)
-	if err != nil {
-		return processReportFixture{}, err
-	}
-	binding := map[string]any{
-		"schema_version": SchemaVersion, "id": "fixture-binding", "policy_id": "fixture-policy", "pool_id": "fixture-pool",
-	}
-	environment := map[string]any{
-		"schema_version": SchemaVersion, "id": "fixture-environment", "target_id": "fixture",
-		"platform": "local-replay", "hardware_class": "recorded", "currency": "USD",
-	}
-	manifestDigest, err := manifestSemanticDigest(manifest)
-	if err != nil {
-		return processReportFixture{}, err
-	}
-	lineage := map[string]any{
-		"schema_version": SchemaVersion, "manifest_digest": manifestDigest,
-		"workload": workload, "policy": policy, "binding": binding, "pool": pool, "arms": arms,
-		"environment": environment, "fixture_ref": fixtureRef, "discovered_entrypoints": []string{}, "executors": []any{},
-	}
-	if err := writeJSONAtomic(filepath.Join(runDir, "lineage.json"), lineage); err != nil {
-		return processReportFixture{}, err
-	}
-	return processReportFixture{
-		run: run, manifest: manifest, runDir: runDir, workload: workload, policy: policy,
-		binding: binding, pool: pool, arms: arms, environment: environment,
-	}, nil
-}
-
-func mustTestCanonicalDigest(value any) string {
-	encoded, err := canonicalValueDigest(value)
-	if err != nil {
-		panic(err)
-	}
-	return encoded
-}
-
-func writeProcessReportEvidence(
-	fixture processReportFixture,
-	provenance Provenance,
-	metrics []Metric,
-	gates []Gate,
-) ([]Artifact, error) {
-	runDir := fixture.runDir
-	if err := writeJSONAtomic(filepath.Join(runDir, "metrics.json"), map[string]any{"schema_version": SchemaVersion, "metrics": metrics}); err != nil {
-		return nil, err
-	}
-	if err := writeJSONAtomic(filepath.Join(runDir, "gates.json"), map[string]any{"schema_version": SchemaVersion, "gates": gates}); err != nil {
-		return nil, err
-	}
-	if err := writeJSONAtomic(filepath.Join(runDir, "provenance.json"), provenance); err != nil {
-		return nil, err
-	}
-	if err := writeJSONAtomic(filepath.Join(runDir, "failure-summary.json"), map[string]any{
-		"schema_version": SchemaVersion, "total_records": 1, "failed": 0, "unavailable": 0,
-		"by_track": []map[string]any{{"track_id": "routing", "succeeded": 1, "failed": 0, "unavailable": 0}},
-	}); err != nil {
-		return nil, err
-	}
-	for _, name := range []string{"report.md", "report.html"} {
-		if err := os.WriteFile(filepath.Join(runDir, name), []byte("private rendered report\n"), 0o600); err != nil {
-			return nil, err
-		}
-	}
-	publicNames := []string{"metrics.json", "gates.json", "provenance.json", "failure-summary.json"}
-	artifacts := make([]Artifact, 0, len(publicNames)+1)
-	var publicReceipt strings.Builder
-	for _, name := range publicNames {
-		data, err := os.ReadFile(filepath.Join(runDir, name))
-		if err != nil {
-			return nil, err
-		}
-		artifacts = append(artifacts, testArtifact(name, data))
-		publicReceipt.WriteString(strings.TrimPrefix(digestBytes(data), "sha256:"))
-		publicReceipt.WriteString("  " + name + "\n")
-	}
-	publicReceiptBytes := []byte(publicReceipt.String())
-	if err := os.WriteFile(filepath.Join(runDir, publicChecksumArtifactName), publicReceiptBytes, 0o600); err != nil {
-		return nil, err
-	}
-	artifacts = append(artifacts, testArtifact(publicChecksumArtifactName, publicReceiptBytes))
-	if err := writeTestPrivateReceiptWithoutTesting(runDir); err != nil {
-		return nil, err
-	}
-	return artifacts, nil
-}
-
-func writeProcessReport(spec ProcessSpec) error {
-	fixture, err := prepareProcessReportFixture(spec)
-	if err != nil {
-		return err
-	}
-	completedAt := time.Now().UTC()
-	provenance := Provenance{
-		SchemaVersion: SchemaVersion, GeneratedAt: completedAt, CodeRevision: fixture.manifest.CodeRevision,
-		BenchmarkRevisions:     map[string]string{"evaluation-smoke": "builtin-v1"},
-		WorkloadSnapshotDigest: mustTestCanonicalDigest(fixture.workload), PolicySnapshotDigest: mustTestCanonicalDigest(fixture.policy),
-		BindingSnapshotDigest: mustTestCanonicalDigest(fixture.binding), PoolSnapshotDigest: mustTestCanonicalDigest(map[string]any{"pool": fixture.pool, "arms": fixture.arms}),
-		EnvironmentSnapshotDigest: mustTestCanonicalDigest(fixture.environment), TargetID: fixture.manifest.Target.ID, Seed: fixture.manifest.Seed,
-		RedactionPolicy: fixture.manifest.RedactionPolicy,
-	}
-	metrics := []Metric{}
-	gates := testReleaseGates(fixture.run.ChangeProfile, completedAt)
-	setTestGatePlanCoverage(gates, "routing", 1, 1)
-	artifacts, err := writeProcessReportEvidence(fixture, provenance, metrics, gates)
-	if err != nil {
-		return err
-	}
-	reportRun := fixture.run
-	reportRun.Name = fixture.run.ID
-	reportRun.Description = "Evaluation suites: " + strings.Join(fixture.run.SuiteIDs, ", ")
-	reportRun.Status = StatusCompleted
-	reportRun.CompletedAt = &completedAt
-	reportRun.Progress = RunProgress{Percent: 100, Completed: len(fixture.run.TrackIDs), Total: len(fixture.run.TrackIDs), Message: "Evaluation completed"}
-	report := Report{
-		SchemaVersion: SchemaVersion,
-		Run:           reportRun,
-		Summary: ReportSummary{
-			Verdict: "unavailable", Coverage: serverCoverage(1, 1),
-			PassedGates: 2, UnavailableGates: 5,
-		},
-		Tracks: []TrackReport{{
-			TrackID: "routing", Status: "completed", EvidenceLevel: "E0", Summary: "Collected 1 evidence records.",
-			Coverage: serverCoverage(1, 1), Metrics: []Metric{}, Gates: []Gate{gates[4]},
-		}},
-		Metrics:         metrics,
-		Gates:           gates,
-		Costs:           CostLedgers{Runtime: CostAmount{Currency: "USD"}, EvaluationOverhead: CostAmount{Currency: "USD"}, CapacityTCO: CostAmount{Currency: "USD"}},
-		Recommendations: []string{"Resolve unavailable evidence."},
-		Provenance:      provenance,
-		Artifacts:       artifacts,
-	}
-	return writeJSONAtomic(filepath.Join(fixture.runDir, reportFileName), report)
-}
-
-func testArtifactRef(data []byte) map[string]any {
-	return map[string]any{
-		"schema_version": SchemaVersion,
-		"digest":         digestBytes(data), "media_type": "application/x-ndjson", "size_bytes": len(data),
-	}
-}
-
-func testArtifact(name string, data []byte) Artifact {
-	contract := publicArtifactContracts[name]
-	return Artifact{
-		ID: strings.ReplaceAll(name, ".", "-"), Name: name, Kind: contract.Kind, URI: name,
-		Digest: digestBytes(data), MediaType: contract.MediaType, SizeBytes: int64(len(data)),
-	}
-}
-
-func testReleaseGates(profile ChangeProfile, evaluatedAt time.Time) []Gate {
-	dispositions := []string{"required", "required", "advisory", "advisory", "required", "advisory", "not_applicable", "advisory", "not_applicable", "not_applicable"}
-	gates := make([]Gate, 0, 10)
-	for index := range 10 {
-		verdict := GateVerdict("unavailable")
-		if index < 2 {
-			verdict = "pass"
-		} else if dispositions[index] == "not_applicable" {
-			verdict = "not_applicable"
-		}
-		count := 1
-		coverage := Coverage{Evaluated: 1, Total: 1, Fraction: 1}
-		gate := Gate{
-			ID: fmt.Sprintf("G%d", index), Name: gateNames[index], TrackID: gateTracks[index],
-			Disposition: dispositions[index], Verdict: verdict, ChangeProfile: profile,
-			ContractVersion: GateContractVersion, EvidenceRefs: gateEvidenceRefs[index], EvidenceLevel: gateEvidenceLevels[index],
-			SampleCount: &count, Coverage: &coverage, Owner: gateOwners[index], EvaluatedAt: &evaluatedAt,
-		}
-		switch index {
-		case 0:
-			observed := 1.0
-			gate.Observed = &observed
-			gate.Threshold = &GateThreshold{Operator: ">=", Value: 1, Unit: "fraction"}
-		case 1:
-			observed := 1.0
-			gate.Observed = &observed
-			gate.Threshold = &GateThreshold{Operator: ">=", Value: 1, Unit: "boolean"}
-		}
-		gates = append(gates, gate)
-	}
-	return gates
-}
-
-func setTestGatePlanCoverage(gates []Gate, selectedTrack TrackID, evaluated, total int) {
-	for index := range gates {
-		gateEvaluated := evaluated
-		gateTotal := total
-		if gates[index].TrackID != "" && gates[index].TrackID != selectedTrack {
-			gateEvaluated = 0
-			gateTotal = 0
-		}
-		count := gateEvaluated
-		coverage := Coverage{Evaluated: gateEvaluated, Total: gateTotal, Unavailable: gateTotal - gateEvaluated}
-		if gateTotal > 0 {
-			coverage.Fraction = float64(gateEvaluated) / float64(gateTotal)
-		}
-		gates[index].SampleCount = &count
-		gates[index].Coverage = &coverage
-	}
-}
-
-func writeTestPrivateReceiptWithoutTesting(runDir string) error {
-	var receipt bytes.Buffer
-	for _, name := range workerRunArtifactNames {
-		if name == "events.jsonl" || name == privateChecksumArtifactName || name == reportFileName {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(runDir, name))
-		if os.IsNotExist(err) {
-			continue
-		}
-		if err != nil {
-			return err
-		}
-		_, _ = fmt.Fprintf(&receipt, "%s  %s\n", strings.TrimPrefix(digestBytes(data), "sha256:"), name)
-	}
-	return os.WriteFile(filepath.Join(runDir, privateChecksumArtifactName), receipt.Bytes(), 0o600)
-}
-
-func newTestService(t *testing.T, process Process, maxConcurrent int) (*Service, string) {
-	t.Helper()
-	root := filepath.Join(t.TempDir(), "evaluation")
-	if err := os.Mkdir(root, 0o700); err != nil {
-		t.Fatalf("create private evaluation root: %v", err)
-	}
-	configPath := filepath.Join(root, "config.yaml")
-	if err := os.WriteFile(configPath, []byte("version: v0.3\nrouting:\n  modelCards: []\n"), 0o600); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-	service, err := NewService(Options{
-		DataDir: root, PythonPath: "python3", ConfigPath: configPath,
-		RouterAPIURL: "http://router.invalid", EnvoyURL: "http://envoy.invalid",
-		CodeRevision: testSourceRevision, MaxConcurrent: maxConcurrent, Process: process,
-	})
-	if err != nil {
-		t.Fatalf("NewService: %v", err)
-	}
-	return service, root
-}
-
-func validCreateRequest() CreateRunRequest {
-	return CreateRunRequest{
-		Name: "routing fixture", Description: "test", SuiteIDs: []string{"evaluation-smoke"},
-		TrackIDs: []TrackID{"routing"}, Mode: ModeReplay, TargetID: "fixture", ChangeProfile: "schema_adapter",
-		SampleLimit: 4, Concurrency: 1, Seed: 17,
-	}
+	return ProcessResult{}, nil
 }
 
 func TestControlledProcessReportBundlePassesServerValidation(t *testing.T) {
@@ -380,12 +100,7 @@ func TestControlledProcessReportBundlePassesServerValidation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateRun: %v", err)
 	}
-	now := time.Now().UTC()
-	run.Status = StatusRunning
-	run.StartedAt = &now
-	if err := service.store.UpdateRun(run); err != nil {
-		t.Fatalf("stage running run: %v", err)
-	}
+	run = stageSealingTestRun(t, service, run)
 	spec := ProcessSpec{ManifestPath: filepath.Join(root, "runs", run.ID, manifestFileName), StorePath: root}
 	if err := writeProcessReport(spec); err != nil {
 		t.Fatalf("writeProcessReport: %v", err)
@@ -416,6 +131,59 @@ func TestControlledProcessReportBundlePassesServerValidation(t *testing.T) {
 	}
 }
 
+func TestRecoverInterruptedRunCompletesFullySealedPublication(t *testing.T) {
+	service, root := newTestService(t, &controlledProcess{}, 1)
+	run, createErr := service.CreateRun(context.Background(), validCreateRequest())
+	if createErr != nil {
+		t.Fatalf("CreateRun: %v", createErr)
+	}
+	run = stageSealingTestRun(t, service, run)
+	spec := ProcessSpec{ManifestPath: filepath.Join(root, "runs", run.ID, manifestFileName), StorePath: root}
+	if writeErr := writeProcessReport(spec); writeErr != nil {
+		t.Fatalf("writeProcessReport: %v", writeErr)
+	}
+	if validationErr := service.validateAndAnchorReport(run.ID); validationErr != nil {
+		t.Fatalf("validateAndAnchorReport: %v", validationErr)
+	}
+	if staged, readErr := service.GetRun(run.ID); readErr != nil || staged.Status != StatusSealing || staged.CompletedAt != nil {
+		t.Fatalf("expected anchor-after/status-before crash window, run=%+v err=%v", staged, readErr)
+	}
+
+	restarted, restartErr := NewService(Options{
+		DataDir: root, PythonPath: "python3", ConfigPath: filepath.Join(root, "config.yaml"),
+		RouterAPIURL: "http://router.invalid", EnvoyURL: "http://envoy.invalid", CodeRevision: testSourceRevision,
+	})
+	if restartErr != nil {
+		t.Fatalf("restart NewService: %v", restartErr)
+	}
+	recovered, recoveryErr := restarted.GetRun(run.ID)
+	if recoveryErr != nil || recovered.Status != StatusCompleted || recovered.CompletedAt == nil || recovered.Error != "" {
+		t.Fatalf("sealed run was not recovered as completed: run=%+v err=%v", recovered, recoveryErr)
+	}
+	if _, reportErr := restarted.ReportJSON(run.ID); reportErr != nil {
+		t.Fatalf("ReportJSON after sealed recovery: %v", reportErr)
+	}
+	if recoverErr := restarted.RecoverInterruptedRuns(); recoverErr != nil {
+		t.Fatalf("repeat RecoverInterruptedRuns: %v", recoverErr)
+	}
+	events, eventsErr := restarted.EventsAfter(run.ID, "")
+	if eventsErr != nil {
+		t.Fatalf("EventsAfter: %v", eventsErr)
+	}
+	terminal := 0
+	for _, event := range events {
+		if terminalWorkerEventType(event.Type) {
+			terminal++
+			if event.Type != "completed" {
+				t.Fatalf("terminal event=%+v, want completed", event)
+			}
+		}
+	}
+	if terminal != 1 {
+		t.Fatalf("terminal events=%d, want exactly one: %+v", terminal, events)
+	}
+}
+
 func TestValidateAndAnchorReportRejectsNonCanonicalPublicArtifactMetadata(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -431,12 +199,7 @@ func TestValidateAndAnchorReportRejectsNonCanonicalPublicArtifactMetadata(t *tes
 			if err != nil {
 				t.Fatalf("CreateRun: %v", err)
 			}
-			now := time.Now().UTC()
-			run.Status = StatusRunning
-			run.StartedAt = &now
-			if err := service.store.UpdateRun(run); err != nil {
-				t.Fatalf("stage running run: %v", err)
-			}
+			run = stageSealingTestRun(t, service, run)
 			spec := ProcessSpec{ManifestPath: filepath.Join(root, "runs", run.ID, manifestFileName), StorePath: root}
 			if err := writeProcessReport(spec); err != nil {
 				t.Fatalf("writeProcessReport: %v", err)
@@ -445,7 +208,7 @@ func TestValidateAndAnchorReportRejectsNonCanonicalPublicArtifactMetadata(t *tes
 			if readErr != nil {
 				t.Fatalf("read report: %v", readErr)
 			}
-			report, decodeErr := decodeReportStrict(run.ID, reportBytes)
+			report, decodeErr := decodeWorkerReportStrict(run.ID, reportBytes)
 			if decodeErr != nil {
 				t.Fatalf("decode report: %v", decodeErr)
 			}
@@ -453,7 +216,7 @@ func TestValidateAndAnchorReportRejectsNonCanonicalPublicArtifactMetadata(t *tes
 				t.Fatal("fixture report has no public artifacts")
 			}
 			test.mutate(&report.Artifacts[0])
-			if err := service.store.WriteReport(run.ID, report); err != nil {
+			if err := service.store.WriteReport(run.ID, workerReportFromReport(report)); err != nil {
 				t.Fatalf("rewrite report: %v", err)
 			}
 			if err := service.validateAndAnchorReport(run.ID); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "artifact metadata") {
@@ -494,12 +257,10 @@ func TestCreateRunFailsClosedWithoutImmutableSourceRevision(t *testing.T) {
 	if err := os.WriteFile(configPath, []byte("version: v0.3\nrouting:\n  modelCards: []\n"), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
-	service, err := NewService(Options{DataDir: root, ConfigPath: configPath, CodeRevision: "main", Process: &controlledProcess{}})
-	if err != nil {
-		t.Fatalf("NewService: %v", err)
-	}
-	if _, err := service.CreateRun(context.Background(), validCreateRequest()); !errors.Is(err, ErrInvalid) {
-		t.Fatalf("CreateRun mutable revision error=%v, want ErrInvalid", err)
+	if _, err := NewService(Options{
+		DataDir: root, ConfigPath: configPath, CodeRevision: "main", Process: &controlledProcess{},
+	}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("NewService mutable revision error=%v, want ErrInvalid", err)
 	}
 }
 
@@ -550,13 +311,45 @@ func TestStartRejectsTamperedServerManifestDigest(t *testing.T) {
 	}
 }
 
-func TestPendingRunCannotCrossSuiteOrProfileContractUpgrade(t *testing.T) {
+func TestStartAndIdempotentRetryRejectSelfConsistentManifestStatusDrift(t *testing.T) {
+	service, root := newTestService(t, &controlledProcess{}, 1)
+	request := validCreateRequest()
+	run, createErr := service.CreateRun(context.Background(), request)
+	if createErr != nil {
+		t.Fatalf("CreateRun: %v", createErr)
+	}
+	manifestPath := filepath.Join(root, "runs", run.ID, manifestFileName)
+	var manifest RunManifest
+	if readErr := readJSON(manifestPath, &manifest); readErr != nil {
+		t.Fatalf("read manifest: %v", readErr)
+	}
+	manifest.SampleLimit++
+	manifestDigest, digestErr := manifestSemanticDigest(manifest)
+	if digestErr != nil {
+		t.Fatalf("recompute manifest digest: %v", digestErr)
+	}
+	manifest.ManifestDigest = manifestDigest
+	if writeErr := writeJSONAtomic(manifestPath, manifest); writeErr != nil {
+		t.Fatalf("write self-consistent drifted manifest: %v", writeErr)
+	}
+	if _, startErr := service.StartRun(context.Background(), run.ID); !errors.Is(startErr, ErrInvalid) || !strings.Contains(startErr.Error(), "sample_limit") {
+		t.Fatalf("StartRun drift error=%v, want sample_limit ErrInvalid", startErr)
+	}
+	if _, err := service.CreateRun(context.Background(), request); !errors.Is(err, ErrConflict) {
+		t.Fatalf("idempotent retry on drifted bundle error=%v, want ErrConflict", err)
+	}
+}
+
+func TestPendingRunRejectsSuiteRevisionDriftAndNonCurrentGateContract(t *testing.T) {
 	for _, mutate := range []struct {
-		name string
-		fn   func(*RunManifest)
+		name      string
+		fn        func(*RunManifest)
+		wantError error
+		match     string
 	}{
-		{name: "suite revision", fn: func(manifest *RunManifest) { manifest.SuiteRevisions["evaluation-smoke"] = "builtin-v2" }},
-		{name: "gate contract", fn: func(manifest *RunManifest) { manifest.GateContractVersion = "evaluation-release-gates.v2" }},
+		{name: "suite revision", fn: func(manifest *RunManifest) { manifest.SuiteRevisions["evaluation-smoke"] = "builtin-v2" }, wantError: ErrConflict, match: "contract revision"},
+		{name: "suite executor", fn: func(manifest *RunManifest) { manifest.SuiteExecutors["evaluation-smoke"] = "retired-executor.v0" }, wantError: ErrInvalid, match: "executor"},
+		{name: "gate contract", fn: func(manifest *RunManifest) { manifest.GateContractVersion = "evaluation-release-gates.v1" }, wantError: ErrInvalid, match: "gate contract"},
 	} {
 		t.Run(mutate.name, func(t *testing.T) {
 			service, root := newTestService(t, &controlledProcess{}, 1)
@@ -577,8 +370,8 @@ func TestPendingRunCannotCrossSuiteOrProfileContractUpgrade(t *testing.T) {
 			if writeErr := writeJSONAtomic(manifestPath, manifest); writeErr != nil {
 				t.Fatalf("write drifted manifest: %v", writeErr)
 			}
-			if _, startErr := service.StartRun(context.Background(), run.ID); !errors.Is(startErr, ErrConflict) || !strings.Contains(startErr.Error(), "contract revision") {
-				t.Fatalf("StartRun drift error=%v, want contract ErrConflict", startErr)
+			if _, startErr := service.StartRun(context.Background(), run.ID); !errors.Is(startErr, mutate.wantError) || !strings.Contains(startErr.Error(), mutate.match) {
+				t.Fatalf("StartRun drift error=%v, want %v containing %q", startErr, mutate.wantError, mutate.match)
 			}
 			persisted, err := service.GetRun(run.ID)
 			if err != nil || persisted.Status != StatusPending || persisted.StartedAt != nil {
@@ -621,6 +414,27 @@ func waitForRunStatus(t *testing.T, service *Service, runID string, want RunStat
 			if err == nil && run.Status == want {
 				return run
 			}
+		}
+	}
+}
+
+func waitForWorkerExit(t *testing.T, service *Service, runID string) {
+	t.Helper()
+	deadline := time.NewTimer(2 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		service.mu.Lock()
+		_, active := service.active[runID]
+		service.mu.Unlock()
+		if !active {
+			return
+		}
+		select {
+		case <-deadline.C:
+			t.Fatal("evaluation worker did not exit")
+		case <-ticker.C:
 		}
 	}
 }
@@ -679,6 +493,123 @@ func TestRunLifecycleStartIsIdempotentAndBundleBacked(t *testing.T) {
 	}
 }
 
+func TestCancelWinsBeforeSealingPublishesNoReportOrAnchor(t *testing.T) {
+	process := &controlledProcess{
+		started:     make(chan ProcessSpec, 1),
+		release:     make(chan struct{}),
+		returned:    make(chan struct{}),
+		writeReport: true,
+	}
+	service, root := newTestService(t, process, 1)
+	run, createErr := service.CreateRun(context.Background(), validCreateRequest())
+	if createErr != nil {
+		t.Fatalf("CreateRun: %v", createErr)
+	}
+	peer, peerErr := NewService(Options{
+		DataDir: root, PythonPath: "python3", ConfigPath: filepath.Join(root, "config.yaml"),
+		RouterAPIURL: "http://router.invalid", EnvoyURL: "http://envoy.invalid",
+		CodeRevision: testSourceRevision, MaxConcurrent: 1, Process: &controlledProcess{},
+	})
+	if peerErr != nil {
+		t.Fatalf("create peer evaluation service: %v", peerErr)
+	}
+	defer func() { _ = peer.Close() }()
+	if _, startErr := service.StartRun(context.Background(), run.ID); startErr != nil {
+		t.Fatalf("StartRun: %v", startErr)
+	}
+	<-process.started
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		running, readErr := service.GetRun(run.ID)
+		if readErr == nil && running.Progress.Percent == 50 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("worker did not reach the publication barrier: run=%+v err=%v", running, readErr)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	service.mu.Lock()
+	serviceLocked := true
+	defer func() {
+		if serviceLocked {
+			service.mu.Unlock()
+		}
+	}()
+	close(process.release)
+	<-process.returned
+	cancelled, err := peer.CancelRun(run.ID)
+	if err != nil || cancelled.Status != StatusCancelled {
+		t.Fatalf("CancelRun: run=%+v err=%v", cancelled, err)
+	}
+	service.mu.Unlock()
+	serviceLocked = false
+	waitForWorkerExit(t, service, run.ID)
+
+	runDir := filepath.Join(root, "runs", run.ID)
+	for _, name := range []string{reportFileName, reportAnchorFileName} {
+		if _, statErr := os.Lstat(filepath.Join(runDir, name)); !os.IsNotExist(statErr) {
+			t.Fatalf("cancelled run published %s: %v", name, statErr)
+		}
+	}
+	if _, err := service.ReportJSON(run.ID); !errors.Is(err, ErrConflict) {
+		t.Fatalf("ReportJSON for cancelled run error=%v, want ErrConflict", err)
+	}
+}
+
+func TestSealingWinsBeforeCancelAndCompletesPublication(t *testing.T) {
+	process := &controlledProcess{
+		started: make(chan ProcessSpec, 1), release: make(chan struct{}), writeReport: true,
+	}
+	service, root := newTestService(t, process, 1)
+	run, err := service.CreateRun(context.Background(), validCreateRequest())
+	if err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	if _, err := service.StartRun(context.Background(), run.ID); err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+	<-process.started
+
+	runEvidencePublicationMu.Lock()
+	publicationLocked := true
+	defer func() {
+		if publicationLocked {
+			runEvidencePublicationMu.Unlock()
+		}
+		_ = service.Close()
+	}()
+	close(process.release)
+	sealing := waitForRunStatus(t, service, run.ID, StatusSealing)
+	if sealing.CompletedAt != nil || sealing.Error != "" {
+		t.Fatalf("sealing state is not active: %+v", sealing)
+	}
+	if _, err := service.CancelRun(run.ID); !errors.Is(err, ErrConflict) {
+		t.Fatalf("CancelRun during sealing error=%v, want ErrConflict", err)
+	}
+	if current, err := service.GetRun(run.ID); err != nil || current.Status != StatusSealing {
+		t.Fatalf("cancel changed sealing run: run=%+v err=%v", current, err)
+	}
+	for _, name := range []string{reportFileName, reportAnchorFileName} {
+		if _, statErr := os.Lstat(filepath.Join(root, "runs", run.ID, name)); !os.IsNotExist(statErr) {
+			t.Fatalf("evidence %s was published before the sealing barrier opened: %v", name, statErr)
+		}
+	}
+	runEvidencePublicationMu.Unlock()
+	publicationLocked = false
+
+	completed := waitForRunStatus(t, service, run.ID, StatusCompleted)
+	if completed.CompletedAt == nil {
+		t.Fatalf("sealing run did not complete: %+v", completed)
+	}
+	if _, err := service.ReportJSON(run.ID); err != nil {
+		t.Fatalf("ReportJSON after sealing completion: %v", err)
+	}
+	if _, err := service.store.readReportAnchor(run.ID); err != nil {
+		t.Fatalf("read completed report anchor: %v", err)
+	}
+}
+
 func TestRunCancellationAndRestartRecovery(t *testing.T) {
 	process := &controlledProcess{started: make(chan ProcessSpec, 1)}
 	service, root := newTestService(t, process, 1)
@@ -699,11 +630,11 @@ func TestRunCancellationAndRestartRecovery(t *testing.T) {
 	if interruptedErr != nil {
 		t.Fatalf("CreateRun interrupted: %v", interruptedErr)
 	}
-	interrupted.Status = StatusRunning
-	if err := service.store.UpdateRun(interrupted); err != nil {
-		t.Fatalf("stage interrupted status: %v", err)
-	}
-	restarted, restartErr := NewService(Options{DataDir: root, PythonPath: "python3", ConfigPath: filepath.Join(root, "config.yaml")})
+	interrupted = stageRunningTestRun(t, service, interrupted)
+	restarted, restartErr := NewService(Options{
+		DataDir: root, PythonPath: "python3", ConfigPath: filepath.Join(root, "config.yaml"),
+		CodeRevision: testSourceRevision,
+	})
 	if restartErr != nil {
 		t.Fatalf("restart NewService: %v", restartErr)
 	}
@@ -714,5 +645,124 @@ func TestRunCancellationAndRestartRecovery(t *testing.T) {
 	events, eventsErr := restarted.EventsAfter(interrupted.ID, "1")
 	if eventsErr != nil || len(events) != 1 || events[0].Type != "failed" {
 		t.Fatalf("recovery events=%+v err=%v", events, eventsErr)
+	}
+}
+
+func TestFinalizeRetriesTransientTerminalStatusFailureInProcess(t *testing.T) {
+	process := &controlledProcess{started: make(chan ProcessSpec, 1), release: make(chan struct{}), writeReport: true}
+	service, _ := newTestService(t, process, 1)
+	persistence := &failOnceTerminalStatusPersistence{
+		delegate: service.store.statusPersistence, commitBeforeFailure: true,
+	}
+	service.store.statusPersistence = persistence
+	run, createErr := service.CreateRun(context.Background(), validCreateRequest())
+	if createErr != nil {
+		t.Fatalf("CreateRun: %v", createErr)
+	}
+	if _, startErr := service.StartRun(context.Background(), run.ID); startErr != nil {
+		t.Fatalf("StartRun: %v", startErr)
+	}
+	<-process.started
+	close(process.release)
+	completed := waitForRunStatus(t, service, run.ID, StatusCompleted)
+	if !persistence.failed.Load() || completed.CompletedAt == nil {
+		t.Fatalf("terminal retry was not exercised: run=%+v failed=%v", completed, persistence.failed.Load())
+	}
+	events, err := service.EventsAfter(run.ID, "")
+	if err != nil {
+		t.Fatalf("EventsAfter: %v", err)
+	}
+	assertSingleStableTerminalEvent(t, service, run.ID, events, "completed")
+}
+
+func TestCancelRetryUsesDerivedStableTerminalEvent(t *testing.T) {
+	service, _ := newTestService(t, &controlledProcess{}, 1)
+	persistence := &failOnceTerminalStatusPersistence{delegate: service.store.statusPersistence}
+	service.store.statusPersistence = persistence
+	run, createErr := service.CreateRun(context.Background(), validCreateRequest())
+	if createErr != nil {
+		t.Fatalf("CreateRun: %v", createErr)
+	}
+	run = stageRunningTestRun(t, service, run)
+	if _, appendErr := service.store.AppendEvent(Event{
+		RunID: run.ID, Type: "cancelled", Timestamp: time.Now().UTC(), Message: "must not persist",
+	}); !errors.Is(appendErr, ErrInvalid) {
+		t.Fatalf("terminal control-event append error=%v, want ErrInvalid", appendErr)
+	}
+	if _, cancelErr := service.CancelRun(run.ID); cancelErr == nil || !strings.Contains(cancelErr.Error(), "injected terminal") {
+		t.Fatalf("first CancelRun error=%v, want injected persistence failure", cancelErr)
+	}
+	if running, readErr := service.GetRun(run.ID); readErr != nil || running.Status != StatusRunning {
+		t.Fatalf("failed cancel changed durable state: run=%+v err=%v", running, readErr)
+	}
+	cancelled, cancelErr := service.CancelRun(run.ID)
+	if cancelErr != nil || cancelled.Status != StatusCancelled {
+		t.Fatalf("retry CancelRun: run=%+v err=%v", cancelled, cancelErr)
+	}
+	events, eventsErr := service.EventsAfter(run.ID, "")
+	if eventsErr != nil {
+		t.Fatalf("EventsAfter: %v", eventsErr)
+	}
+	assertSingleStableTerminalEvent(t, service, run.ID, events, "cancelled")
+}
+
+func TestCloseStopsTerminalPersistenceRetryWithoutLeakingWorker(t *testing.T) {
+	process := &controlledProcess{started: make(chan ProcessSpec, 1), release: make(chan struct{}), writeReport: true}
+	service, _ := newTestService(t, process, 1)
+	persistence := &alwaysFailTerminalStatusPersistence{
+		delegate: service.store.statusPersistence, attempted: make(chan struct{}),
+	}
+	service.store.statusPersistence = persistence
+	run, err := service.CreateRun(context.Background(), validCreateRequest())
+	if err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	if _, err := service.StartRun(context.Background(), run.ID); err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+	<-process.started
+	close(process.release)
+	select {
+	case <-persistence.attempted:
+	case <-time.After(time.Second):
+		t.Fatal("terminal persistence was not attempted")
+	}
+
+	closed := make(chan error, 1)
+	go func() { closed <- service.Close() }()
+	select {
+	case closeErr := <-closed:
+		if closeErr == nil || !strings.Contains(closeErr.Error(), "injected permanent terminal status persistence failure") {
+			t.Fatalf("Close error=%v, want terminal persistence failure", closeErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Close leaked a worker blocked in terminal persistence retry")
+	}
+	service.mu.Lock()
+	_, active := service.active[run.ID]
+	service.mu.Unlock()
+	if active {
+		t.Fatal("terminal persistence retry left an active worker")
+	}
+}
+
+func assertSingleStableTerminalEvent(t *testing.T, service *Service, runID string, events []Event, eventType string) {
+	t.Helper()
+	terminal := make([]Event, 0, 1)
+	for _, event := range events {
+		if terminalWorkerEventType(event.Type) {
+			terminal = append(terminal, event)
+		}
+	}
+	if len(terminal) != 1 || terminal[0].Type != eventType || terminal[0].ID != events[len(events)-1].ID {
+		t.Fatalf("terminal events=%+v, want one stable %s event at tail", terminal, eventType)
+	}
+	replay, err := service.EventsAfter(runID, terminal[0].ID)
+	if err != nil || len(replay) != 0 {
+		t.Fatalf("terminal replay after id %s = %+v, err=%v", terminal[0].ID, replay, err)
+	}
+	again, err := service.EventsAfter(runID, "")
+	if err != nil || len(again) != len(events) || again[len(again)-1].ID != terminal[0].ID {
+		t.Fatalf("repeated replay is unstable: events=%+v err=%v", again, err)
 	}
 }

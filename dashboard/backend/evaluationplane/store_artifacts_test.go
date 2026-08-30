@@ -18,8 +18,9 @@ func reportForRun(run Run, artifacts []Artifact) Report {
 	run.Status = StatusCompleted
 	run.Error = ""
 	return Report{
-		SchemaVersion: SchemaVersion,
-		Run:           run,
+		SchemaVersion:       SchemaVersion,
+		AttestationRevision: ServerAttestationRevision,
+		Run:                 run,
 		Summary: ReportSummary{
 			Verdict: "pass", Coverage: Coverage{Evaluated: 1, Total: 1, Fraction: 1}, PassedGates: 1,
 		},
@@ -91,6 +92,8 @@ func sealTestReport(t *testing.T, service *Service, runID string) {
 		run.StartedAt = &now
 	}
 	run.CompletedAt = &now
+	run.Error = ""
+	run.Progress = RunProgress{Percent: 100, Completed: len(run.TrackIDs), Total: len(run.TrackIDs), Message: "Evaluation completed"}
 	if updateErr := service.store.UpdateRun(run); updateErr != nil {
 		t.Fatalf("complete test run: %v", updateErr)
 	}
@@ -98,11 +101,12 @@ func sealTestReport(t *testing.T, service *Service, runID string) {
 	if reportErr != nil {
 		t.Fatalf("read report before test seal: %v", reportErr)
 	}
-	reportValue, decodeErr := decodeReportStrict(runID, reportBytes)
+	reportValue, decodeErr := decodeWorkerReportStrict(runID, reportBytes)
 	if decodeErr != nil {
 		t.Fatalf("decode report before test seal: %v", decodeErr)
 	}
 	canonicalizeReportRun(run, &reportValue, now)
+	reportValue.AttestationRevision = ServerAttestationRevision
 	if writeErr := service.store.WriteReport(runID, reportValue); writeErr != nil {
 		t.Fatalf("canonicalize report before test seal: %v", writeErr)
 	}
@@ -119,17 +123,19 @@ func sealTestReport(t *testing.T, service *Service, runID string) {
 	if err != nil {
 		t.Fatalf("read report for test seal: %v", err)
 	}
-	_, manifest, err := service.readDurableManifest(runID)
+	manifestValue, manifest, err := service.readDurableManifest(runID)
 	if err != nil {
 		t.Fatalf("read manifest for test seal: %v", err)
 	}
 	reportDigest, reportSize := digestAndSize(report)
-	manifestDigest, _ := digestAndSize(manifest)
+	manifestArtifactDigest, _ := digestAndSize(manifest)
 	_ = os.Remove(filepath.Join(service.store.runsRoot, runID, reportAnchorFileName))
 	if err := service.store.writeReportAnchor(runID, reportAnchor{
 		SchemaVersion: SchemaVersion, AttestationRevision: reportValue.AttestationRevision,
 		RunID: runID, ReportDigest: reportDigest, ReportSize: reportSize,
-		ManifestDigest: manifestDigest, PrivateReceiptDigest: privateDigest, EvidenceFiles: evidenceFiles, CreatedAt: now,
+		ManifestSemanticDigest: manifestValue.ManifestDigest,
+		ManifestArtifactDigest: manifestArtifactDigest,
+		PrivateReceiptDigest:   privateDigest, EvidenceFiles: evidenceFiles, CreatedAt: now,
 	}); err != nil {
 		t.Fatalf("seal test report: %v", err)
 	}
@@ -137,7 +143,7 @@ func sealTestReport(t *testing.T, service *Service, runID string) {
 
 func writeAnchoredTestReport(t *testing.T, service *Service, runID string, report Report) {
 	t.Helper()
-	if err := service.store.WriteReport(runID, report); err != nil {
+	if err := service.store.WriteReport(runID, workerReportFromReport(report)); err != nil {
 		t.Fatalf("write test report: %v", err)
 	}
 	sealTestReport(t, service, runID)
@@ -176,7 +182,7 @@ func writeReportWithPublicReceipt(t *testing.T, service *Service, run Run, artif
 	artifacts = append(artifacts, artifactForBytes(
 		"checksums", publicChecksumArtifactName, "text/plain", receiptBytes,
 	))
-	if err := service.store.WriteReport(run.ID, reportForRun(run, artifacts)); err != nil {
+	if err := service.store.WriteReport(run.ID, workerReportFromReport(reportForRun(run, artifacts))); err != nil {
 		t.Fatalf("WriteReport: %v", err)
 	}
 	sealTestReport(t, service, run.ID)
@@ -210,32 +216,35 @@ func TestArtifactDownloadRequiresReportAndCanonicalAllowlist(t *testing.T) {
 	if readErr != nil || string(got) != string(content) {
 		t.Fatalf("artifact bytes=%q err=%v", got, readErr)
 	}
+	if opened.MediaType != "application/json" {
+		t.Fatalf("artifact media type=%q, want application/json", opened.MediaType)
+	}
 	if _, err := service.OpenArtifact(run.ID, "not-in-report"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("unlisted artifact error=%v, want ErrNotFound", err)
 	}
 
-	if err := service.store.WriteReport(run.ID, reportForRun(run, []Artifact{{
+	if err := service.store.WriteReport(run.ID, workerReportFromReport(reportForRun(run, []Artifact{{
 		ID: "manifest", Name: manifestFileName, Kind: "json", URI: manifestFileName,
-	}})); err != nil {
+	}}))); err != nil {
 		t.Fatalf("WriteReport manifest: %v", err)
 	}
 	if _, err := service.OpenArtifact(run.ID, "manifest"); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("protected manifest error=%v, want ErrInvalid", err)
 	}
 
-	if err := service.store.WriteReport(run.ID, reportForRun(run, []Artifact{{
+	if err := service.store.WriteReport(run.ID, workerReportFromReport(reportForRun(run, []Artifact{{
 		ID: "traversal", Name: "../metrics.json", Kind: "json", URI: "../metrics.json",
 		Digest: digestBytes(content), SizeBytes: int64(len(content)),
-	}})); err != nil {
+	}}))); err != nil {
 		t.Fatalf("WriteReport traversal: %v", err)
 	}
 	if _, err := service.OpenArtifact(run.ID, "traversal"); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("traversal error=%v, want ErrInvalid", err)
 	}
-	if err := service.store.WriteReport(run.ID, reportForRun(run, []Artifact{{
+	if err := service.store.WriteReport(run.ID, workerReportFromReport(reportForRun(run, []Artifact{{
 		ID: "normalized-traversal", Name: "nested/../metrics.json", Kind: "json", URI: "nested/../metrics.json",
 		Digest: digestBytes(content), SizeBytes: int64(len(content)),
-	}})); err != nil {
+	}}))); err != nil {
 		t.Fatalf("WriteReport normalized traversal: %v", err)
 	}
 	if _, err := service.OpenArtifact(run.ID, "normalized-traversal"); !errors.Is(err, ErrInvalid) {
@@ -311,7 +320,7 @@ func TestArtifactDownloadVerifiesReportAndPublicChecksumEvidence(t *testing.T) {
 				artifactForBytes("metrics", "metrics.json", "application/json", content),
 			})
 			artifacts = test.mutate(t, runDir, artifacts)
-			if err := service.store.WriteReport(run.ID, reportForRun(run, artifacts)); err != nil {
+			if err := service.store.WriteReport(run.ID, workerReportFromReport(reportForRun(run, artifacts))); err != nil {
 				t.Fatalf("rewrite report: %v", err)
 			}
 			if _, err := service.OpenArtifact(run.ID, "metrics"); !errors.Is(err, ErrInvalid) {
@@ -323,13 +332,13 @@ func TestArtifactDownloadVerifiesReportAndPublicChecksumEvidence(t *testing.T) {
 
 func TestArtifactSensitivityAllowlistExcludesCasesGradingAndConnectivity(t *testing.T) {
 	service, root := newTestService(t, &controlledProcess{}, 1)
-	run, err := service.CreateRun(context.Background(), validCreateRequest())
-	if err != nil {
-		t.Fatalf("CreateRun: %v", err)
+	run, createErr := service.CreateRun(context.Background(), validCreateRequest())
+	if createErr != nil {
+		t.Fatalf("CreateRun: %v", createErr)
 	}
 	runDir := filepath.Join(root, "runs", run.ID)
 	traceBytes := []byte(`{"schema_version":"evaluation.v1","case_id":"case-1","plugins":[],"recommended_models":[],"traces":[],"signals":[]}` + "\n")
-	caseBytes := []byte(`{"schema_version":"evaluation.v1","id":"case-1","messages":[{"role":"user","content":"test"}],"modality":"text","tags":[]}` + "\n")
+	caseBytes := []byte(`{"schema_version":"evaluation.v1","id":"case-1","track_ids":["routing"],"messages":[{"role":"user","content":"test"}],"modality":"text","tags":[]}` + "\n")
 	artifacts := []Artifact{
 		artifactForBytes("traces", "routing-traces.jsonl", "application/x-ndjson", traceBytes),
 		artifactForBytes("capacity", "capacity-profile.json", "application/json", []byte("{}\n")),
@@ -382,10 +391,10 @@ func TestArtifactAndReportRejectSymlinks(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(runDir, "metrics.json")); err != nil {
 		t.Fatalf("symlink artifact: %v", err)
 	}
-	if err := service.store.WriteReport(run.ID, reportForRun(run, []Artifact{{
+	if err := service.store.WriteReport(run.ID, workerReportFromReport(reportForRun(run, []Artifact{{
 		ID: "metrics", Name: "metrics.json", Kind: "json", URI: "metrics.json",
 		Digest: digestBytes([]byte("private\n")), SizeBytes: int64(len("private\n")),
-	}})); err != nil {
+	}}))); err != nil {
 		t.Fatalf("WriteReport: %v", err)
 	}
 	if _, err := service.store.OpenArtifact(run.ID, "metrics.json"); !errors.Is(err, ErrInvalid) {
@@ -403,10 +412,7 @@ func TestArtifactAndReportRejectSymlinks(t *testing.T) {
 	if err := os.Symlink(outsideReport, reportPath); err != nil {
 		t.Fatalf("symlink report: %v", err)
 	}
-	run.Status = StatusCompleted
-	if err := service.store.UpdateRun(run); err != nil {
-		t.Fatalf("complete run for report read: %v", err)
-	}
+	run = completeTestRun(t, service, run)
 	if _, err := service.ReportJSON(run.ID); err == nil {
 		t.Fatal("symlink report was accepted")
 	}
@@ -427,10 +433,10 @@ func TestArtifactDownloadRejectsInBundleSymlinkAndSharedPermissions(t *testing.T
 	if err := os.Symlink("cases.jsonl", linked); err != nil {
 		t.Fatalf("symlink in-bundle artifact: %v", err)
 	}
-	if err := service.store.WriteReport(run.ID, reportForRun(run, []Artifact{{
+	if err := service.store.WriteReport(run.ID, workerReportFromReport(reportForRun(run, []Artifact{{
 		ID: "metrics", Name: "metrics.json", Kind: "json", URI: "metrics.json",
 		Digest: digestBytes([]byte("private\n")), SizeBytes: int64(len("private\n")),
-	}})); err != nil {
+	}}))); err != nil {
 		t.Fatalf("WriteReport: %v", err)
 	}
 	if _, err := service.store.OpenArtifact(run.ID, "metrics.json"); !errors.Is(err, ErrInvalid) {
@@ -473,6 +479,35 @@ func TestCompletedReportRejectsPostSealPrivateEvidenceMutation(t *testing.T) {
 	}
 }
 
+func TestCompletedReportRejectsMutationWithRestoredSizeAndMtime(t *testing.T) {
+	service, root := newTestService(t, &controlledProcess{}, 1)
+	run, err := service.CreateRun(context.Background(), validCreateRequest())
+	if err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	recordsPath := filepath.Join(root, "runs", run.ID, "records.jsonl")
+	records := []byte("{\"case_id\":\"case-1\"}\n")
+	if writeErr := os.WriteFile(recordsPath, records, 0o600); writeErr != nil {
+		t.Fatalf("write records: %v", writeErr)
+	}
+	writeReportWithPublicReceipt(t, service, run, nil)
+	info, statErr := os.Stat(recordsPath)
+	if statErr != nil {
+		t.Fatalf("stat sealed records: %v", statErr)
+	}
+	tampered := append([]byte(nil), records...)
+	tampered[len(tampered)-2] = '2'
+	if err := os.WriteFile(recordsPath, tampered, 0o600); err != nil {
+		t.Fatalf("tamper records: %v", err)
+	}
+	if err := os.Chtimes(recordsPath, info.ModTime(), info.ModTime()); err != nil {
+		t.Fatalf("restore records mtime: %v", err)
+	}
+	if _, err := service.ReportJSON(run.ID); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("metadata-preserving evidence mutation error=%v, want ErrInvalid", err)
+	}
+}
+
 func TestCompletedReportSurvivesPrivatePermissionRepair(t *testing.T) {
 	service, root := newTestService(t, &controlledProcess{}, 1)
 	run, err := service.CreateRun(context.Background(), validCreateRequest())
@@ -490,22 +525,6 @@ func TestCompletedReportSurvivesPrivatePermissionRepair(t *testing.T) {
 	}
 	if _, err := service.ReportJSON(run.ID); err != nil {
 		t.Fatalf("read report after private permission repair: %v", err)
-	}
-}
-
-func TestSealedEvidenceAcceptsLegacyMetadataVersionWhenDigestMatches(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "evidence.json")
-	content := []byte("{\"sealed\":true}\n")
-	if err := os.WriteFile(path, content, 0o600); err != nil {
-		t.Fatalf("write evidence: %v", err)
-	}
-	sealed, err := sealEvidenceFile("run", "evidence.json", path, digestBytes(content), maxStructuredArtifactBytes)
-	if err != nil {
-		t.Fatalf("seal evidence: %v", err)
-	}
-	sealed.FileVersion = digestString("legacy-ctime-based-file-version")
-	if err := verifyEvidenceFileMetadata(sealed, path); err != nil {
-		t.Fatalf("verify legacy metadata version by content digest: %v", err)
 	}
 }
 

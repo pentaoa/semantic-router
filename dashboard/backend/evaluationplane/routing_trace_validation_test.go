@@ -1,6 +1,7 @@
 package evaluationplane
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -68,9 +69,9 @@ func TestRealWorkerRoutingTracePassesServerBudgets(t *testing.T) {
 		writer.Header().Set("Content-Type", "application/json")
 		switch request.URL.Path {
 		case "/v1/models":
-			_, _ = writer.Write([]byte(`{"data":[{"id":"entrypoint-a","routing":{"resolution":"virtual","selectable":true,"default_route":true}}]}`))
+			_, _ = writer.Write([]byte(`{"data":[{"id":"entrypoint-a","routing":{"resolution":"virtual","selectable":true,"default_route":true,"recipe":"default"}}]}`))
 		case "/api/v1/eval":
-			_, _ = writer.Write([]byte(`{"recipe":"fixture-recipe","decision_result":{"decision_name":"route","algorithm":"confidence","plugins":["audit"]},"recommended_models":["provider-fast"],"selected_model":"provider-fast","selection_status":"selected","selection_method":"confidence","eval_trace":[{"decision_name":"route","matched":true,"confidence":0.9,"root_trace":{"node_type":"leaf","matched":true,"confidence":0.9,"children":[]}}],"signal_confidences":{"domain:reasoning":0.9}}`))
+			_, _ = writer.Write([]byte(`{"recipe":"default","decision_result":{"decision_name":"route","algorithm":"static","plugins":["audit"]},"recommended_models":["Org/Fast Model"],"selected_model":"Org/Fast Model","selection_status":"selected","selection_method":"static","eval_trace":[{"decision_name":"route","matched":true,"confidence":0.9,"root_trace":{"node_type":"leaf","matched":true,"confidence":0.9,"children":[]}}],"signal_confidences":{"domain:reasoning":0.9}}`))
 		default:
 			http.NotFound(writer, request)
 		}
@@ -82,7 +83,7 @@ func TestRealWorkerRoutingTracePassesServerBudgets(t *testing.T) {
 		t.Fatal(mkdirErr)
 	}
 	configPath := filepath.Join(root, "config.yaml")
-	if writeErr := os.WriteFile(configPath, []byte("version: v0.3\nrouting:\n  modelCards: []\n"), 0o600); writeErr != nil {
+	if writeErr := os.WriteFile(configPath, []byte(modelArmTestYAML), 0o600); writeErr != nil {
 		t.Fatal(writeErr)
 	}
 	service, err := NewService(Options{
@@ -95,8 +96,9 @@ func TestRealWorkerRoutingTracePassesServerBudgets(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = service.Close() })
 	run, err := service.CreateRun(context.Background(), CreateRunRequest{
-		Name: "real routing trace", SuiteIDs: []string{"live-routing-core"},
-		TrackIDs: []TrackID{"routing"}, Mode: ModeLive, TargetID: "runtime",
+		ClientRequestID: newTestClientRequestID(),
+		Name:            "real routing trace", SuiteIDs: []string{"live-mom-core"},
+		TrackIDs: []TrackID{"routing"}, Mode: ModeLive, TargetID: mixtureTargetID("default"),
 		ChangeProfile: "recipe", SampleLimit: 4, Concurrency: 1, Seed: 17,
 	})
 	if err != nil {
@@ -109,11 +111,27 @@ func TestRealWorkerRoutingTracePassesServerBudgets(t *testing.T) {
 		t.Fatalf("stage running run: %v", updateErr)
 	}
 	spec := ProcessSpec{
-		ManifestPath: filepath.Join(root, "runs", run.ID, manifestFileName),
-		StorePath:    root,
+		ManifestPath:       filepath.Join(root, "runs", run.ID, manifestFileName),
+		StorePath:          root,
+		SuiteStorePath:     service.store.SuiteRoot(),
+		executionContracts: serviceExecutionContractsForTest(t, service),
 	}
-	if processErr := NewCommandProcess(python).Run(context.Background(), spec, func(WorkerEvent) error { return nil }); processErr != nil {
-		t.Fatalf("real routing worker: %v", processErr)
+	process := NewCommandProcess(python)
+	var diagnostics bytes.Buffer
+	process.diagnosticSink = &diagnostics
+	result, processErr := process.Run(context.Background(), spec, func(WorkerEvent) error { return nil })
+	if processErr != nil {
+		t.Fatalf("real routing worker: %v; diagnostics=%s", processErr, diagnostics.String())
+	}
+	defer result.discardStagedEvidence()
+	if sealingErr := service.beginSealing(run.ID); sealingErr != nil {
+		t.Fatalf("begin routing evidence sealing: %v", sealingErr)
+	}
+	if publishErr := result.publishStagedEvidence(); publishErr != nil {
+		t.Fatalf("publish routing worker evidence: %v", publishErr)
+	}
+	if _, attestationErr := service.persistExecutionAttestation(run.ID, result.ExecutionTranscript); attestationErr != nil {
+		t.Fatalf("attest real routing worker: %v", attestationErr)
 	}
 	if validationErr := service.validateAndAnchorReport(run.ID); validationErr != nil {
 		t.Fatalf("Go rejected a bounded real-worker routing trace: %v", validationErr)

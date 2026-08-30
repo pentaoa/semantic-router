@@ -1,7 +1,9 @@
 package evaluationplane
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -13,70 +15,74 @@ import (
 	"time"
 )
 
-func TestValidateCapacityProfileArtifactAcceptsStrictProfile(t *testing.T) {
+func TestValidateCapacityProfileArtifactAcceptsRepeatedClosedLoopEvidence(t *testing.T) {
 	runDir := t.TempDir()
 	writeCapacityRecords(t, runDir)
-	if err := os.WriteFile(
-		filepath.Join(runDir, capacityProfileArtifactName),
-		capacityProfileJSON(capacityLevelJSON(1)),
-		0o600,
-	); err != nil {
-		t.Fatalf("write capacity profile: %v", err)
-	}
-	if err := validateCapacityProfileArtifact(runDir, capacityManifest(), capacityReport(), capacityRecordsAttestation()); err != nil {
+	writeCapacityProfile(t, runDir, capacityTestProfile())
+	attestation, err := validateCapacityProfileArtifact(
+		runDir,
+		capacityManifest(),
+		capacityReport(),
+		capacityRecordsAttestation(),
+	)
+	if err != nil {
 		t.Fatalf("validateCapacityProfileArtifact: %v", err)
+	}
+	if attestation == nil || attestation.Headroom != 1 || attestation.LevelCount != 2 {
+		t.Fatalf("capacity SLO attestation = %#v", attestation)
 	}
 }
 
-func TestValidateCapacityProfileArtifactRejectsMalformedEvidence(t *testing.T) {
-	validLevel := capacityLevelJSON(1)
+func TestValidateCapacityProfileArtifactRejectsMalformedOrWeakEvidence(t *testing.T) {
+	valid, err := json.Marshal(capacityTestProfile())
+	if err != nil {
+		t.Fatal(err)
+	}
 	tests := []struct {
 		name string
 		raw  []byte
 	}{
-		{name: "malformed json", raw: []byte("{not-json\n")},
-		{name: "null levels", raw: []byte(`{"schema_version":"evaluation.v1","kind":"bounded-concurrency-sweep","levels":null,"slo":null}`)},
-		{name: "untyped slo object", raw: []byte(strings.Replace(string(capacityProfileJSON(validLevel)), `"slo":null`, `"slo":{"api_key":"public"}`, 1))},
-		{name: "NaN", raw: []byte(strings.Replace(string(capacityProfileJSON(validLevel)), `"throughput_rps":1.5`, `"throughput_rps":NaN`, 1))},
-		{name: "duplicate concurrency", raw: capacityProfileJSON(validLevel + "," + capacityLevelJSON(1))},
-		{name: "missing required field", raw: []byte(strings.Replace(string(capacityProfileJSON(validLevel)), `"requests":2,`, "", 1))},
-		{name: "negative count", raw: []byte(strings.Replace(string(capacityProfileJSON(validLevel)), `"errors":0`, `"errors":-1`, 1))},
-		{name: "inconsistent outcome counts", raw: []byte(strings.Replace(string(capacityProfileJSON(validLevel)), `"successes":2`, `"successes":1`, 1))},
-		{name: "non finite exponent", raw: []byte(strings.Replace(string(capacityProfileJSON(validLevel)), `"elapsed_seconds":2.0`, `"elapsed_seconds":1e1000`, 1))},
-		{name: "unknown field", raw: []byte(strings.Replace(string(capacityProfileJSON(validLevel)), `"runtime_cost_usd":0.01`, `"runtime_cost_usd":0.01,"forged":true`, 1))},
+		{name: "malformed JSON", raw: []byte("{not-json\n")},
+		{name: "unknown field", raw: bytes.Replace(valid, []byte(`"kind":"repeated-closed-loop-capacity"`), []byte(`"kind":"repeated-closed-loop-capacity","forged":true`), 1)},
+		{name: "missing protocol", raw: bytes.Replace(valid, []byte(`"protocol":{`), []byte(`"protocol":null,"discarded":{`), 1)},
+		{name: "tiny measurement window", raw: bytes.Replace(valid, []byte(`"measurement_requests_per_repetition":100`), []byte(`"measurement_requests_per_repetition":2`), 1)},
+		{name: "forged derived error bound", raw: bytes.Replace(valid, []byte(`"error_rate_upper_bound":0.008937872175128179`), []byte(`"error_rate_upper_bound":0`), 1)},
+		{name: "missing repetition", raw: bytes.Replace(valid, []byte(`"repetition":2`), []byte(`"repetition":9`), 1)},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			runDir := t.TempDir()
 			writeCapacityRecords(t, runDir)
 			if err := os.WriteFile(filepath.Join(runDir, capacityProfileArtifactName), test.raw, 0o600); err != nil {
-				t.Fatalf("write capacity profile: %v", err)
+				t.Fatal(err)
 			}
-			if err := validateCapacityProfileArtifact(runDir, capacityManifest(), capacityReport(), capacityRecordsAttestation()); !errors.Is(err, ErrInvalid) {
-				t.Fatalf("validateCapacityProfileArtifact error=%v, want ErrInvalid", err)
+			_, validationErr := validateCapacityProfileArtifact(
+				runDir,
+				capacityManifest(),
+				capacityReport(),
+				capacityRecordsAttestation(),
+			)
+			if !errors.Is(validationErr, ErrInvalid) {
+				t.Fatalf("validation error=%v, want ErrInvalid", validationErr)
 			}
 		})
 	}
 }
 
-func TestValidateCapacityProfileArtifactRejectsSelfConsistentRecordForgery(t *testing.T) {
+func TestValidateCapacityProfileArtifactRejectsSelfConsistentProfileForgery(t *testing.T) {
 	runDir := t.TempDir()
 	writeCapacityRecords(t, runDir)
-	forged := capacityProfileJSON(strings.NewReplacer(
-		`"requests":2`, `"requests":3`,
-		`"successes":2`, `"successes":3`,
-	).Replace(capacityLevelJSON(1)))
-	if err := os.WriteFile(filepath.Join(runDir, capacityProfileArtifactName), forged, 0o600); err != nil {
-		t.Fatalf("write forged capacity profile: %v", err)
-	}
-	err := validateCapacityProfileArtifact(
+	profile := capacityTestProfile()
+	*profile.Levels[0].Throughput += 1
+	writeCapacityProfile(t, runDir, profile)
+	_, err := validateCapacityProfileArtifact(
 		runDir,
 		capacityManifest(),
 		capacityReport(),
 		capacityRecordsAttestation(),
 	)
-	if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "does not match validated records") {
-		t.Fatalf("self-consistent forged profile error=%v, want record mismatch ErrInvalid", err)
+	if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "does not match records") {
+		t.Fatalf("forged profile error=%v, want record mismatch ErrInvalid", err)
 	}
 }
 
@@ -85,9 +91,9 @@ func TestRealWorkerSealRejectsForgedCapacityProfileWithRecomputedReceipts(t *tes
 	if python == "" {
 		t.Skip("set VLLM_SR_EVALUATION_TEST_PYTHON to run the real Python worker")
 	}
-	pythonRoot, err := filepath.Abs("../../../src/vllm-sr")
-	if err != nil {
-		t.Fatal(err)
+	pythonRoot, pathErr := filepath.Abs("../../../src/vllm-sr")
+	if pathErr != nil {
+		t.Fatal(pathErr)
 	}
 	t.Setenv("PYTHONPATH", pythonRoot)
 	t.Setenv("TMPDIR", "/tmp")
@@ -95,9 +101,12 @@ func TestRealWorkerSealRejectsForgedCapacityProfileWithRecomputedReceipts(t *tes
 		writer.Header().Set("Content-Type", "application/json")
 		switch request.URL.Path {
 		case "/v1/models":
-			_, _ = writer.Write([]byte(`{"data":[{"id":"entrypoint-a","routing":{"resolution":"virtual","selectable":true,"default_route":true}}]}`))
+			_, _ = writer.Write([]byte(`{"data":[{"id":"entrypoint-a","routing":{"resolution":"virtual","selectable":true,"default_route":true,"recipe":"default"}}]}`))
 		case "/v1/chat/completions":
-			writer.Header().Set("x-vsr-selected-model", "provider-fast")
+			writer.Header().Set("x-vsr-selected-model", "Org/Fast Model")
+			writer.Header().Set("x-vsr-selected-algorithm", "static")
+			writer.Header().Set("x-vsr-selected-recipe", "default")
+			writer.Header().Set("x-vsr-selected-decision", "route")
 			_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":10,"completion_tokens":2}}`))
 		default:
 			http.NotFound(writer, request)
@@ -110,38 +119,54 @@ func TestRealWorkerSealRejectsForgedCapacityProfileWithRecomputedReceipts(t *tes
 		t.Fatal(mkdirErr)
 	}
 	configPath := filepath.Join(root, "config.yaml")
-	if writeErr := os.WriteFile(configPath, []byte("version: v0.3\nrouting:\n  modelCards: []\n"), 0o600); writeErr != nil {
+	if writeErr := os.WriteFile(configPath, []byte(modelArmTestYAML), 0o600); writeErr != nil {
 		t.Fatal(writeErr)
 	}
-	service, err := NewService(Options{
+	service, serviceErr := NewService(Options{
 		DataDir: root, PythonPath: python, ConfigPath: configPath,
 		RouterAPIURL: server.URL, EnvoyURL: server.URL,
 		CodeRevision: testSourceRevision, MaxConcurrent: 1, Process: &controlledProcess{},
 	})
-	if err != nil {
-		t.Fatalf("NewService: %v", err)
+	if serviceErr != nil {
+		t.Fatalf("NewService: %v", serviceErr)
 	}
 	t.Cleanup(func() { _ = service.Close() })
-	run, err := service.CreateRun(context.Background(), CreateRunRequest{
-		Name: "capacity receipt forgery", SuiteIDs: []string{"live-capacity"},
-		TrackIDs: []TrackID{"capacity"}, Mode: ModeLive, TargetID: "runtime",
+	run, createErr := service.CreateRun(context.Background(), CreateRunRequest{
+		ClientRequestID: newTestClientRequestID(),
+		Name:            "capacity receipt forgery", SuiteIDs: []string{"live-capacity"},
+		TrackIDs: []TrackID{"capacity"}, Mode: ModeLive, TargetID: mixtureTargetID("default"),
 		ChangeProfile: "runtime_capacity", SampleLimit: 4, Concurrency: 2, Seed: 17,
+		CapacitySLO:          testCapacitySLO(2),
+		CapacityLoadProtocol: defaultCapacityLoadProtocol(2),
 	})
-	if err != nil {
-		t.Fatalf("CreateRun: %v", err)
+	if createErr != nil {
+		t.Fatalf("CreateRun: %v", createErr)
 	}
 	startedAt := time.Now().UTC()
 	run.Status = StatusRunning
 	run.StartedAt = &startedAt
-	if err := service.store.UpdateRun(run); err != nil {
-		t.Fatalf("stage running run: %v", err)
+	if updateErr := service.store.UpdateRun(run); updateErr != nil {
+		t.Fatalf("stage running run: %v", updateErr)
 	}
 	spec := ProcessSpec{
-		ManifestPath: filepath.Join(root, "runs", run.ID, manifestFileName),
-		StorePath:    root,
+		ManifestPath:       filepath.Join(root, "runs", run.ID, manifestFileName),
+		StorePath:          root,
+		SuiteStorePath:     service.store.SuiteRoot(),
+		executionContracts: serviceExecutionContractsForTest(t, service),
 	}
-	if err := NewCommandProcess(python).Run(context.Background(), spec, func(WorkerEvent) error { return nil }); err != nil {
-		t.Fatalf("real capacity worker: %v", err)
+	result, processErr := NewCommandProcess(python).Run(context.Background(), spec, func(WorkerEvent) error { return nil })
+	if processErr != nil {
+		t.Fatalf("real capacity worker: %v", processErr)
+	}
+	defer result.discardStagedEvidence()
+	if err := service.beginSealing(run.ID); err != nil {
+		t.Fatalf("begin capacity evidence sealing: %v", err)
+	}
+	if err := result.publishStagedEvidence(); err != nil {
+		t.Fatalf("publish capacity worker evidence: %v", err)
+	}
+	if _, err := service.persistExecutionAttestation(run.ID, result.ExecutionTranscript); err != nil {
+		t.Fatalf("attest real capacity worker: %v", err)
 	}
 	if err := forgeCapacityProfileWithRecomputedReceipts(filepath.Join(root, "runs", run.ID)); err != nil {
 		t.Fatalf("forge self-consistent capacity bundle: %v", err)
@@ -149,19 +174,8 @@ func TestRealWorkerSealRejectsForgedCapacityProfileWithRecomputedReceipts(t *tes
 	if _, err := service.validatePrivateReceipt(run.ID); err != nil {
 		t.Fatalf("recomputed private receipt is not self-consistent: %v", err)
 	}
-	var forgedReport Report
-	if err := readJSON(filepath.Join(root, "runs", run.ID, reportFileName), &forgedReport); err != nil {
-		t.Fatal(err)
-	}
-	publicReceipt, present := findArtifactByName(forgedReport, publicChecksumArtifactName)
-	if !present {
-		t.Fatal("forged report lost its public receipt")
-	}
-	if err := service.verifyPublicChecksum(run.ID, forgedReport, publicReceipt); err != nil {
-		t.Fatalf("recomputed public receipt is not self-consistent: %v", err)
-	}
 	sealErr := service.validateAndAnchorReport(run.ID)
-	if !errors.Is(sealErr, ErrInvalid) || !strings.Contains(sealErr.Error(), "capacity profile does not match validated records") {
+	if !errors.Is(sealErr, ErrInvalid) || !strings.Contains(sealErr.Error(), "capacity profile does not match records") {
 		t.Fatalf("forged capacity seal error=%v, want records mismatch ErrInvalid", sealErr)
 	}
 }
@@ -241,14 +255,26 @@ func forgeCapacityProfileWithRecomputedReceipts(runDir string) error {
 			updateReceipt(&report.Tracks[trackIndex].Artifacts[artifactIndex])
 		}
 	}
-	if err := writeJSONAtomic(filepath.Join(runDir, reportFileName), report); err != nil {
+	if err := writeJSONAtomic(filepath.Join(runDir, reportFileName), workerReportFromReport(report)); err != nil {
 		return err
 	}
 	return writeTestPrivateReceiptWithoutTesting(runDir)
 }
 
 func capacityManifest() RunManifest {
-	return RunManifest{Mode: ModeLive, TrackIDs: []TrackID{"capacity"}}
+	return RunManifest{
+		Mode: ModeLive, TrackIDs: []TrackID{"capacity"}, Concurrency: 2,
+		CapacitySLO:          testCapacitySLO(1),
+		CapacityLoadProtocol: defaultCapacityLoadProtocol(2),
+	}
+}
+
+func testCapacitySLO(required int64) *CapacitySLO {
+	return &CapacitySLO{
+		SchemaVersion: SchemaVersion, RequiredConcurrency: required,
+		MaxLatencyP95MS: 30, MaxErrorRate: 0.05, MinThroughputRPS: 1,
+		MinThroughputScalingEfficiency: 0.5,
+	}
 }
 
 func capacityReport() Report {
@@ -257,47 +283,119 @@ func capacityReport() Report {
 	}}}
 }
 
-func capacityProfileJSON(levels string) []byte {
-	return []byte(fmt.Sprintf(
-		`{"schema_version":"%s","kind":"bounded-concurrency-sweep","levels":[%s],"slo":null}`,
-		SchemaVersion,
-		levels,
-	))
+func capacityTestProfile() capacityProfileEvidence {
+	protocol := defaultCapacityLoadProtocol(2)
+	slo := testCapacitySLO(1)
+	levels := make([]capacityProfileLevel, 0, len(protocol.ConcurrencyLevels))
+	for levelIndex, concurrency := range protocol.ConcurrencyLevels {
+		throughput := float64(concurrency * 10)
+		repetitions := make([]capacityProfileRepetition, 0, protocol.RepetitionsPerLevel)
+		for repetition := int64(1); repetition <= protocol.RepetitionsPerLevel; repetition++ {
+			repetitions = append(repetitions, capacityProfileRepetition{
+				Concurrency: capacityInt64Pointer(concurrency), Repetition: capacityInt64Pointer(repetition),
+				Requests: capacityInt64Pointer(100), Successes: capacityInt64Pointer(100), Errors: capacityInt64Pointer(0),
+				Elapsed: capacityFloatPointer(100 / throughput), Throughput: capacityFloatPointer(throughput),
+				LatencyP95MS: capacityFloatPointer(20),
+			})
+		}
+		runtimeCost := 0.0
+		for range 300 {
+			runtimeCost += 0.001
+		}
+		scaling := json.RawMessage("null")
+		if levelIndex > 0 {
+			scaling = json.RawMessage("1")
+		}
+		levels = append(levels, capacityProfileLevel{
+			Concurrency:    capacityInt64Pointer(concurrency),
+			WarmupRequests: capacityInt64Pointer(concurrency * 2), WarmupErrors: capacityInt64Pointer(0),
+			WarmupElapsed: capacityFloatPointer(0.2), MeasurementRequests: capacityInt64Pointer(300),
+			Successes: capacityInt64Pointer(300), Errors: capacityInt64Pointer(0),
+			Elapsed: capacityFloatPointer(300 / throughput), Throughput: capacityFloatPointer(throughput),
+			ThroughputCV: capacityFloatPointer(0), LatencyP50MS: capacityFloatPointer(20),
+			LatencyP95MS: capacityFloatPointer(20), LatencyP99MS: capacityFloatPointer(20),
+			LatencyP95CV: capacityFloatPointer(0), ErrorRate: capacityFloatPointer(0),
+			ErrorRateUpperBound: capacityFloatPointer(capacityOneSidedWilsonUpper(0, 300)),
+			InputTokens:         capacityInt64Pointer(300), OutputTokens: capacityInt64Pointer(300),
+			RuntimeCost: capacityFloatPointer(runtimeCost), Repetitions: repetitions,
+			ScalingEfficiency: scaling, WarmupPassed: capacityBoolPointer(true),
+			LatencySLOPassed: capacityBoolPointer(true), ErrorSLOPassed: capacityBoolPointer(true),
+			ThroughputSLOPassed: capacityBoolPointer(true), ScalingSLOPassed: capacityBoolPointer(true),
+			ThroughputStabilityPassed: capacityBoolPointer(true), LatencyStabilityPassed: capacityBoolPointer(true),
+			Qualified: capacityBoolPointer(true),
+		})
+	}
+	return capacityProfileEvidence{
+		SchemaVersion: SchemaVersion, Kind: "repeated-closed-loop-capacity",
+		Protocol: protocol, Levels: levels, SLO: slo,
+		Assessment: capacityProfileAssessment{
+			QualifiedConcurrency: json.RawMessage("2"), SaturationConcurrency: json.RawMessage("null"),
+			SLOHeadroom: capacityInt64Pointer(1), Verdict: "pass", FailureReasons: []string{},
+		},
+	}
 }
 
-func capacityLevelJSON(concurrency int) string {
-	return fmt.Sprintf(`{
-		"concurrency":%d,
-		"requests":2,
-		"successes":2,
-		"errors":0,
-		"elapsed_seconds":2.0,
-		"throughput_rps":1.5,
-		"latency_p50_ms":20.0,
-		"latency_p95_ms":29.0,
-		"latency_p99_ms":29.8,
-		"input_tokens":100,
-		"output_tokens":20,
-		"runtime_cost_usd":0.01
-	}`, concurrency)
+func writeCapacityProfile(t *testing.T, runDir string, profile capacityProfileEvidence) {
+	t.Helper()
+	if err := writeJSONAtomic(filepath.Join(runDir, capacityProfileArtifactName), profile); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func writeCapacityRecords(t *testing.T, runDir string) {
 	t.Helper()
-	rows := `{"schema_version":"evaluation.v1","id":"capacity-case-1-a","track_id":"capacity","case_id":"case-1","attempt_id":"capacity-1","status":"succeeded","success":true,"latency_ms":10,"input_tokens":40,"output_tokens":10,"runtime_cost":0.005,"concurrency":1,"throughput_rps":1.5,"load_elapsed_seconds":2}` + "\n" +
-		`{"schema_version":"evaluation.v1","id":"capacity-case-2-a","track_id":"capacity","case_id":"case-2","attempt_id":"capacity-2","status":"succeeded","success":true,"latency_ms":30,"input_tokens":60,"output_tokens":10,"runtime_cost":0.005,"concurrency":1,"throughput_rps":1.5,"load_elapsed_seconds":2}` + "\n"
-	if err := os.WriteFile(filepath.Join(runDir, "records.jsonl"), []byte(rows), 0o600); err != nil {
-		t.Fatalf("write capacity records: %v", err)
+	protocol := defaultCapacityLoadProtocol(2)
+	var output bytes.Buffer
+	for _, concurrency := range protocol.ConcurrencyLevels {
+		writeCapacityBatchRows(t, &output, concurrency, "warmup", 0, concurrency*2, float64(concurrency*10))
+		for repetition := int64(1); repetition <= protocol.RepetitionsPerLevel; repetition++ {
+			writeCapacityBatchRows(t, &output, concurrency, "measurement", repetition, 100, float64(concurrency*10))
+		}
+	}
+	if err := os.WriteFile(filepath.Join(runDir, "records.jsonl"), output.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeCapacityBatchRows(
+	t *testing.T,
+	output *bytes.Buffer,
+	concurrency int64,
+	phase string,
+	repetition int64,
+	requests int64,
+	throughput float64,
+) {
+	t.Helper()
+	for index := int64(0); index < requests; index++ {
+		attempt := fmt.Sprintf("capacity-c%d-%s%d-q%d", concurrency, phase[:1], repetition, index)
+		receipt := digestBytes([]byte(attempt))
+		record := executionRecordEvidence{
+			SchemaVersion: SchemaVersion, ID: attempt, TrackID: "capacity", CaseID: "case-1", AttemptID: attempt,
+			Status: "succeeded", Success: capacityBoolPointer(true), LatencyMS: capacityFloatPointer(20),
+			InputTokens: capacityInt64Pointer(1), OutputTokens: capacityInt64Pointer(1), RuntimeCost: capacityFloatPointer(0.001),
+			Concurrency: capacityInt64Pointer(concurrency), ThroughputRPS: capacityFloatPointer(throughput),
+			LoadElapsedSeconds: capacityFloatPointer(float64(requests) / throughput),
+			LoadPhase:          &phase, LoadRepetition: capacityInt64Pointer(repetition), LoadRequestIndex: capacityInt64Pointer(index),
+			EvidenceKind: capacityStringPointer("capacity.closed-loop.v1"), BrokerReceipt: &receipt,
+		}
+		encoded, err := json.Marshal(record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		output.Write(encoded)
+		output.WriteByte('\n')
 	}
 }
 
 func capacityRecordsAttestation() recordAttestation {
+	const total = 606
 	return recordAttestation{
-		validated: true,
-		Total:     2,
-		Succeeded: 2,
-		ByTrack: map[TrackID]recordStatusCounts{
-			"capacity": {Succeeded: 2},
-		},
+		validated: true, Total: total, Succeeded: total,
+		ByTrack: map[TrackID]recordStatusCounts{"capacity": {Succeeded: total}},
 	}
 }
+
+func capacityBoolPointer(value bool) *bool { return &value }
+
+func capacityStringPointer(value string) *string { return &value }

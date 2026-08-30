@@ -125,7 +125,6 @@ func RequiredPermission(method, path string) string {
 		toolsPermission,
 		observabilityPermission,
 		recipePermission,
-		fleetSimPermission,
 		featurePermission,
 	} {
 		if permission, ok := resolver(method, path); ok {
@@ -289,13 +288,6 @@ func observabilityPermission(_ string, path string) (string, bool) {
 	default:
 		return "", false
 	}
-}
-
-func fleetSimPermission(method, path string) (string, bool) {
-	if !strings.HasPrefix(path, "/api/fleet-sim/") && path != "/api/fleet-sim" {
-		return "", false
-	}
-	return readOrManagePermission(method, PermConfigRead, PermConfigWrite), true
 }
 
 func featurePermission(method, path string) (string, bool) {

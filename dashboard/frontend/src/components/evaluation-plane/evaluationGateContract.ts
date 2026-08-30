@@ -1,6 +1,10 @@
-import type { EvaluationChangeProfileId, GateDisposition } from '../../types/evaluationPlane'
+import {
+  EVALUATION_GATE_CONTRACT_VERSION,
+  type EvaluationChangeProfileId,
+  type GateDisposition,
+} from '../../types/evaluationPlane'
 
-export const SUPPORTED_GATE_CONTRACT_VERSION = 'evaluation-release-gates.v1'
+export const SUPPORTED_GATE_CONTRACT_VERSION = EVALUATION_GATE_CONTRACT_VERSION
 
 export interface GateContractDefinition {
   id: `G${number}`
@@ -130,7 +134,7 @@ const PROFILE_APPLICABILITY: Record<EvaluationChangeProfileId, readonly GateDisp
     required,
     required,
     required,
-    required,
+    notApplicable,
     required,
     required,
     required,

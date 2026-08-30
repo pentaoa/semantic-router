@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import type { EvaluationGate } from '../../types/evaluationPlane'
+import type { EvaluationGate } from '../../types/evaluationReport'
 import {
   gateApplicabilityForProfile,
   GATE_CONTRACT_DEFINITIONS,

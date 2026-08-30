@@ -1,455 +1,61 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import stat
-from collections.abc import Iterable
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import pytest
 from cli.commands.eval import eval
-from cli.evaluation.benchmark_registry import get_benchmark_adapter
-from cli.evaluation.canonical import canonical_json_bytes, digest_value
+from cli.evaluation.canonical import canonical_json_bytes
 from cli.evaluation.constants import TRACK_IDS
-from cli.evaluation.contracts import (
-    CaseGrading,
-    CaseVisible,
-    EvaluationTarget,
-    ImagePart,
-    ImageURL,
-    Message,
-    RunManifest,
+from cli.evaluation.evidence import ExecutionRecord, RoutingDiagnostic
+from cli.evaluation.execution_contract import (
+    NORMALIZED_REPLAY_EXECUTOR_ID,
 )
+from cli.evaluation.http_client import HTTPResult
+from cli.evaluation.live_executor import LiveRawResult
+from cli.evaluation.normalized_suite_inputs import SelectedCase, evidence_kind
 from cli.evaluation.orchestrator import run_evaluation
 from cli.evaluation.store import LocalArtifactStore
 from cli.evaluation.suite_contract import (
-    BenchmarkSourceReceipt,
-    NormalizedCapacityObservation,
-    NormalizedDecision,
-    NormalizedMultimodalObservation,
-    NormalizedOutcome,
-    NormalizedPreference,
-    NormalizedSafetyObservation,
-    NormalizedTrajectoryStep,
-)
-from cli.evaluation.suite_install_contract import (
-    ARTIFACT_ROLE_LAYOUT,
-    LICENSE_CONTRACT_VERSION,
-    BenchmarkSuiteInstallRequest,
-    SuiteArtifactInstall,
-    SuiteArtifactRole,
+    NormalizedPerturbation,
 )
 from cli.evaluation.suite_store import NormalizedSuiteStore
 from click.testing import CliRunner
-
-
-@pytest.fixture(autouse=True)
-def _trusted_source_verifier(monkeypatch: pytest.MonkeyPatch) -> None:
-    def verified(descriptor: Any, _source_root: Path) -> BenchmarkSourceReceipt:
-        return BenchmarkSourceReceipt(
-            adapter_id=descriptor.id,
-            expected_source_revision=descriptor.source_revision,
-            observed_source_revision=descriptor.source_revision,
-            expected_dataset_revision=descriptor.dataset_revision,
-            observed_dataset_revision=descriptor.dataset_revision,
-            source_clean=True,
-            dataset_clean=(True if descriptor.dataset_revision else None),
-            verified=True,
-        )
-
-    monkeypatch.setattr(
-        "cli.evaluation.suite_store.require_verified_benchmark_source", verified
-    )
-
-
-_PIXEL = (
-    "data:image/png;base64,"
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUB"
-    "AScY42YAAAAASUVORK5CYII="
-)
-_PRIVATE_MARKERS = (
-    "PRIVATE NORMALIZED PROMPT",
-    "HIDDEN EXPECTED ANSWER",
-    "secret-arm-a",
-    "secret-arm-b",
-    "private-grader",
+from evaluation_normalized_suite_test_support import (
+    _PRIVATE_MARKERS,
+    _base_bundle,
+    _catalog,
+    _decision,
+    _digest,
+    _install_composite,
+    _install_live_target_suite,
+    _install_r2_suite,
+    _live_manifest,
+    _manifest,
+    _qualification_cases,
+    _suite_request,
+    _target_mixture,
+    _trusted_source_verifier,
+    _write_jsonl,
 )
 
-
-def _write_jsonl(path: Path, rows: Iterable[Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("wb") as handle:
-        for row in rows:
-            handle.write(canonical_json_bytes(row))
-            handle.write(b"\n")
+pytestmark = pytest.mark.usefixtures(_trusted_source_verifier.__name__)
 
 
-def _write_license(path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(
-        canonical_json_bytes(
-            {
-                "schema_version": LICENSE_CONTRACT_VERSION,
-                "licenses": [
-                    {
-                        "id": "upstream",
-                        "name": "Pinned upstream fixture license",
-                        "redistribution": "metadata_only",
-                    }
-                ],
-            }
-        )
-    )
-
-
-def _artifact(root: Path, role: SuiteArtifactRole) -> SuiteArtifactInstall:
-    relative_path, media_type, _ = ARTIFACT_ROLE_LAYOUT[role]
-    content = (root / relative_path).read_bytes()
-    return SuiteArtifactInstall(
-        role=role,
-        relative_path=relative_path,
-        digest="sha256:" + hashlib.sha256(content).hexdigest(),
-        size_bytes=len(content),
-        media_type=media_type,
-    )
-
-
-def _receipt(adapter_id: str) -> BenchmarkSourceReceipt:
-    descriptor = get_benchmark_adapter(adapter_id)
-    return BenchmarkSourceReceipt(
-        adapter_id=adapter_id,
-        expected_source_revision=descriptor.source_revision,
-        observed_source_revision=descriptor.source_revision,
-        expected_dataset_revision=descriptor.dataset_revision,
-        observed_dataset_revision=descriptor.dataset_revision,
-        source_clean=True,
-        dataset_clean=True if descriptor.dataset_revision else None,
-        verified=True,
-    )
-
-
-def _digest(label: str) -> str:
-    return digest_value({"private_source_record": label})
-
-
-def _base_bundle(root: Path, case_id: str, *, image: bool = False) -> None:
-    message = Message(
-        role="user",
-        content=(
-            (ImagePart(image_url=ImageURL(url=_PIXEL, detail="low")),)
-            if image
-            else f"PRIVATE NORMALIZED PROMPT {case_id}"
-        ),
-    )
-    _write_jsonl(
-        root / "visible/cases.jsonl",
-        (
-            CaseVisible(
-                id=case_id,
-                messages=(message,),
-                modality="image" if image else "text",
-                trajectory_id=f"private-trajectory-{case_id}",
-            ),
-        ),
-    )
-    _write_jsonl(
-        root / "grading/cases.jsonl",
-        (
-            CaseGrading(
-                case_id=case_id,
-                expected_route="secret-arm-a",
-                expected_answer="HIDDEN EXPECTED ANSWER",
-                preferred_arm_id="secret-arm-a",
-                should_block=False,
-            ),
-        ),
-    )
-    _write_license(root / "metadata/licenses.json")
-
-
-def _decision(case_id: str) -> NormalizedDecision:
-    return NormalizedDecision(
-        case_id=case_id,
-        selected_arm_id="secret-arm-a",
-        selection_status="selected",
-        success=True,
-        latency_ms=2.5,
-        source_record_digest=_digest(f"{case_id}-decision"),
-    )
-
-
-def _outcomes(case_id: str) -> tuple[NormalizedOutcome, ...]:
-    return (
-        NormalizedOutcome(
-            case_id=case_id,
-            arm_id="secret-arm-a",
-            success=True,
-            quality=0.9,
-            latency_ms=18,
-            input_tokens=11,
-            output_tokens=7,
-            runtime_cost_usd=0.003,
-            grader_id="private-grader",
-            grader_revision="private-grader-v1",
-            split="frozen-test",
-            source_record_digest=_digest(f"{case_id}-outcome-a"),
-        ),
-        NormalizedOutcome(
-            case_id=case_id,
-            arm_id="secret-arm-b",
-            success=True,
-            quality=0.6,
-            latency_ms=9,
-            input_tokens=11,
-            output_tokens=5,
-            runtime_cost_usd=0.001,
-            grader_id="private-grader",
-            grader_revision="private-grader-v1",
-            split="frozen-test",
-            source_record_digest=_digest(f"{case_id}-outcome-b"),
-        ),
-    )
-
-
-def _write_common_observations(root: Path, case_id: str) -> list[SuiteArtifactRole]:
-    _write_jsonl(root / "grading/decisions.jsonl", (_decision(case_id),))
-    _write_jsonl(root / "grading/outcomes.jsonl", _outcomes(case_id))
-    return ["decisions", "outcomes"]
-
-
-def _suite_request(
-    root: Path,
-    *,
-    adapter_id: str,
-    suite_id: str,
-    case_id: str,
-    tracks: tuple[str, ...],
-    optional_roles: Iterable[SuiteArtifactRole],
-) -> BenchmarkSuiteInstallRequest:
-    descriptor = get_benchmark_adapter(adapter_id)
-    roles: tuple[SuiteArtifactRole, ...] = (
-        "visible_cases",
-        "grading_cases",
-        *tuple(optional_roles),
-        "license_manifest",
-    )
-    return BenchmarkSuiteInstallRequest(
-        id=suite_id,
-        name=f"Normalized {descriptor.name} integration suite",
-        adapter_id=adapter_id,
-        source_receipt=_receipt(adapter_id),
-        decision_unit=descriptor.decision_unit,
-        action_space=descriptor.action_space,
-        track_ids=tracks,  # type: ignore[arg-type]
-        evidence_level_ceiling="E5",
-        split_protocol="fixed composite integration split",
-        case_count=1,
-        arm_ids=("secret-arm-a", "secret-arm-b"),
-        data_classification="restricted",
-        redistribution="metadata_only",
-        artifacts=tuple(_artifact(root, role) for role in roles),
-        limitations=("integration-normalized evidence only",),
-    )
-
-
-def _install_xroute_suite(root: Path, store: NormalizedSuiteStore) -> str:
-    xroute = root / "xroute"
-    _base_bundle(xroute, "xroute-private-case", image=True)
-    xroute_roles = _write_common_observations(xroute, "xroute-private-case")
-    _write_jsonl(
-        xroute / "grading/multimodal-observations.jsonl",
-        (
-            NormalizedMultimodalObservation(
-                case_id="xroute-private-case",
-                modality="image",
-                supported=True,
-                quality=0.88,
-                privacy_violations=0,
-                source_record_digest=_digest("xroute-multimodal"),
-            ),
-        ),
-    )
-    _write_jsonl(
-        xroute / "grading/preferences.jsonl",
-        (
-            NormalizedPreference(
-                case_id="xroute-private-case",
-                left_action_id="secret-arm-a",
-                right_action_id="secret-arm-b",
-                preference="left",
-                chosen_action_id="secret-arm-a",
-                reward=1.0,
-                exposure_probability=0.5,
-                behavior_propensity=0.5,
-                participant_digest=_digest("private-participant"),
-                source_record_digest=_digest("xroute-preference"),
-            ),
-        ),
-    )
-    xroute_roles.extend(("multimodal_observations", "preferences"))
-    return store.install(
-        _suite_request(
-            xroute,
-            adapter_id="xroutebench",
-            suite_id="composite-xroute",
-            case_id="xroute-private-case",
-            tracks=("routing", "model_pool", "joint", "multimodal", "preference"),
-            optional_roles=xroute_roles,
-        ),
-        xroute,
-        source_root=xroute.parent,
-    ).id
-
-
-def _install_ace_suite(root: Path, store: NormalizedSuiteStore) -> str:
-    ace = root / "ace"
-    _base_bundle(ace, "ace-private-case")
-    ace_roles = _write_common_observations(ace, "ace-private-case")
-    _write_jsonl(
-        ace / "grading/trajectories.jsonl",
-        (
-            NormalizedTrajectoryStep(
-                trajectory_id="private-trajectory-ace-private-case",
-                step_id="private-step-0",
-                sequence=0,
-                case_id="ace-private-case",
-                selected_action_id="secret-arm-a",
-                tool_name="private-tool",
-                tool_call_valid=True,
-                terminal=False,
-                privacy_exposures=0,
-                source_record_digest=_digest("ace-step-0"),
-            ),
-            NormalizedTrajectoryStep(
-                trajectory_id="private-trajectory-ace-private-case",
-                step_id="private-step-1",
-                sequence=1,
-                case_id="ace-private-case",
-                selected_action_id="secret-arm-a",
-                terminal=True,
-                terminal_success=True,
-                task_score=0.95,
-                privacy_exposures=0,
-                source_record_digest=_digest("ace-step-1"),
-            ),
-        ),
-    )
-    _write_jsonl(
-        ace / "grading/safety-observations.jsonl",
-        (
-            NormalizedSafetyObservation(
-                case_id="ace-private-case",
-                violations=0,
-                blocked=False,
-                source_record_digest=_digest("ace-safety"),
-            ),
-        ),
-    )
-    ace_roles.extend(("trajectories", "safety_observations"))
-    return store.install(
-        _suite_request(
-            ace,
-            adapter_id="acebench",
-            suite_id="composite-ace",
-            case_id="ace-private-case",
-            tracks=("routing", "joint", "agentic", "safety"),
-            optional_roles=ace_roles,
-        ),
-        ace,
-        source_root=ace.parent,
-    ).id
-
-
-def _install_r2_suite(root: Path, store: NormalizedSuiteStore) -> str:
-    r2 = root / "r2"
-    _base_bundle(r2, "r2-private-case")
-    r2_roles = _write_common_observations(r2, "r2-private-case")
-    _write_jsonl(
-        r2 / "grading/capacity-observations.jsonl",
-        (
-            NormalizedCapacityObservation(
-                case_id="r2-private-case",
-                concurrency=1,
-                success=True,
-                latency_ms=12,
-                throughput_rps=8,
-                runtime_cost_usd=0.002,
-                capacity_tco_usd=0.003,
-                gpu_seconds=0.05,
-                energy_kwh=0.0002,
-                elapsed_seconds=1,
-                source_record_digest=_digest("r2-capacity-1"),
-            ),
-            NormalizedCapacityObservation(
-                case_id="r2-private-case",
-                concurrency=2,
-                success=True,
-                latency_ms=16,
-                throughput_rps=14,
-                runtime_cost_usd=0.003,
-                capacity_tco_usd=0.004,
-                gpu_seconds=0.08,
-                energy_kwh=0.0003,
-                elapsed_seconds=1,
-                source_record_digest=_digest("r2-capacity-2"),
-            ),
-        ),
-    )
-    r2_roles.append("capacity_observations")
-    return store.install(
-        _suite_request(
-            r2,
-            adapter_id="r2-router",
-            suite_id="composite-r2",
-            case_id="r2-private-case",
-            tracks=("routing", "model_pool", "joint", "capacity"),
-            optional_roles=r2_roles,
-        ),
-        r2,
-        source_root=r2.parent,
-    ).id
-
-
-def _install_composite(root: Path, store: NormalizedSuiteStore) -> tuple[str, ...]:
-    return (
-        _install_xroute_suite(root, store),
-        _install_ace_suite(root, store),
-        _install_r2_suite(root, store),
-    )
-
-
-def _manifest(
-    run_id: str,
-    suite_ids: tuple[str, ...],
-    suite_store: NormalizedSuiteStore,
-) -> RunManifest:
-    revisions = {
-        suite_id: suite_store.get_suite_manifest(suite_id).revision
-        for suite_id in suite_ids
-    }
-    return RunManifest(
-        manifest_digest="sha256:" + "0" * 64,
-        run_id=run_id,
-        mode="replay",
-        target=EvaluationTarget(id="fixture", kind="builtin-fixture"),
-        change_profile="schema_adapter",
-        gate_contract_version="evaluation-release-gates.v1",
-        suite_ids=suite_ids,
-        suite_revisions=revisions,
-        track_ids=TRACK_IDS,
-        sample_limit=100,
-        concurrency=1,
-        seed=19,
-        created_at=datetime(2026, 8, 29, tzinfo=timezone.utc),
-        code_revision="sha256:" + "1" * 64,
-        policy_snapshot_digest=digest_value(
-            {"kind": "normalized-replay-policy", "suite_revisions": revisions}
-        ),
-        config_digest=digest_value({"normalized_suite_test": True}),
-        redaction_policy="strict-no-prompts",
-    )
+def _strip_nondeterministic_report_fields(payload: dict[str, Any]) -> None:
+    payload["run"]["started_at"] = None
+    payload["run"]["completed_at"] = None
+    payload["provenance"]["generated_at"] = None
+    for artifact in payload["artifacts"]:
+        artifact["digest"] = None
+        artifact["size_bytes"] = None
+    for gate in payload["gates"]:
+        gate["evaluated_at"] = None
+    for track in payload["tracks"]:
+        for gate in track["gates"]:
+            gate["evaluated_at"] = None
 
 
 def test_installed_composite_executes_all_tracks_deterministically_without_leaks(
@@ -498,21 +104,15 @@ def test_installed_composite_executes_all_tracks_deterministically_without_leaks
 
     second_payload = second.model_dump(mode="json", exclude_none=False)
     for payload in (first, second_payload):
-        payload["run"]["started_at"] = None
-        payload["run"]["completed_at"] = None
-        payload["provenance"]["generated_at"] = None
-        for artifact in payload["artifacts"]:
-            artifact["digest"] = None
-            artifact["size_bytes"] = None
-        for gate in payload["gates"]:
-            gate["evaluated_at"] = None
-        for track in payload["tracks"]:
-            for gate in track["gates"]:
-                gate["evaluated_at"] = None
+        _strip_nondeterministic_report_fields(payload)
     assert first == second_payload
     assert {track["track_id"] for track in first["tracks"]} == set(TRACK_IDS)
     assert all(track["status"] == "completed" for track in first["tracks"])
     assert first["run"]["evidence_level"] == "E0"
+    assert all(
+        _catalog(suite_store).get(suite_id).evidence_level == "E0"
+        for suite_id in suite_ids
+    )
     assert first["summary"]["verdict"] == "unavailable"
     expected_revisions = {
         suite_id: suite_store.get_suite_manifest(suite_id).revision
@@ -542,7 +142,7 @@ def test_installed_composite_executes_all_tracks_deterministically_without_leaks
     )
     assert any(
         row["source_id"] == "secret-arm-a"
-        for row in lineage["normalized_suite_aliases"]["arm_aliases"]
+        for row in lineage["normalized_suite_identities"]["arm_identities"]
     )
     assert stat.S_IMODE(lineage_path.stat().st_mode) == 0o600
     assert (
@@ -551,12 +151,212 @@ def test_installed_composite_executes_all_tracks_deterministically_without_leaks
     )
 
 
+def _target_executor(observed_case_ids: list[str]) -> Any:
+    def execute(visible: Any, **kwargs: object) -> LiveRawResult:
+        assert kwargs["track_ids"] == ("routing", "multimodal")
+        assert kwargs["mixture"] == _target_mixture()
+        case = visible.cases[0]
+        observed_case_ids.append(case.id)
+        response = HTTPResult(
+            success=True,
+            status_code=200,
+            payload={
+                "choices": [{"message": {"content": "  TARGET   HIDDEN ANSWER  "}}],
+                "usage": {"prompt_tokens": 3, "completion_tokens": 4},
+            },
+            latency_ms=8.0,
+            headers={},
+        )
+        return LiveRawResult(
+            records=[
+                ExecutionRecord(
+                    id=f"routing-{case.id}",
+                    track_id="routing",
+                    case_id=case.id,
+                    attempt_id=f"attempt-{case.id}",
+                    status="succeeded",
+                    selected_arm_id="provider-strong",
+                    selection_status="selected",
+                    success=True,
+                    latency_ms=2.0,
+                    evidence_kind="untrusted-pre-grade-marker",
+                ),
+                ExecutionRecord(
+                    id=f"multimodal-{case.id}",
+                    track_id="multimodal",
+                    case_id=case.id,
+                    attempt_id=f"attempt-{case.id}",
+                    status="succeeded",
+                    success=True,
+                    modality="image",
+                    latency_ms=8.0,
+                ),
+            ],
+            discovered_entrypoints=("entrypoint-a",),
+            routing_traces=(
+                RoutingDiagnostic(
+                    case_id=case.id,
+                    selected_model="provider-strong",
+                    selection_status="selected",
+                ),
+            ),
+            chat_results={case.id: response},
+            model_pool_results={},
+            model_pool_arm_ids=(),
+            joint_results={},
+        )
+
+    return execute
+
+
+def test_same_installed_workload_replays_history_or_executes_current_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    suite_store = NormalizedSuiteStore(tmp_path / "suite-store")
+    suite_id = _install_live_target_suite(tmp_path / "bundles", suite_store)
+    replay = _manifest("target-workload-replay", (suite_id,), suite_store)
+    replay = replay.with_semantic_updates(
+        track_ids=("routing", "multimodal"), sample_limit=1
+    )
+    replay_store = LocalArtifactStore(tmp_path / "replay-store")
+    run_evaluation(replay, replay_store, suite_store=suite_store)
+
+    observed_case_ids: list[str] = []
+    monkeypatch.setattr(
+        "cli.evaluation.normalized_suite_live_executor.execute_live_raw",
+        _target_executor(observed_case_ids),
+    )
+    live = _live_manifest("target-workload-live", suite_id, suite_store)
+    live_store = LocalArtifactStore(tmp_path / "live-store")
+    report = run_evaluation(live, live_store, suite_store=suite_store)
+
+    replay_cases = replay_store.read_run_bytes(
+        replay.run_id, "cases.jsonl"
+    ).splitlines()
+    live_cases = live_store.read_run_bytes(live.run_id, "cases.jsonl").splitlines()
+    assert [json.loads(row)["id"] for row in replay_cases] == observed_case_ids
+    assert [json.loads(row)["id"] for row in live_cases] == observed_case_ids
+
+    records = [
+        ExecutionRecord.model_validate_json(row)
+        for row in live_store.read_run_bytes(live.run_id, "records.jsonl").splitlines()
+    ]
+    routing = next(row for row in records if row.track_id == "routing")
+    multimodal = next(row for row in records if row.track_id == "multimodal")
+    assert routing.selected_arm_id == "arm-strong"
+    assert routing.quality == 1.0
+    assert routing.grader == "normalized-suite-hidden-route-label.v1"
+    assert multimodal.quality == 1.0
+    assert multimodal.grader == "normalized-suite-hidden-answer-exact.v1"
+    assert {row.evidence_kind for row in records} == {"normalized-suite-live.v1"}
+
+    lineage = live_store.read_run_json(live.run_id, "lineage.json")
+    identities = lineage["normalized_suite_identities"]
+    assert identities["arm_identities"] == []
+    assert identities["action_identities"] == []
+    assert (
+        lineage["resolved_snapshot"]["environment"]["target_id"] == _target_mixture().id
+    )
+    assert "fixture_ref" not in lineage["resolved_snapshot"]
+    assert report.run.evidence_level == "E0"
+
+
+def test_normalized_live_capacity_qualifies_only_from_its_frozen_load_protocol(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    suite_store = NormalizedSuiteStore(tmp_path / "suite-store")
+    suite_id = _install_r2_suite(tmp_path / "bundles", suite_store)
+    manifest = _live_manifest(
+        "target-capacity-no-replay-qualification",
+        suite_id,
+        suite_store,
+        track_ids=("capacity",),
+    )
+
+    def fixed_capacity_execution(visible: Any, **kwargs: object) -> LiveRawResult:
+        case = visible.cases[0]
+        protocol = kwargs["capacity_load_protocol"]
+        assert protocol == manifest.capacity_load_protocol
+        assert protocol is not None
+        records: list[ExecutionRecord] = []
+        for concurrency in protocol.concurrency_levels:
+            throughput = float(concurrency * 8)
+            batches = (
+                ("warmup", 0, concurrency * protocol.warmup_request_multiplier),
+                *(
+                    (
+                        "measurement",
+                        repetition,
+                        protocol.measurement_requests_per_repetition,
+                    )
+                    for repetition in range(1, protocol.repetitions_per_level + 1)
+                ),
+            )
+            for phase, repetition, request_count in batches:
+                elapsed = request_count / throughput
+                for request_index in range(request_count):
+                    attempt_id = (
+                        f"capacity-c{concurrency}-{phase[0]}"
+                        f"{repetition}-q{request_index}"
+                    )
+                    records.append(
+                        ExecutionRecord(
+                            id=attempt_id,
+                            track_id="capacity",
+                            case_id=case.id,
+                            attempt_id=attempt_id,
+                            status="succeeded",
+                            success=True,
+                            latency_ms=12.0,
+                            input_tokens=1,
+                            output_tokens=1,
+                            runtime_cost=0.001,
+                            concurrency=concurrency,
+                            throughput_rps=throughput,
+                            load_elapsed_seconds=elapsed,
+                            load_phase=phase,
+                            load_repetition=repetition,
+                            load_request_index=request_index,
+                            evidence_kind="capacity.closed-loop.v1",
+                        )
+                    )
+        return LiveRawResult(
+            records=records,
+            discovered_entrypoints=("entrypoint-a",),
+            routing_traces=(),
+            chat_results={},
+            model_pool_results={},
+            model_pool_arm_ids=(),
+            joint_results={},
+        )
+
+    monkeypatch.setattr(
+        "cli.evaluation.normalized_suite_live_executor.execute_live_raw",
+        fixed_capacity_execution,
+    )
+    report = run_evaluation(
+        manifest,
+        LocalArtifactStore(tmp_path / "evaluation"),
+        suite_store=suite_store,
+    )
+
+    gate = next(row for row in report.gates if row.id == "G7")
+    assert gate.disposition == "required"
+    assert gate.verdict == "pass"
+    assert gate.observed == 1
+    assert gate.threshold is not None
+    assert gate.threshold.operator == ">="
+    assert gate.threshold.value == 0
+
+
 def test_declared_track_without_qualification_artifact_is_unavailable(
     tmp_path: Path,
 ) -> None:
     suite_store = NormalizedSuiteStore(tmp_path / "suite-store")
     bundle = tmp_path / "missing-safety"
-    _base_bundle(bundle, "missing-private-case")
+    _base_bundle(bundle, "missing-private-case", track_ids=("safety",))
     request = _suite_request(
         bundle,
         adapter_id="acebench",
@@ -566,9 +366,9 @@ def test_declared_track_without_qualification_artifact_is_unavailable(
         optional_roles=(),
     )
     installed = suite_store.install(request, bundle, source_root=bundle.parent)
-    manifest = _manifest("missing-safety-run", (installed.id,), suite_store).model_copy(
-        update={"track_ids": ("safety",)}
-    )
+    manifest = _manifest(
+        "missing-safety-run", (installed.id,), suite_store
+    ).with_semantic_updates(track_ids=("safety",))
 
     report = run_evaluation(
         manifest,
@@ -586,3 +386,123 @@ def test_declared_track_without_qualification_artifact_is_unavailable(
     assert "lacks safety enforcement observations" in records
     assert "PRIVATE NORMALIZED PROMPT" not in records
     assert "missing-private-case" not in records
+
+
+def test_composite_sampling_is_stratified_per_suite_and_preserves_track_union(
+    tmp_path: Path,
+) -> None:
+    suite_store = NormalizedSuiteStore(tmp_path / "suite-store")
+    suite_ids = _install_composite(tmp_path / "bundles", suite_store)
+    manifest = _manifest("normalized-stratified", suite_ids, suite_store)
+    manifest = manifest.with_semantic_updates(sample_limit=1)
+    artifact_store = LocalArtifactStore(tmp_path / "evaluation")
+
+    report = run_evaluation(
+        manifest,
+        artifact_store,
+        suite_store=suite_store,
+    )
+
+    assert tuple(track.track_id for track in report.tracks) == TRACK_IDS
+    assert all(track.status == "completed" for track in report.tracks)
+    assert report.run.evidence_level == "E0"
+    records = [
+        ExecutionRecord.model_validate_json(row)
+        for row in artifact_store.read_run_bytes(
+            manifest.run_id, "records.jsonl"
+        ).splitlines()
+    ]
+    evidence_by_track = {
+        track_id: {row.evidence_kind for row in records if row.track_id == track_id}
+        for track_id in TRACK_IDS
+    }
+    assert evidence_by_track == {
+        track_id: {"normalized-suite-replay.v1;ceiling=E0"} for track_id in TRACK_IDS
+    }
+
+
+def test_imported_record_evidence_is_always_e0(
+    tmp_path: Path,
+) -> None:
+    suite_store = NormalizedSuiteStore(tmp_path / "suite-store")
+    bundle = tmp_path / "bundles" / "routerarena"
+    case_id = "routerarena-case"
+    _qualification_cases(bundle, (case_id,), track_ids=("routing",))
+    _write_jsonl(bundle / "grading/decisions.jsonl", (_decision(case_id),))
+    suite_id = suite_store.install(
+        _suite_request(
+            bundle,
+            adapter_id="routerarena",
+            suite_id="imported-routerarena",
+            case_id=case_id,
+            tracks=("routing",),
+            optional_roles=("decisions",),
+        ),
+        bundle,
+        source_root=bundle.parent,
+    ).id
+    manifest = suite_store.get_suite_manifest(suite_id)
+    visible = next(suite_store.load_jsonl(suite_id, "visible_cases"))
+    grading = next(suite_store.load_jsonl(suite_id, "grading_cases"))
+    case = SelectedCase(
+        manifest=manifest,
+        source_visible=visible,  # type: ignore[arg-type]
+        source_grading=grading,  # type: ignore[arg-type]
+        visible=visible,  # type: ignore[arg-type]
+        grading=grading,  # type: ignore[arg-type]
+        executor_id=NORMALIZED_REPLAY_EXECUTOR_ID,
+    )
+
+    assert manifest.qualification_receipt.evidence_level == "E0"
+    assert manifest.qualification_receipt.qualified_gate_ids == ()
+    assert evidence_kind(case, "routing") == "normalized-suite-replay.v1;ceiling=E0"
+
+
+def test_imported_robustness_pairs_remain_e0_and_cannot_pass_g4(
+    tmp_path: Path,
+) -> None:
+    bundle = tmp_path / "robustness"
+    case_ids = ("source", "perturbed")
+    _qualification_cases(bundle, case_ids, track_ids=("routing",))
+    _write_jsonl(
+        bundle / "grading/decisions.jsonl",
+        (_decision(case_id) for case_id in case_ids),
+    )
+    _write_jsonl(
+        bundle / "grading/perturbations.jsonl",
+        (
+            NormalizedPerturbation(
+                pair_id="pair-1",
+                source_case_id="source",
+                perturbed_case_id="perturbed",
+                relation="invariant",
+                slice_ids=("routerarena:paraphrase",),
+                native_pair_count=1,
+                source_record_digest=_digest("pair-1"),
+            ),
+        ),
+    )
+    request = _suite_request(
+        bundle,
+        adapter_id="routerarena",
+        suite_id="imported-robustness",
+        case_id="source",
+        tracks=("routing",),
+        optional_roles=("decisions", "perturbations"),
+        case_count=2,
+    )
+
+    suite_store = NormalizedSuiteStore(tmp_path / "store")
+    manifest = suite_store.install(request, bundle, source_root=bundle.parent)
+    assert manifest.qualification_receipt.evidence_level == "E0"
+    assert manifest.qualification_receipt.qualified_gate_ids == ()
+    run = _manifest(
+        "method-only-g4", (manifest.id,), suite_store
+    ).with_semantic_updates(track_ids=("routing",))
+    report = run_evaluation(
+        run, LocalArtifactStore(tmp_path / "evaluation"), suite_store=suite_store
+    )
+    assert report.run.evidence_level == "E0"
+    assert (
+        next(gate for gate in report.gates if gate.id == "G4").verdict == "unavailable"
+    )

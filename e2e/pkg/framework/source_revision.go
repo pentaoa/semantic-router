@@ -32,16 +32,16 @@ func dashboardSourceRevision() (string, error) {
 		}
 		return configured, nil
 	}
-	status, err := exec.Command("git", "status", "--porcelain", "--untracked-files=all").Output()
+	rootOutput, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
 	if err != nil {
-		return "", fmt.Errorf("inspect source tree before Dashboard E2E image build: %w", err)
+		return "", fmt.Errorf("resolve repository root before Dashboard E2E image build: %w", err)
 	}
-	if len(status) != 0 {
-		return "", fmt.Errorf("Dashboard E2E image build from a dirty tree requires an explicit VLLM_SR_SOURCE_REVISION sha256 digest")
-	}
-	revision, err := exec.Command("git", "rev-parse", "HEAD").Output()
+	root := strings.TrimSpace(string(rootOutput))
+	resolver := exec.Command("python3", root+"/tools/ci/source-tree-revision.py")
+	resolver.Dir = root
+	revision, err := resolver.Output()
 	if err != nil {
-		return "", fmt.Errorf("resolve Dashboard E2E source revision: %w", err)
+		return "", fmt.Errorf("resolve immutable Dashboard E2E source revision: %w", err)
 	}
 	resolved := strings.TrimSpace(string(revision))
 	if !immutableSourceRevisionPattern.MatchString(resolved) {

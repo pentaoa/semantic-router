@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -37,13 +38,18 @@ func TestCommandProcessFixtureEndToEnd(t *testing.T) {
 	if serviceErr != nil {
 		t.Fatalf("NewService: %v", serviceErr)
 	}
+	var workerDiagnostics bytes.Buffer
+	service.process.(*CommandProcess).diagnosticSink = &workerDiagnostics
+	processCapture := &capturedProcess{Process: service.process}
+	service.process = processCapture
 	t.Cleanup(func() {
 		if err := service.Close(); err != nil {
 			t.Errorf("close evaluation service: %v", err)
 		}
 	})
 	run, createErr := service.CreateRun(context.Background(), CreateRunRequest{
-		Name: "real fixture worker", SuiteIDs: []string{"evaluation-smoke"},
+		ClientRequestID: newTestClientRequestID(),
+		Name:            "real fixture worker", SuiteIDs: []string{"evaluation-smoke"},
 		TrackIDs: append([]TrackID(nil), allTrackIDs...), Mode: ModeReplay, TargetID: "fixture",
 		ChangeProfile: "schema_adapter", SampleLimit: 4, Concurrency: 2, Seed: 17,
 	})
@@ -63,20 +69,7 @@ func TestCommandProcessFixtureEndToEnd(t *testing.T) {
 	if startErr != nil || started.Status != StatusRunning || started.StartedAt == nil || !started.StartedAt.After(run.CreatedAt) {
 		t.Fatalf("StartRun=%+v err=%v", started, startErr)
 	}
-	deadline := time.Now().Add(30 * time.Second)
-	for {
-		completed, err := service.GetRun(run.ID)
-		if err == nil && terminalStatus(completed.Status) {
-			if completed.Status != StatusCompleted {
-				t.Fatalf("real worker did not complete: %+v", completed)
-			}
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for real worker: run=%+v err=%v", completed, err)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	waitForCompletedFixtureRun(t, service, run.ID, processCapture, &workerDiagnostics)
 	manifestAfter, afterErr := os.ReadFile(manifestPath)
 	if afterErr != nil {
 		t.Fatalf("read completed manifest: %v", afterErr)
@@ -109,12 +102,56 @@ func TestCommandProcessFixtureEndToEnd(t *testing.T) {
 	}
 }
 
+func waitForCompletedFixtureRun(
+	t *testing.T,
+	service *Service,
+	runID string,
+	processCapture *capturedProcess,
+	diagnostics *bytes.Buffer,
+) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		completed, err := service.GetRun(runID)
+		if err == nil && terminalStatus(completed.Status) {
+			if completed.Status != StatusCompleted {
+				t.Fatalf("real worker did not complete: %+v process_error=%v diagnostics=%s", completed, processCapture.Err(), diagnostics.String())
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for real worker: run=%+v err=%v", completed, err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+type capturedProcess struct {
+	Process
+	mu  sync.Mutex
+	err error
+}
+
+func (process *capturedProcess) Run(ctx context.Context, spec ProcessSpec, emit func(WorkerEvent) error) (ProcessResult, error) {
+	result, err := process.Process.Run(ctx, spec, emit)
+	process.mu.Lock()
+	process.err = err
+	process.mu.Unlock()
+	return result, err
+}
+
+func (process *capturedProcess) Err() error {
+	process.mu.Lock()
+	defer process.mu.Unlock()
+	return process.err
+}
+
 func TestSealRejectsWorkerClaimedAttestationRevision(t *testing.T) {
 	assertSafetyBundleSealRejected(t, safetyReportOptions{
 		mutateReport: func(report *Report) {
 			report.AttestationRevision = ServerAttestationRevision
 		},
-	}, "worker report cannot claim a server-owned attestation revision")
+	}, "unknown field \"attestation_revision\"")
 }
 
 func TestSealRejectsSelfConsistentForgedGateMetricBundleAgainstRecords(t *testing.T) {
@@ -164,7 +201,7 @@ func TestSealRejectsForgedTrackPresentation(t *testing.T) {
 		match  string
 	}{
 		{name: "status", mutate: func(track *TrackReport) { track.Status = "unavailable" }, match: "presentation does not match records"},
-		{name: "evidence level", mutate: func(track *TrackReport) { track.EvidenceLevel = "E5" }, match: "cannot claim evidence level E5"},
+		{name: "evidence level", mutate: func(track *TrackReport) { track.EvidenceLevel = "E5" }, match: "does not match server-sealed case evidence"},
 		{name: "summary", mutate: func(track *TrackReport) { track.Summary = "Perfect benchmark." }, match: "presentation does not match records"},
 		{name: "error", mutate: func(track *TrackReport) { track.Error = "forged conclusion" }, match: "presentation does not match records"},
 	}
@@ -193,10 +230,10 @@ func assertSafetyBundleSealRejected(t *testing.T, options safetyReportOptions, m
 		t.Fatalf("CreateRun: %v", err)
 	}
 	now := time.Now().UTC()
-	run.Status = StatusRunning
+	run.Status = StatusSealing
 	run.StartedAt = &now
 	if updateErr := service.store.UpdateRun(run); updateErr != nil {
-		t.Fatalf("stage running run: %v", updateErr)
+		t.Fatalf("stage sealing run: %v", updateErr)
 	}
 	spec := ProcessSpec{
 		ManifestPath: filepath.Join(root, "runs", run.ID, manifestFileName),
@@ -240,6 +277,14 @@ func writeSafetyReportBundle(spec ProcessSpec, options safetyReportOptions) erro
 	metrics := []Metric{
 		canonicalReducedMetric("safety.violation_rate", "Safety violation rate", "safety", "violations/case", "lower_is_better", 0, 1),
 		canonicalReducedMetric("safety.block_accuracy", "Blocking decision accuracy", "safety", "fraction", "higher_is_better", 1, 1),
+		{
+			ID: "safety.hard_policy_static_passed", Name: "Runtime hard-policy static proof result", TrackID: "safety",
+			Unit: "boolean", Direction: "higher_is_better", SampleCount: 0,
+		},
+		{
+			ID: "safety.hard_policy_observation_count", Name: "Hard-policy dynamic observation count", TrackID: "safety",
+			Unit: "observations", Direction: "higher_is_better", SampleCount: 0,
+		},
 	}
 	metrics[1].ConfidenceInterval = serverWilsonInterval(1, 1)
 	evaluated := 1
@@ -294,7 +339,10 @@ func writeSafetyReportBundle(spec ProcessSpec, options safetyReportOptions) erro
 	if options.mutateReport != nil {
 		options.mutateReport(&report)
 	}
-	return writeJSONAtomic(filepath.Join(fixture.runDir, reportFileName), report)
+	if report.AttestationRevision != "" {
+		return writeJSONAtomic(filepath.Join(fixture.runDir, reportFileName), report)
+	}
+	return writeJSONAtomic(filepath.Join(fixture.runDir, reportFileName), workerReportFromReport(report))
 }
 
 func writeSafetyEvidenceArtifacts(

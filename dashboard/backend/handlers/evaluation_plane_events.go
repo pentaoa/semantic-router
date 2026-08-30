@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/vllm-project/semantic-router/dashboard/backend/evaluationplane"
@@ -17,20 +18,15 @@ func (h *EvaluationPlaneHandler) events(w http.ResponseWriter, r *http.Request, 
 		writeEvaluationError(w, evaluationplane.ErrConflict)
 		return
 	}
-	live, unsubscribe, err := h.service.Subscribe(runID)
-	if err != nil {
-		writeEvaluationError(w, err)
+	live, unsubscribe, subscribeErr := h.service.Subscribe(runID)
+	if subscribeErr != nil {
+		writeEvaluationError(w, subscribeErr)
 		return
 	}
 	defer unsubscribe()
-	replay, err := h.service.EventsAfter(runID, r.Header.Get("Last-Event-ID"))
-	if err != nil {
-		writeEvaluationError(w, err)
-		return
-	}
-	run, err := h.service.GetRun(runID)
-	if err != nil {
-		writeEvaluationError(w, err)
+	replay, replayErr := h.service.EventsAfter(runID, r.Header.Get("Last-Event-ID"))
+	if replayErr != nil {
+		writeEvaluationError(w, replayErr)
 		return
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -38,17 +34,43 @@ func (h *EvaluationPlaneHandler) events(w http.ResponseWriter, r *http.Request, 
 	w.Header().Set("Pragma", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
-	lastID := uint64(0)
+	lastID := decodeEventID(r.Header.Get("Last-Event-ID"))
 	terminalReplayed := false
 	for _, event := range replay {
-		if _, err := w.Write(encodeSSE(event)); err != nil {
+		if _, writeErr := w.Write(encodeSSE(event)); writeErr != nil {
 			return
 		}
 		lastID = decodeEventID(event.ID)
 		terminalReplayed = terminalReplayed || terminalEventType(event.Type)
 	}
 	flusher.Flush()
-	if terminalReplayed || terminalRunStatus(run.Status) {
+	if terminalReplayed {
+		return
+	}
+	// A terminal transition can commit after the first replay snapshot but
+	// before this status read. Re-read strictly after the last emitted ID so
+	// that window closes with the derived terminal event instead of silently
+	// ending the stream. A client already at the terminal ID receives no
+	// duplicate and the stream closes immediately.
+	run, err := h.service.GetRun(runID)
+	if err != nil {
+		return
+	}
+	if terminalRunStatus(run.Status) {
+		catchup, catchupErr := h.service.EventsAfter(runID, strconv.FormatUint(lastID, 10))
+		if catchupErr != nil {
+			return
+		}
+		for _, event := range catchup {
+			if decodeEventID(event.ID) <= lastID {
+				continue
+			}
+			if _, err := w.Write(encodeSSE(event)); err != nil {
+				return
+			}
+			lastID = decodeEventID(event.ID)
+		}
+		flusher.Flush()
 		return
 	}
 	keepalive := time.NewTicker(15 * time.Second)

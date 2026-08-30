@@ -1,7 +1,7 @@
 import { useEffect, useRef, type KeyboardEvent } from 'react'
 
 import ProductIcon, { type ProductIconName } from '../ProductIcon'
-import styles from './EvaluationPlane.module.css'
+import styles from './EvaluationNavigation.module.css'
 
 export type EvaluationView = 'overview' | 'new' | 'runs' | 'reports' | 'compare'
 
@@ -19,12 +19,16 @@ interface EvaluationNavigationProps {
 }
 
 export default function EvaluationNavigation({ active, onChange }: EvaluationNavigationProps) {
+  const navigation = useRef<HTMLDivElement | null>(null)
   const buttons = useRef<Array<HTMLButtonElement | null>>([])
+  const activeIndex = VIEWS.findIndex((view) => view.id === active)
 
   useEffect(() => {
-    const activeIndex = VIEWS.findIndex((view) => view.id === active)
-    buttons.current[activeIndex]?.scrollIntoView?.({ block: 'nearest', inline: 'center' })
-  }, [active])
+    const activeButton = buttons.current[activeIndex]
+    if (!activeButton || !navigation.current) return
+    navigation.current.scrollLeft =
+      activeButton.offsetLeft - (navigation.current.clientWidth - activeButton.offsetWidth) / 2
+  }, [activeIndex])
 
   const move = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
     let next = index
@@ -35,12 +39,17 @@ export default function EvaluationNavigation({ active, onChange }: EvaluationNav
     else return
     event.preventDefault()
     onChange(VIEWS[next].id)
-    buttons.current[next]?.focus()
+    requestAnimationFrame(() => buttons.current[next]?.focus())
   }
 
   return (
     <div className={styles.navigationShell}>
-      <div className={styles.navigation} role="tablist" aria-label="Evaluation plane views">
+      <div
+        ref={navigation}
+        className={styles.navigation}
+        role="tablist"
+        aria-label="Evaluation plane views"
+      >
         {VIEWS.map((view, index) => (
           <button
             key={view.id}
@@ -62,10 +71,29 @@ export default function EvaluationNavigation({ active, onChange }: EvaluationNav
           </button>
         ))}
       </div>
-      {active !== 'compare' ? (
-        <span className={styles.navigationOverflowHint} aria-hidden="true">
-          More →
-        </span>
+      {activeIndex > 0 ? (
+        <button
+          type="button"
+          className={`${styles.navigationOverflowHint} ${styles.navigationOverflowHintLeft}`}
+          data-testid="evaluation-navigation-overflow-left"
+          aria-label="Previous evaluation section"
+          title={`Go to ${VIEWS[activeIndex - 1].label}`}
+          onClick={() => onChange(VIEWS[activeIndex - 1].id)}
+        >
+          ‹
+        </button>
+      ) : null}
+      {activeIndex < VIEWS.length - 1 ? (
+        <button
+          type="button"
+          className={`${styles.navigationOverflowHint} ${styles.navigationOverflowHintRight}`}
+          data-testid="evaluation-navigation-overflow-right"
+          aria-label="Next evaluation section"
+          title={`Go to ${VIEWS[activeIndex + 1].label}`}
+          onClick={() => onChange(VIEWS[activeIndex + 1].id)}
+        >
+          ›
+        </button>
       ) : null}
     </div>
   )

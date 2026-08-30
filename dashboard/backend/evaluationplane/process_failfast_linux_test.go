@@ -33,9 +33,12 @@ func TestOversizedWorkerLineKillsProcessGroupAndReleasesCapacity(t *testing.T) {
 	if err := os.WriteFile(workerPath, []byte(worker), 0o700); err != nil {
 		t.Fatalf("write worker helper: %v", err)
 	}
+	commandProcess := NewCommandProcess(workerPath)
+	commandProcess.workerScriptPath = workerPath
 	service, err := NewService(Options{
 		DataDir: root, PythonPath: workerPath, ConfigPath: configPath,
 		CodeRevision: testSourceRevision, MaxConcurrent: 1, WorkerTimeout: time.Minute,
+		Process: commandProcess,
 	})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)

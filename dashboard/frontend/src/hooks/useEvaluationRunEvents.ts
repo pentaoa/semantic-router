@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import type { EvaluationRun, EvaluationRunEvent } from '../types/evaluationPlane'
 import { subscribeToEvaluationRun } from '../utils/evaluationPlaneApi'
@@ -11,6 +11,8 @@ export function useEvaluationRunEvents(run: EvaluationRun | null, onTerminal: ()
   const [retryVersion, setRetryVersion] = useState(0)
   const terminalHandler = useRef(onTerminal)
   terminalHandler.current = onTerminal
+  const runSnapshot = useRef(run)
+  runSnapshot.current = run
   const runID = run?.id || null
   const runStatus = run?.status || null
 
@@ -18,13 +20,14 @@ export function useEvaluationRunEvents(run: EvaluationRun | null, onTerminal: ()
     setEvents([])
     setError(null)
     setConnected(false)
-    if (!runID) return
+    const subscribedRun = runSnapshot.current
+    if (!subscribedRun) return
 
     let disconnect: (() => void) | null = null
     const connect = () => {
       if (document.hidden || disconnect) return
       disconnect = subscribeToEvaluationRun(
-        runID,
+        subscribedRun,
         (event) => {
           setConnected(true)
           setError(null)
@@ -61,8 +64,10 @@ export function useEvaluationRunEvents(run: EvaluationRun | null, onTerminal: ()
     }
   }, [retryVersion, runID, runStatus])
 
-  return useMemo(
-    () => ({ events, connected, error, retry: () => setRetryVersion((version) => version + 1) }),
-    [connected, error, events],
-  )
+  const retry = useCallback(() => {
+    terminalHandler.current()
+    setRetryVersion((version) => version + 1)
+  }, [])
+
+  return useMemo(() => ({ events, connected, error, retry }), [connected, error, events, retry])
 }

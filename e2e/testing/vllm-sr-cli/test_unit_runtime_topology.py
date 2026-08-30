@@ -113,7 +113,6 @@ class TestCLITestBaseRuntimeTopology(unittest.TestCase):
             CLITestBase.ROUTER_CONTAINER_NAME,
             CLITestBase.ENVOY_CONTAINER_NAME,
             CLITestBase.DASHBOARD_CONTAINER_NAME,
-            CLITestBase.SIM_CONTAINER_NAME,
             *CLITestBase.AUXILIARY_CONTAINER_NAMES,
         ):
             self.assertIn(container_name, removed_container_names)
@@ -141,10 +140,6 @@ class TestCLITestBaseRuntimeTopology(unittest.TestCase):
         self.assertEqual(
             IsolatedCLITestBase.ROUTER_CONTAINER_NAME,
             "isolated-test-vllm-sr-router-container",
-        )
-        self.assertEqual(
-            IsolatedCLITestBase.SIM_CONTAINER_NAME,
-            "isolated-test-vllm-sr-sim",
         )
         self.assertEqual(IsolatedCLITestBase.runtime_stack.port_offset, 4200)
 

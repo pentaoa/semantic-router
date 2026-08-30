@@ -1,20 +1,18 @@
 import { useDeferredValue, useEffect, useMemo, useState } from 'react'
 
-import type {
-  EvidenceLevel,
-  EvaluationMetric,
-  EvaluationTrackId,
-} from '../../types/evaluationPlane'
+import type { EvidenceLevel, EvaluationTrackId } from '../../types/evaluationPlane'
+import type { EvaluationMetric } from '../../types/evaluationReport'
 import { TRACK_PRESENTATION } from '../../types/evaluationPlane'
 import {
   formatConfidenceInterval,
   formatDelta,
   formatMetric,
   isServerReducedMetric,
-  legacyEvaluationEvidenceLabel,
   metricDeltaTone,
 } from './evaluationPresentation'
-import styles from './EvaluationReport.module.css'
+import styles from './EvaluationMetricTable.module.css'
+import reportStyles from './EvaluationReportLayout.module.css'
+import tableStyles from './EvaluationReportTable.module.css'
 
 interface EvaluationMetricTableProps {
   metrics: EvaluationMetric[]
@@ -22,7 +20,6 @@ interface EvaluationMetricTableProps {
   compact?: boolean
   controls?: boolean
   evidenceLevel?: EvidenceLevel
-  serverAttested?: boolean
 }
 
 const METRICS_PAGE_SIZE = 20
@@ -42,11 +39,9 @@ function directionLabel(direction: EvaluationMetric['direction']): string {
 
 function metricEvidenceLabel(
   evidenceLevel: EvidenceLevel | undefined,
-  serverAttested: boolean,
   metricID: string,
 ): string | undefined {
   if (!evidenceLevel) return undefined
-  if (!serverAttested) return legacyEvaluationEvidenceLabel(evidenceLevel)
   return isServerReducedMetric(metricID)
     ? `Server-reduced ${evidenceLevel}`
     : `Worker-derived ${evidenceLevel} / diagnostic only`
@@ -69,7 +64,6 @@ export default function EvaluationMetricTable({
   compact = false,
   controls = true,
   evidenceLevel,
-  serverAttested = false,
 }: EvaluationMetricTableProps) {
   const [search, setSearch] = useState('')
   const [track, setTrack] = useState<EvaluationTrackId | 'all'>('all')
@@ -104,7 +98,7 @@ export default function EvaluationMetricTable({
   }, [page, pages])
 
   if (metrics.length === 0) {
-    return <p className={styles.empty}>No metrics were produced for this evidence slice.</p>
+    return <p className={reportStyles.empty}>No metrics were produced for this evidence slice.</p>
   }
 
   return (
@@ -146,10 +140,17 @@ export default function EvaluationMetricTable({
       ) : null}
 
       {visible.length === 0 ? (
-        <p className={styles.empty}>No metrics match the current filters.</p>
+        <p className={reportStyles.empty}>No metrics match the current filters.</p>
       ) : (
-        <div className={styles.tableScroll}>
-          <table className={`${styles.metricTable} ${compact ? styles.metricTableCompact : ''}`}>
+        <div
+          className={tableStyles.tableScroll}
+          role="region"
+          tabIndex={0}
+          aria-label={`Scrollable ${caption}`}
+        >
+          <table
+            className={`${tableStyles.table} ${styles.metricTable} ${compact ? styles.metricTableCompact : ''}`}
+          >
             <caption>{caption}</caption>
             <thead>
               <tr>
@@ -165,7 +166,7 @@ export default function EvaluationMetricTable({
                 const delta = formatDelta(metric)
                 const interval = formatConfidenceInterval(metric)
                 const deltaTone = metricDeltaTone(metric)
-                const metricEvidence = metricEvidenceLabel(evidenceLevel, serverAttested, metric.id)
+                const metricEvidence = metricEvidenceLabel(evidenceLevel, metric.id)
                 return (
                   <tr key={`${metric.track_id || 'all'}-${metric.id}`}>
                     <th scope="row">

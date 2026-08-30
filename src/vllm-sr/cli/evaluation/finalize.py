@@ -2,22 +2,26 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime
 
 from cli.evaluation.bundle import checksum_bytes, public_artifacts
 from cli.evaluation.canonical import digest_value
-from cli.evaluation.capacity_profile import build_capacity_profile
+from cli.evaluation.capacity_profile import CapacityProfile
+from cli.evaluation.case_plan import planned_case_ids_by_track
 from cli.evaluation.constants import SCHEMA_VERSION
 from cli.evaluation.contracts import ArtifactRef, ResolvedRunSnapshot, RunManifest
 from cli.evaluation.evidence import ExecutionRecord, RoutingDiagnostic
-from cli.evaluation.fixtures import FixtureInputs
-from cli.evaluation.normalized_suite_executor import NormalizedSuiteInputs
+from cli.evaluation.execution_contract import (
+    EvaluationInputs,
+    NormalizedSuiteIdentities,
+)
 from cli.evaluation.report_builder import (
     build_report,
-    render_html,
-    render_markdown,
     select_report_metrics,
 )
+from cli.evaluation.report_render_html import render_html
+from cli.evaluation.report_render_markdown import render_markdown
 from cli.evaluation.reporting import (
     EvaluationGate,
     EvaluationMetric,
@@ -53,17 +57,28 @@ def _provenance(
     manifest: RunManifest,
     resolved: ResolvedRunSnapshot,
     completed_at: datetime,
-    benchmark_revisions: dict[str, str],
+    benchmark_revisions: Mapping[str, str],
 ) -> EvaluationProvenance:
+    mixture = manifest.target.mixture
     return EvaluationProvenance(
         generated_at=completed_at,
         code_revision=manifest.code_revision,
         benchmark_revisions=benchmark_revisions,
         workload_snapshot_digest=digest_value(resolved.workload),
-        policy_snapshot_digest=digest_value(resolved.policy),
-        binding_snapshot_digest=digest_value(resolved.binding),
-        pool_snapshot_digest=digest_value(
-            {"pool": resolved.pool, "arms": resolved.arms}
+        policy_snapshot_digest=(
+            mixture.recipe_digest
+            if mixture is not None
+            else digest_value(resolved.policy)
+        ),
+        binding_snapshot_digest=(
+            mixture.binding_digest
+            if mixture is not None
+            else digest_value(resolved.binding)
+        ),
+        pool_snapshot_digest=(
+            mixture.pool_digest
+            if mixture is not None
+            else digest_value({"pool": resolved.pool, "arms": resolved.arms})
         ),
         environment_snapshot_digest=digest_value(resolved.environment),
         target_id=manifest.target.id,
@@ -76,19 +91,19 @@ def _core_artifacts(
     manifest: RunManifest,
     store: LocalArtifactStore,
     manifest_ref: ArtifactRef,
-    inputs: FixtureInputs | NormalizedSuiteInputs,
+    inputs: EvaluationInputs,
     records: list[ExecutionRecord],
     resolved: ResolvedRunSnapshot,
     metrics: list[EvaluationMetric],
     gates: list[EvaluationGate],
     provenance: EvaluationProvenance,
-    private_lineage: dict[str, object] | None,
+    private_identity_map: NormalizedSuiteIdentities | None,
 ) -> list[tuple[str, ArtifactRef]]:
     lineage: object = resolved
-    if private_lineage is not None:
+    if private_identity_map is not None:
         lineage = {
             "resolved_snapshot": resolved,
-            "normalized_suite_aliases": private_lineage,
+            "normalized_suite_identities": private_identity_map,
         }
     return [
         ("run-manifest.json", manifest_ref),
@@ -168,6 +183,7 @@ def _live_artifacts(
     store: LocalArtifactStore,
     records: list[ExecutionRecord],
     routing_traces: tuple[RoutingDiagnostic, ...],
+    capacity_profile: CapacityProfile | None,
 ) -> list[tuple[str, ArtifactRef]]:
     if manifest.mode != "live":
         return []
@@ -182,14 +198,16 @@ def _live_artifacts(
             )
         )
     capacity_rows = [row for row in records if row.track_id == "capacity"]
-    if capacity_rows:
+    if capacity_rows and capacity_profile is None:
+        raise ValueError("live capacity records require a typed SLO profile")
+    if capacity_profile is not None:
         rows.append(
             (
                 "capacity-profile.json",
                 store.write_run_json(
                     manifest.run_id,
                     "capacity-profile.json",
-                    build_capacity_profile(capacity_rows),
+                    capacity_profile.model_dump(mode="json", exclude_none=False),
                 ),
             )
         )
@@ -201,16 +219,17 @@ def finalize_report_bundle(
     manifest: RunManifest,
     store: LocalArtifactStore,
     manifest_ref: ArtifactRef,
-    inputs: FixtureInputs | NormalizedSuiteInputs,
+    inputs: EvaluationInputs,
     records: list[ExecutionRecord],
     resolved: ResolvedRunSnapshot,
     metrics: list[EvaluationMetric],
     gates: list[EvaluationGate],
     routing_traces: tuple[RoutingDiagnostic, ...],
+    capacity_profile: CapacityProfile | None,
     run: EvaluationRun,
     completed_at: datetime,
-    benchmark_revisions: dict[str, str],
-    private_lineage: dict[str, object] | None = None,
+    benchmark_revisions: Mapping[str, str],
+    private_identity_map: NormalizedSuiteIdentities | None = None,
 ) -> EvaluationReport:
     """Write the non-self-referential bundle, then its canonical report."""
 
@@ -226,10 +245,21 @@ def finalize_report_bundle(
         selected_metrics,
         gates,
         provenance,
-        private_lineage,
+        private_identity_map,
     )
-    artifact_rows.extend(_live_artifacts(manifest, store, records, routing_traces))
-    multimodal_cases = sum(case.modality != "text" for case in inputs.visible.cases)
+    artifact_rows.extend(
+        _live_artifacts(
+            manifest,
+            store,
+            records,
+            routing_traces,
+            capacity_profile,
+        )
+    )
+    planned_case_ids = planned_case_ids_by_track(
+        inputs.visible,
+        manifest.track_ids,
+    )
     report_options = {
         "manifest": manifest,
         "run": run,
@@ -237,8 +267,7 @@ def finalize_report_bundle(
         "metrics": selected_metrics,
         "gates": gates,
         "provenance": provenance,
-        "total_cases": len(inputs.visible.cases),
-        "multimodal_cases": multimodal_cases,
+        "planned_case_ids": planned_case_ids,
     }
     draft = build_report(
         **report_options,

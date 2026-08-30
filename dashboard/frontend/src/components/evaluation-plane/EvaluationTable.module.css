@@ -1,0 +1,69 @@
+.tableScroll {
+  width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  scrollbar-gutter: stable;
+}
+
+.readinessTable {
+  width: 100%;
+  min-width: 760px;
+  border-collapse: collapse;
+  font-size: var(--text-xs);
+}
+
+.readinessTable caption {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+}
+
+.readinessTable th,
+.readinessTable td {
+  padding: 0.75rem;
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.readinessTable thead th {
+  background: var(--surface-shell);
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.readinessTable tbody tr:last-child > * {
+  border-bottom: 0;
+}
+
+.readinessTable tbody th {
+  width: 38%;
+}
+
+.readinessTable tbody th strong,
+.readinessTable tbody th span {
+  display: block;
+}
+
+.readinessTable tbody th strong {
+  color: var(--text-primary);
+}
+
+.readinessTable tbody th span {
+  margin-top: 0.15rem;
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+.inlineStatus {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}

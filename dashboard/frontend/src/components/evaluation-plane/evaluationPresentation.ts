@@ -1,16 +1,18 @@
 import type {
-  EvidenceLevel,
-  EvaluationGate,
-  EvaluationMetric,
-  EvaluationReport,
   EvaluationRunStatus,
   EvaluationTrackStatus,
   GateVerdict,
 } from '../../types/evaluationPlane'
+import type {
+  EvaluationGate,
+  EvaluationMetric,
+  EvaluationReport,
+} from '../../types/evaluationReport'
 
 export const RUN_STATUS_LABELS: Record<EvaluationRunStatus, string> = {
   pending: 'Pending',
   running: 'Running',
+  sealing: 'Sealing evidence',
   completed: 'Completed',
   failed: 'Failed',
   cancelled: 'Cancelled',
@@ -167,28 +169,8 @@ export function effectiveGateVerdict(reported: GateVerdict, gates: EvaluationGat
   return reported
 }
 
-export function evaluationGatesForPresentation(
-  evidence: { attestation_revision?: string },
-  gates: EvaluationGate[],
-  attestationLabel = 'Current server attestation',
-): EvaluationGate[] {
-  if (hasServerEvaluationAttestation(evidence)) return gates
-
-  return gates.map((gate) =>
-    gate.verdict === 'not_applicable'
-      ? gate
-      : {
-          ...gate,
-          verdict: 'unavailable',
-          rationale: `${attestationLabel} is required before the reported ${gate.verdict} verdict can be trusted.${gate.rationale ? ` ${gate.rationale}` : ''}`,
-        },
-  )
-}
-
 export function evaluationPromotionVerdict(report: EvaluationReport): GateVerdict {
-  return hasServerEvaluationAttestation(report)
-    ? effectiveGateVerdict(report.summary.verdict, report.gates)
-    : 'unavailable'
+  return effectiveGateVerdict(report.summary.verdict, report.gates)
 }
 
 const HEADLINE_METRIC_PRIORITY = [
@@ -209,8 +191,6 @@ const HEADLINE_METRIC_PRIORITY = [
   'capacity.cost_per_successful_request',
 ] as const
 
-export const EVALUATION_SERVER_ATTESTATION_REVISION = 'evaluation-server-attestation.v2' as const
-
 // The v2 control plane independently reduces only these values from sealed
 // records, regardless of the report's claim level. Every other aggregate stays
 // available in the explorer but cannot become a headline under this revision.
@@ -225,21 +205,7 @@ export function isServerReducedMetric(metricID: string): boolean {
   return SERVER_REDUCED_HEADLINES.has(metricID)
 }
 
-export function hasServerEvaluationAttestation(evidence: {
-  attestation_revision?: string
-}): boolean {
-  return evidence.attestation_revision === EVALUATION_SERVER_ATTESTATION_REVISION
-}
-
-export function legacyEvaluationEvidenceLabel(level: EvidenceLevel): string {
-  return level === 'E0'
-    ? 'Legacy worker-derived E0 / integrity-only'
-    : `Legacy unattested ${level} / integrity-only`
-}
-
 export function selectHeadlineMetrics(report: EvaluationReport, limit = 4): EvaluationMetric[] {
-  if (!hasServerEvaluationAttestation(report)) return []
-
   const available = report.metrics.filter((metric) => {
     if (metric.value === null || !Number.isFinite(metric.value)) return false
     return isServerReducedMetric(metric.id)

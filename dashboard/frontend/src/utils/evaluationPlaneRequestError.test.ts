@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { type EvaluationRequestError, getEvaluationReport } from './evaluationPlaneApi'
 
+const MISSING_RUN_ID = '44444444-4444-4444-8444-444444444444'
+
 afterEach(() => vi.unstubAllGlobals())
 
 describe('Evaluation Plane request errors', () => {
@@ -16,7 +18,7 @@ describe('Evaluation Plane request errors', () => {
       ),
     )
 
-    await expect(getEvaluationReport('missing')).rejects.toMatchObject({
+    await expect(getEvaluationReport(MISSING_RUN_ID)).rejects.toMatchObject({
       name: 'EvaluationRequestError',
       message: 'report missing',
       status: 404,

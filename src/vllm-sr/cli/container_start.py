@@ -45,6 +45,12 @@ from cli.container_start_paths import (
     _runtime_mount_specs,
 )
 from cli.container_start_runner import run_container_specs
+from cli.evaluation_runtime_env import (
+    EVALUATION_DEPLOYMENTS_DIR_ENV,
+    configure_dashboard_evaluation_deployments,
+    configure_dashboard_evaluation_env,
+    evaluation_dashboard_secret_env_names,
+)
 from cli.parser import parse_user_config
 from cli.runtime_stack import PORT_OFFSET_ENV, RuntimeStackLayout, resolve_runtime_stack
 from cli.runtime_topology import resolve_runtime_topology
@@ -160,6 +166,10 @@ def _build_common_runtime_env(
     recipe_store_dir: str | None = None,
 ):
     common_env = dict(env_vars or {})
+    # Deployment registry paths are a Dashboard-only control-plane input. They
+    # are rewritten to a read-only container mount below and must never leak to
+    # Router or Envoy through the shared environment.
+    common_env.pop(EVALUATION_DEPLOYMENTS_DIR_ENV, None)
     common_env["VLLM_SR_RUNTIME_CONFIG_PATH"] = runtime_container_config
     common_env["VLLM_SR_SOURCE_CONFIG_PATH"] = runtime_container_config
     common_env["VLLM_SR_STATE_ROOT_DIR"] = "/app"
@@ -463,6 +473,10 @@ def _build_dashboard_runtime_command(
         stack_layout=stack_layout,
         management_port=int(management_listener["port"]),
     )
+    configure_dashboard_evaluation_env(
+        dashboard_env,
+        source_config_path=runtime_paths.get("source_config_path"),
+    )
     dashboard_mount_specs = _runtime_mount_specs(
         runtime_paths, include_dashboard_data=True
     )
@@ -473,6 +487,11 @@ def _build_dashboard_runtime_command(
         ]
     )
     dashboard_mount_specs.extend(_active_recipe_mount_specs(runtime_paths))
+    configure_dashboard_evaluation_deployments(
+        dashboard_env,
+        dashboard_mount_specs,
+        staging_root=runtime_paths["evaluation_deployment_staging_root"],
+    )
     if runtime_paths.get("active_recipe_root"):
         dashboard_env["VLLM_SR_ACTIVE_RECIPE_DIR"] = "/app/recipe"
     else:
@@ -511,7 +530,9 @@ def _build_dashboard_runtime_command(
         port_mappings=[(stack_layout.dashboard_port, 8700)],
         entrypoint=service_entrypoint,
         command_args=service_args,
-        inherited_env_keys={"DASHBOARD_ADMIN_PASSWORD"} | inherited_sensitive_env,
+        inherited_env_keys={"DASHBOARD_ADMIN_PASSWORD"}
+        | inherited_sensitive_env
+        | evaluation_dashboard_secret_env_names(dashboard_env),
     )
 
 

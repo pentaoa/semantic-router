@@ -146,6 +146,18 @@ async function readStoredQueuePrompts(page: import('@playwright/test').Page): Pr
   })
 }
 
+async function readStoredConversationIds(page: import('@playwright/test').Page): Promise<string[]> {
+  return page.evaluate(() => {
+    const raw = window.localStorage.getItem('sr:chat:conversations')
+    if (!raw) return []
+
+    const parsed = JSON.parse(raw) as Array<{ id?: string }>
+    return Array.isArray(parsed)
+      ? parsed.map((conversation) => conversation.id || '').filter(Boolean)
+      : []
+  })
+}
+
 test.describe('Playground Chat Component', () => {
   test.beforeEach(async ({ page }) => {
     await mockPlaygroundBootstrap(page)
@@ -484,7 +496,10 @@ test.describe('Playground Chat Component', () => {
 
     const shell = page.getByTestId('playground-sidebar-shell')
     await expect(shell).toBeVisible()
-    const sidebarItem = shell.getByRole('button', { name: 'Saved conversation preview' })
+    const sidebarItem = shell.getByRole('button', {
+      name: 'Saved conversation preview',
+      exact: true,
+    })
 
     await page.getByRole('button', { name: 'Open sidebar' }).click()
     await expect(sidebarItem).toBeVisible()
@@ -706,6 +721,7 @@ test.describe('Playground Chat Component', () => {
           },
         ]),
       )
+      window.localStorage.setItem('sr:playground:active-conversation', 'citation-conversation')
     })
 
     await page.goto('/playground', { waitUntil: 'domcontentloaded' })
@@ -846,7 +862,10 @@ test.describe('Playground Chat Component', () => {
     await page.waitForTimeout(900)
 
     const sidebarShell = page.getByTestId('playground-sidebar-shell')
-    const sessionAButton = sidebarShell.getByRole('button', { name: sessionAPrompt })
+    const sessionAButton = sidebarShell.getByRole('button', {
+      name: sessionAPrompt,
+      exact: true,
+    })
     if (
       (await sessionAButton.count()) === 0 ||
       !(await sessionAButton
@@ -925,13 +944,17 @@ test.describe('Playground Chat Component', () => {
           },
         ]),
       )
+      window.localStorage.setItem('sr:playground:active-conversation', 'recent-conversation')
     })
 
     await page.goto('/playground', { waitUntil: 'domcontentloaded' })
     await expect(page.getByText('Short reply for the currently selected session.')).toBeVisible()
 
     const sidebarShell = page.getByTestId('playground-sidebar-shell')
-    const longHistoryButton = sidebarShell.getByRole('button', { name: 'Long history session' })
+    const longHistoryButton = sidebarShell.getByRole('button', {
+      name: 'Long history session',
+      exact: true,
+    })
     if (
       (await longHistoryButton.count()) === 0 ||
       !(await longHistoryButton
@@ -1332,6 +1355,11 @@ test.describe('Playground Chat Component', () => {
     await expect
       .poll(() => readStoredQueuePrompts(page))
       .toEqual(['Second queued task', 'Third queued task'])
+    const activeConversationId = await page.evaluate(() =>
+      window.localStorage.getItem('sr:playground:active-conversation'),
+    )
+    expect(activeConversationId).toBeTruthy()
+    await expect.poll(() => readStoredConversationIds(page)).toContain(activeConversationId)
 
     await page.reload({ waitUntil: 'domcontentloaded' })
 
@@ -1519,6 +1547,7 @@ test.describe('Playground Chat Component', () => {
           },
         ]),
       )
+      window.localStorage.setItem('sr:playground:active-conversation', 'seeded-conversation')
     })
     await page.goto('/playground', { waitUntil: 'domcontentloaded' })
 
@@ -1573,6 +1602,9 @@ test.describe('Playground Chat Component', () => {
     const manualScrollTop = await transcript.evaluate((node) => {
       const container = node as HTMLDivElement
       container.style.scrollBehavior = 'auto'
+      if (container.scrollHeight - container.clientHeight < 600) {
+        throw new Error('Transcript must have a meaningful manual-scroll range')
+      }
       const target = Math.max(0, container.scrollTop - container.clientHeight * 1.5)
       container.scrollTop = target
       container.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: -1 }))
@@ -1583,6 +1615,9 @@ test.describe('Playground Chat Component', () => {
     await expect(currentAssistant).toContainText('Paragraph 140: streaming output keeps growing.', {
       timeout: 10000,
     })
+    await expect
+      .poll(() => transcript.evaluate((node) => (node as HTMLDivElement).scrollTop))
+      .toBeLessThan(manualScrollTop + 120)
   })
 
   test('keeps the assistant rail centered and stable during streaming and after completion', async ({

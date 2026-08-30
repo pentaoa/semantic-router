@@ -1,0 +1,115 @@
+.gateList {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.gateRow {
+  display: grid;
+  grid-template-columns: minmax(250px, 0.8fr) minmax(280px, 1fr) auto;
+  align-items: start;
+  gap: 1rem;
+  padding: 0.85rem;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: rgba(255, 255, 255, 0.018);
+}
+
+.gateRow[data-tone='negative'] {
+  border-left: 2px solid var(--color-danger);
+}
+
+.gateRow[data-tone='warning'] {
+  border-left: 2px solid var(--color-warning);
+}
+
+.gateIdentity > div {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.gateIdentity strong {
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+}
+
+.gateIdentity code {
+  color: var(--text-muted);
+  font-size: 0.7rem;
+}
+
+.gateIdentity p,
+.gateIdentity small {
+  display: block;
+  margin: 0.3rem 0 0;
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
+.gateRationale {
+  color: var(--text-primary) !important;
+}
+
+.gateEvidence {
+  display: grid;
+  gap: 0.18rem;
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+}
+
+.gateEvidence > span {
+  width: fit-content;
+  padding: 0.18rem 0.4rem;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  text-transform: capitalize;
+}
+
+.gateReferences {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin: 0.2rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.gateReferences code {
+  display: block;
+  max-width: 260px;
+  padding: 0.15rem 0.3rem;
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  text-overflow: ellipsis;
+}
+
+.unavailableWarning {
+  margin-top: 0.25rem;
+  color: #f9d38b;
+  font-size: 0.72rem;
+}
+
+@media (max-width: 1050px) {
+  .gateRow {
+    grid-template-columns: minmax(220px, 0.8fr) minmax(260px, 1fr);
+  }
+
+  .gateRow > :last-child {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 600px) {
+  .gateRow {
+    grid-template-columns: 1fr;
+  }
+
+  .gateRow > :last-child {
+    grid-column: auto;
+  }
+}

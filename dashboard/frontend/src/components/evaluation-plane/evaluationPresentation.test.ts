@@ -1,17 +1,13 @@
 import { describe, expect, it } from 'vitest'
 
-import type { EvaluationReport } from '../../types/evaluationPlane'
-import { EVALUATION_TRACK_IDS } from '../../types/evaluationPlane'
+import type { EvaluationReport } from '../../types/evaluationReport'
+import { EVALUATION_ATTESTATION_REVISION, EVALUATION_TRACK_IDS } from '../../types/evaluationPlane'
 import {
   clampFraction,
-  EVALUATION_SERVER_ATTESTATION_REVISION,
-  evaluationGatesForPresentation,
   evaluationPromotionVerdict,
   evidenceRank,
   formatDelta,
   formatMetric,
-  hasServerEvaluationAttestation,
-  legacyEvaluationEvidenceLabel,
   metricDeltaTone,
   selectHeadlineMetrics,
 } from './evaluationPresentation'
@@ -48,9 +44,9 @@ describe('evaluation presentation', () => {
     expect(metricDeltaTone({ delta: 12, direction: 'target' })).toBe('neutral')
   })
 
-  it('elevates only server-reduced diagnostics for E0 reports', () => {
+  it('elevates only metrics independently reduced by the current contract', () => {
     const report = {
-      attestation_revision: EVALUATION_SERVER_ATTESTATION_REVISION,
+      attestation_revision: EVALUATION_ATTESTATION_REVISION,
       run: { evidence_level: 'E0', track_ids: ['routing', 'safety', 'capacity'] },
       metrics: [
         {
@@ -83,103 +79,16 @@ describe('evaluation presentation', () => {
     ])
   })
 
-  it('fails closed for missing and unknown E0 attestation revisions', () => {
-    const report = {
-      run: { evidence_level: 'E0', track_ids: ['joint', 'safety'] },
-      metrics: [
-        {
-          id: 'joint.normalized_regret',
-          name: 'Normalized regret',
-          track_id: 'joint',
-          value: 0.1,
-          unit: 'fraction',
-        },
-        {
-          id: 'safety.block_accuracy',
-          name: 'Safety block accuracy',
-          track_id: 'safety',
-          value: 1,
-          unit: 'fraction',
-        },
-      ],
-    } as EvaluationReport
-
-    expect(hasServerEvaluationAttestation(report)).toBe(false)
-    expect(selectHeadlineMetrics(report)).toEqual([])
-
-    const unknownRevision = { ...report, attestation_revision: 'evaluation-server-attestation.v3' }
-    expect(hasServerEvaluationAttestation(unknownRevision)).toBe(false)
-    expect(selectHeadlineMetrics(unknownRevision)).toEqual([])
-  })
-
-  it.each(['E1', 'E5'] as const)(
-    'withholds %s headlines when the current server attestation is missing',
-    (evidenceLevel) => {
-      const report = {
-        run: { evidence_level: evidenceLevel, track_ids: ['routing', 'safety'] },
-        metrics: [
-          {
-            id: 'routing.accuracy',
-            name: 'Routing accuracy',
-            track_id: 'routing',
-            value: 0.9,
-            unit: 'fraction',
-          },
-          {
-            id: 'safety.violation_rate',
-            name: 'Safety violation rate',
-            track_id: 'safety',
-            value: 0,
-            unit: 'violations/case',
-          },
-        ],
-      } as EvaluationReport
-
-      expect(selectHeadlineMetrics(report)).toEqual([])
-      expect(
-        selectHeadlineMetrics({
-          ...report,
-          attestation_revision: EVALUATION_SERVER_ATTESTATION_REVISION,
-        }).map((metric) => metric.id),
-      ).toEqual(['safety.violation_rate'])
-    },
-  )
-
-  it('accepts only the exact v2 server attestation revision', () => {
-    expect(
-      hasServerEvaluationAttestation({
-        attestation_revision: EVALUATION_SERVER_ATTESTATION_REVISION,
-      }),
-    ).toBe(true)
-    expect(hasServerEvaluationAttestation({ attestation_revision: undefined })).toBe(false)
-    expect(hasServerEvaluationAttestation({ attestation_revision: '' })).toBe(false)
-    expect(legacyEvaluationEvidenceLabel('E0')).toBe('Legacy worker-derived E0 / integrity-only')
-    expect(legacyEvaluationEvidenceLabel('E5')).toBe('Legacy unattested E5 / integrity-only')
-  })
-
-  it('fails reported gates and promotion verdicts closed without a current attestation', () => {
+  it('derives promotion from required gate evidence', () => {
     const report = {
       summary: { verdict: 'pass' },
       gates: [
-        {
-          id: 'G0',
-          disposition: 'required',
-          verdict: 'pass',
-          rationale: 'Worker-reported rationale.',
-        },
+        { id: 'G0', disposition: 'required', verdict: 'pass' },
+        { id: 'G4', disposition: 'required', verdict: 'unavailable' },
         { id: 'G9', disposition: 'advisory', verdict: 'not_applicable' },
       ],
     } as EvaluationReport
 
     expect(evaluationPromotionVerdict(report)).toBe('unavailable')
-    expect(evaluationGatesForPresentation(report, report.gates)).toMatchObject([
-      {
-        id: 'G0',
-        verdict: 'unavailable',
-        rationale:
-          'Current server attestation is required before the reported pass verdict can be trusted. Worker-reported rationale.',
-      },
-      { id: 'G9', verdict: 'not_applicable' },
-    ])
   })
 })

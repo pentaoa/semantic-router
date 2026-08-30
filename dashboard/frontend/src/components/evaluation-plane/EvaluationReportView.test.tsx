@@ -2,20 +2,23 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 
-import type { EvaluationReport } from '../../types/evaluationPlane'
-import { EVALUATION_SERVER_ATTESTATION_REVISION } from './evaluationPresentation'
+import type { EvaluationReport } from '../../types/evaluationReport'
+import { EVALUATION_ATTESTATION_REVISION } from '../../types/evaluationPlane'
 import EvaluationReportView from './EvaluationReportView'
 
-const legacyReport: EvaluationReport = {
+const report: EvaluationReport = {
   schema_version: 'evaluation.v1',
+  attestation_revision: EVALUATION_ATTESTATION_REVISION,
   run: {
     schema_version: 'evaluation.v1',
-    id: 'run-legacy',
-    name: 'Legacy evaluation',
-    description: 'Historical worker report',
+    id: 'run-current',
+    client_request_id: 'run-current',
+    name: 'Current evaluation',
+    description: 'Server-attested diagnostic report',
     status: 'completed',
     mode: 'replay',
     evidence_level: 'E0',
+    track_evidence_levels: { safety: 'E0' },
     target_id: 'target-a',
     change_profile: 'recipe',
     suite_ids: ['suite-a'],
@@ -75,55 +78,151 @@ const legacyReport: EvaluationReport = {
   artifacts: [],
 }
 
-describe('EvaluationReportView attestation language', () => {
-  it('renders a legacy report without server-verified claims while preserving metrics', () => {
-    const claimedPass = {
-      ...legacyReport,
-      summary: { ...legacyReport.summary, verdict: 'pass' as const, passed_gates: 1 },
-      gates: [
+describe('EvaluationReportView evidence language', () => {
+  it('explains one frozen Mixture across recipe, pool-arm, and joint outcomes', () => {
+    const mixtureReport: EvaluationReport = {
+      ...report,
+      run: {
+        ...report.run,
+        mode: 'live',
+        target_id: 'mom-balanced',
+        track_ids: ['routing', 'model_pool', 'joint'],
+        mixture: {
+          id: 'mom-balanced',
+          entrypoint_model: 'vllm-sr/auto',
+          aliases: ['vllm-sr/auto'],
+          recipe_name: 'balanced',
+          recipe_description: 'Balanced routing.',
+          recipe_digest: `sha256:${'1'.repeat(64)}`,
+          pool_digest: `sha256:${'2'.repeat(64)}`,
+          selector_policy_digest: `sha256:${'4'.repeat(64)}`,
+          selector_digest: `sha256:${'5'.repeat(64)}`,
+          adaptation_digest: `sha256:${'6'.repeat(64)}`,
+          binding_digest: `sha256:${'3'.repeat(64)}`,
+          model_arms: [
+            {
+              id: 'fast',
+              model: 'models/fast',
+              provider_model_id_digest: `sha256:${'4'.repeat(64)}`,
+              input_cost_per_million_tokens_usd: 0.1,
+              output_cost_per_million_tokens_usd: 0.2,
+            },
+            {
+              id: 'strong',
+              model: 'models/strong',
+              provider_model_id_digest: `sha256:${'5'.repeat(64)}`,
+              input_cost_per_million_tokens_usd: 0.4,
+              output_cost_per_million_tokens_usd: 0.8,
+            },
+          ],
+          support_models: [],
+          fallback_arm_id: 'fast',
+          decisions: [{ name: 'reasoning', algorithm: 'confidence', arm_ids: ['fast', 'strong'] }],
+        },
+      },
+      metrics: [
         {
-          id: 'G0',
-          name: 'Reproducibility',
-          description: 'Worker-reported pass without a current server attestation.',
-          disposition: 'required' as const,
-          verdict: 'pass' as const,
-          change_profile: 'recipe' as const,
-          contract_version: 'evaluation-release-gates.v1',
-          evidence_refs: [],
+          id: 'routing.accuracy',
+          name: 'Routing accuracy',
+          track_id: 'routing',
+          value: 0.75,
+          unit: 'fraction',
+        },
+        {
+          id: 'model_pool.oracle_quality',
+          name: 'Pool oracle quality',
+          track_id: 'model_pool',
+          value: 1,
+          unit: 'fraction',
+        },
+        {
+          id: 'model_pool.arm.fast.quality',
+          name: 'Fast quality',
+          track_id: 'model_pool',
+          value: 0.5,
+          unit: 'fraction',
+        },
+        {
+          id: 'model_pool.arm.strong.quality',
+          name: 'Strong quality',
+          track_id: 'model_pool',
+          value: 1,
+          unit: 'fraction',
+        },
+        {
+          id: 'joint.realized_quality',
+          name: 'Realized quality',
+          track_id: 'joint',
+          value: 0.75,
+          unit: 'fraction',
+        },
+        {
+          id: 'joint.oracle_regret',
+          name: 'Oracle regret',
+          track_id: 'joint',
+          value: 0.25,
+          unit: 'fraction',
+        },
+        {
+          id: 'joint.normalized_regret',
+          name: 'Normalized oracle regret',
+          track_id: 'joint',
+          value: 0.25,
+          unit: 'fraction',
         },
       ],
     }
     const markup = renderToStaticMarkup(
-      createElement(EvaluationReportView, { report: claimedPass }),
+      createElement(EvaluationReportView, { report: mixtureReport }),
     )
 
-    expect(markup).toContain('Legacy worker-derived E0 / integrity-only')
-    expect(markup).toContain('Current attestation required')
-    expect(markup).toContain('0/1 reported required gate verdicts are trusted')
-    expect(markup).toContain('Evidence needed')
-    expect(markup).toContain('Safety violation rate')
-    expect(markup).toContain('Legacy track scope · integrity-only')
-    expect(markup).toContain('Legacy cost ledgers · integrity-only')
-    expect(markup).not.toContain('Server-reduced')
-    expect(markup).not.toContain('Verified artifacts')
-    expect(markup).not.toContain('Verified track scope')
-    expect(markup).not.toContain('Verified cost ledgers')
-    expect(markup).not.toContain('Required gates satisfied')
-    expect(markup).not.toContain('>Passed<')
+    expect(markup).toContain('Evaluated system boundary')
+    expect(markup).toContain('01 · Routing recipe')
+    expect(markup).toContain('02 · Model pool')
+    expect(markup).toContain('03 · Routed system')
+    expect(markup).toContain('Per-arm outcome matrix')
+    expect(markup).toContain('models/fast')
+    expect(markup).toContain('models/strong')
+    expect(markup).toContain('Fallback')
+    expect(markup).toContain('Normalized regret')
+    expect(markup).toContain('Read left to right')
   })
 
-  it('enables bounded server-reduced and verified labels only for exact v2 attestation', () => {
-    const report = {
-      ...legacyReport,
-      attestation_revision: EVALUATION_SERVER_ATTESTATION_REVISION,
+  it('renders current attested E0 evidence without manufacturing promotion readiness', () => {
+    const diagnostic = {
+      ...report,
+      summary: {
+        ...report.summary,
+        verdict: 'unavailable' as const,
+        unavailable_gates: 1,
+        coverage: { evaluated: 4, total: 6, fraction: 2 / 3, unavailable: 2 },
+      },
+      gates: [
+        {
+          id: 'G0',
+          name: 'Reproducibility',
+          description: 'Reproducibility evidence is incomplete.',
+          disposition: 'required' as const,
+          verdict: 'unavailable' as const,
+          change_profile: 'recipe' as const,
+          contract_version: 'evaluation-release-gates.v2' as const,
+          evidence_refs: [],
+          coverage: { evaluated: 4, total: 6, fraction: 2 / 3, unavailable: 2 },
+        },
+      ],
     }
-    const markup = renderToStaticMarkup(createElement(EvaluationReportView, { report }))
+    const markup = renderToStaticMarkup(createElement(EvaluationReportView, { report: diagnostic }))
 
+    expect(markup).toContain('Promotion summary withheld — server-attested diagnostic E0')
+    expect(markup).toContain('Diagnostic evidence only')
+    expect(markup).toContain('0/1 required gates passed')
+    expect(markup).toContain('Evidence needed')
+    expect(markup.match(/2 not measured/g)).toHaveLength(3)
+    expect(markup).toContain('Safety violation rate')
     expect(markup).toContain('Server-reduced E0')
     expect(markup).toContain('Verified artifacts')
     expect(markup).toContain('Verified track scope')
     expect(markup).toContain('Verified cost ledgers')
-    expect(markup).toContain(EVALUATION_SERVER_ATTESTATION_REVISION)
-    expect(markup).not.toContain('Legacy worker-derived E0 / integrity-only')
+    expect(markup).toContain(EVALUATION_ATTESTATION_REVISION)
   })
 })

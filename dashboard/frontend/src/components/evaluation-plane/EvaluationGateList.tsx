@@ -1,11 +1,12 @@
-import type { EvaluationGate } from '../../types/evaluationPlane'
+import type { EvaluationGate } from '../../types/evaluationReport'
 import { formatDateTime } from '../../utils/dateTime'
 import { formatMetric, gateVerdictPresentation } from './evaluationPresentation'
 import { GateVerdictBadge } from './EvaluationPrimitives'
-import styles from './EvaluationReport.module.css'
+import styles from './EvaluationGateList.module.css'
+import reportStyles from './EvaluationReportLayout.module.css'
 
 export default function EvaluationGateList({ gates }: { gates: EvaluationGate[] }) {
-  if (gates.length === 0) return <p className={styles.empty}>No gates were declared.</p>
+  if (gates.length === 0) return <p className={reportStyles.empty}>No gates were declared.</p>
 
   return (
     <div className={styles.gateList}>
@@ -43,7 +44,7 @@ export default function EvaluationGateList({ gates }: { gates: EvaluationGate[] 
                 <small>
                   Coverage {gate.coverage.evaluated}/{gate.coverage.total} (
                   {(gate.coverage.fraction * 100).toFixed(1)}%)
-                  {gate.coverage.unavailable ? ` · ${gate.coverage.unavailable} unavailable` : ''}
+                  {gate.coverage.unavailable ? ` · ${gate.coverage.unavailable} not measured` : ''}
                   {gate.coverage.confidence_interval
                     ? ` · CI ${(gate.coverage.confidence_interval[0] * 100).toFixed(1)}–${(
                         gate.coverage.confidence_interval[1] * 100

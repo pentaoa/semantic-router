@@ -12,12 +12,14 @@ from typing import Literal
 
 from pydantic import Field, field_validator, model_validator
 
+from cli.evaluation.constants import TRACK_IDS
 from cli.evaluation.contracts import StrictModel
-from cli.evaluation.reporting import EvidenceLevel, TrackID
+from cli.evaluation.reporting import TrackID
 from cli.evaluation.suite_contract import (
     SUITE_CONTRACT_VERSION,
     BenchmarkSourceReceipt,
 )
+from cli.evaluation.suite_qualification import NormalizationOrigin
 
 SUITE_INSTALL_CONTRACT_VERSION = "evaluation-suite-install.v1"
 LICENSE_CONTRACT_VERSION = "evaluation-suite-license.v1"
@@ -155,7 +157,7 @@ class BenchmarkSuiteInstallRequest(StrictModel):
     decision_unit: str = Field(min_length=1, max_length=256)
     action_space: str = Field(min_length=1, max_length=256)
     track_ids: tuple[TrackID, ...] = Field(min_length=1)
-    evidence_level_ceiling: EvidenceLevel
+    normalization_origin: NormalizationOrigin
     split_protocol: str = Field(min_length=1, max_length=1024)
     case_count: int = Field(gt=0, strict=True)
     arm_ids: tuple[str, ...] = ()
@@ -186,6 +188,11 @@ class BenchmarkSuiteInstallRequest(StrictModel):
             raise ValueError("source receipt belongs to a different adapter")
         if len(self.track_ids) != len(set(self.track_ids)):
             raise ValueError("track ids must be unique")
+        canonical_tracks = tuple(
+            track_id for track_id in TRACK_IDS if track_id in self.track_ids
+        )
+        if self.track_ids != canonical_tracks:
+            raise ValueError("track ids must use canonical catalog order")
         roles = [artifact.role for artifact in self.artifacts]
         if len(roles) != len(set(roles)):
             raise ValueError("artifact roles must be unique")

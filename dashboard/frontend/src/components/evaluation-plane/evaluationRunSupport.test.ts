@@ -8,14 +8,17 @@ import {
 } from './evaluationRunSupport'
 
 function run(overrides: Partial<EvaluationRun>): EvaluationRun {
+  const id = overrides.id || 'baseline'
   return {
     schema_version: 'evaluation.v1',
-    id: 'baseline',
+    id,
+    client_request_id: id,
     name: 'Baseline',
     description: '',
     status: 'completed',
     mode: 'replay',
     evidence_level: 'E0',
+    track_evidence_levels: { routing: 'E0' },
     target_id: 'target',
     change_profile: 'recipe',
     suite_ids: ['suite'],

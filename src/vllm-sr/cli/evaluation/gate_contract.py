@@ -21,7 +21,7 @@ ChangeProfile = Literal[
 ]
 GateDisposition = Literal["required", "advisory", "not_applicable"]
 
-GATE_CONTRACT_VERSION = "evaluation-release-gates.v1"
+GATE_CONTRACT_VERSION = "evaluation-release-gates.v2"
 DEFAULT_CHANGE_PROFILE: ChangeProfile = "schema_adapter"
 
 
@@ -97,22 +97,22 @@ GATE_DEFINITIONS = (
     GateDefinition(
         "G3",
         "Offline value",
-        "Qualified improvement over the declared baseline and no-information frontier.",
+        "Server-controlled baseline/candidate value, absolute candidate safeguards, arm reliability, paired regret, and no-information-frontier improvement.",
     ),
     GateDefinition(
         "G4",
-        "Robustness / OOD",
-        "Invariant, expected-change, temporal, source, language, domain, and modality slices.",
+        "Declared-shift robustness",
+        "Server-live execution of source-qualified pinned perturbation relations and their declared slices on the exact frozen corpus.",
     ),
     GateDefinition(
         "G5",
         "Live fidelity",
-        "Replay-to-live agreement with fresh outputs and complete failure accounting.",
+        "Qualified reference-to-fresh-live agreement for the unchanged candidate, with complete failure accounting.",
     ),
     GateDefinition(
         "G6",
-        "Reliability / trajectory",
-        "Terminal success, continuity, recovery, state isolation, and tool idempotency.",
+        "Live fault-recovery continuity",
+        "Server-brokered exact-step fault injection, paired baseline/treatment continuity, recovery latency, retry amplification, state isolation, and side effects.",
     ),
     GateDefinition(
         "G7",
@@ -144,7 +144,10 @@ _APPLICABILITY: dict[ChangeProfile, tuple[GateDisposition, ...]] = {
     "selector": (_R, _R, _R, _R, _R, _R, _A, _R, _R, _N),
     "model_pool": (_R, _R, _R, _R, _R, _R, _A, _R, _R, _N),
     "runtime_capacity": (_R, _R, _R, _A, _A, _R, _A, _R, _R, _N),
-    "agent_multimodal": (_R, _R, _R, _R, _R, _R, _R, _R, _R, _A),
+    # Agent/multimodal promotion does not use the text-only controlled-pair G3
+    # protocol. Its live quality boundary is the exact-cohort multimodal G5
+    # reference/fresh pair; agent continuity remains independently owned by G6.
+    "agent_multimodal": (_R, _R, _R, _N, _R, _R, _R, _R, _R, _A),
     "online_adaptation": (_R, _R, _R, _R, _R, _R, _R, _R, _R, _R),
 }
 

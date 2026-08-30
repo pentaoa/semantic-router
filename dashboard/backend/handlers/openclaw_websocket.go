@@ -108,9 +108,7 @@ func (h *OpenClawHandler) replayLastRoomEventToClient(client *WSClient, roomID s
 	if !ok {
 		return
 	}
-	select {
-	case client.send <- replay:
-	default:
+	if !client.trySend(replay) {
 		log.Printf("openclaw: WS client %s buffer full, skipping room replay", client.clientID)
 	}
 }
@@ -154,9 +152,12 @@ func (h *OpenClawHandler) handleRoomWebSocket(w http.ResponseWriter, r *http.Req
 	log.Printf("openclaw: WebSocket client %s connected to room %s", clientID, roomID)
 
 	// Send connected message
-	client.send <- WSOutboundMessage{
+	if !client.trySend(WSOutboundMessage{
 		Type:   WSTypeConnected,
 		RoomID: roomID,
+	}) {
+		client.close()
+		return
 	}
 	h.replayLastRoomEventToClient(client, roomID)
 
@@ -234,7 +235,7 @@ func (c *WSClient) readPump() {
 func (c *WSClient) handleMessage(msg WSInboundMessage) {
 	switch msg.Type {
 	case WSTypePing:
-		c.send <- WSOutboundMessage{Type: WSTypePong}
+		c.trySend(WSOutboundMessage{Type: WSTypePong})
 
 	case WSTypeSendMessage:
 		c.handleSendMessage(msg)
@@ -370,9 +371,27 @@ func (h *OpenClawHandler) appendRoomMessageWS(roomID string, message ClawRoomMes
 
 // sendError sends an error message to the client
 func (c *WSClient) sendError(errMsg string) {
-	c.send <- WSOutboundMessage{
+	c.trySend(WSOutboundMessage{
 		Type:  WSTypeError,
 		Error: errMsg,
+	})
+}
+
+// trySend serializes producers with close so no goroutine can send after the
+// outbound channel is closed. Slow clients keep the existing lossy behavior:
+// one full client buffer must never block the room collaboration bus.
+func (c *WSClient) trySend(message WSOutboundMessage) bool {
+	c.closeMu.Lock()
+	defer c.closeMu.Unlock()
+
+	if c.closed {
+		return false
+	}
+	select {
+	case c.send <- message:
+		return true
+	default:
+		return false
 	}
 }
 

@@ -1,0 +1,90 @@
+.catalogGrid,
+.trackGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0;
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.catalogCard,
+.trackCard {
+  display: flex;
+  gap: 0.65rem;
+  min-width: 0;
+  margin: -1px 0 0 -1px;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--border-subtle);
+  border-radius: 0;
+  background: transparent;
+  cursor: pointer;
+  transition:
+    border-color var(--transition-fast),
+    background var(--transition-fast),
+    transform var(--transition-fast);
+}
+
+.catalogCard:hover,
+.trackCard:hover {
+  border-color: var(--border-strong);
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.active {
+  border-color: rgba(255, 255, 255, 0.3);
+  background: rgba(255, 255, 255, 0.045);
+  box-shadow: inset 0 -2px 0 var(--brand-amd);
+}
+
+.catalogCard input,
+.trackCard input {
+  flex: 0 0 auto;
+  margin-top: 0.15rem;
+  accent-color: var(--text-primary);
+}
+
+.catalogCard span,
+.trackCard span {
+  display: grid;
+  gap: 0.22rem;
+  min-width: 0;
+}
+
+.catalogCard strong,
+.trackCard strong {
+  color: var(--text-primary);
+  font-size: var(--text-xs);
+}
+
+.catalogCard small,
+.trackCard small {
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  line-height: 1.45;
+}
+
+.catalogCard em,
+.trackCard em {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  font-style: normal;
+}
+
+.disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+.disabled:hover {
+  border-color: var(--border-subtle);
+  background: rgba(255, 255, 255, 0.018);
+}
+
+@media (max-width: 680px) {
+  .catalogGrid,
+  .trackGrid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

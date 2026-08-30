@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-import type { EvaluationReport } from '../types/evaluationPlane'
-import { EvaluationRequestError, getEvaluationReport } from '../utils/evaluationPlaneApi'
+import type { EvaluationReport } from '../types/evaluationReport'
+import { getEvaluationReport } from '../utils/evaluationPlaneApi'
 
 function reportErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : 'Failed to load the evaluation report.'
@@ -11,23 +11,14 @@ export function useEvaluationReport(runID: string | null) {
   const [report, setReport] = useState<EvaluationReport | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [errorRunID, setErrorRunID] = useState<string | null>(null)
-  const [errorStatus, setErrorStatus] = useState<number | null>(null)
   const requestVersion = useRef(0)
 
   const clearError = useCallback(() => {
     setError(null)
-    setErrorRunID(null)
-    setErrorStatus(null)
   }, [])
-  const recordError = useCallback(
-    (reportError: unknown) => {
-      setError(reportErrorMessage(reportError))
-      setErrorRunID(runID)
-      setErrorStatus(reportError instanceof EvaluationRequestError ? reportError.status : null)
-    },
-    [runID],
-  )
+  const recordError = useCallback((reportError: unknown) => {
+    setError(reportErrorMessage(reportError))
+  }, [])
 
   const refresh = useCallback(async () => {
     if (!runID) return
@@ -78,8 +69,6 @@ export function useEvaluationReport(runID: string | null) {
     report: report?.run.id === runID ? report : null,
     loading,
     error,
-    errorRunID,
-    errorStatus,
     refresh,
   }
 }

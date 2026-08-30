@@ -1,7 +1,8 @@
 import type { EvaluationRun, EvaluationRunEvent } from '../../types/evaluationPlane'
 import { TRACK_PRESENTATION } from '../../types/evaluationPlane'
 import { formatDateTime } from '../../utils/dateTime'
-import styles from './EvaluationPlane.module.css'
+import planeStyles from './EvaluationPlane.module.css'
+import styles from './EvaluationRuns.module.css'
 
 interface EvaluationRunTimelineProps {
   run: EvaluationRun
@@ -18,6 +19,13 @@ export default function EvaluationRunTimeline({
   error,
   onReconnect,
 }: EvaluationRunTimelineProps) {
+  const active = run.status === 'running' || run.status === 'sealing'
+  const eventMessage = (event: EvaluationRunEvent) => {
+    if (event.type !== 'track') return event.message
+    const recordLabel = event.payload.record_count === 1 ? 'evidence record' : 'evidence records'
+    return `${event.message} · ${event.payload.record_count.toLocaleString()} ${recordLabel}`
+  }
+
   return (
     <>
       <div className={styles.eventHeader}>
@@ -27,26 +35,28 @@ export default function EvaluationRunTimeline({
             ? 'Stream connected'
             : error
               ? 'Stream unavailable'
-              : run.status === 'running'
+              : active
                 ? 'Connecting'
                 : 'Durable history'}
         </span>
       </div>
       {error ? (
-        <div className={styles.inlineError} role="alert">
+        <div className={planeStyles.inlineError} role="alert">
           <div>
             <strong>Live stream unavailable</strong>
             <span>{error}</span>
           </div>
-          <button type="button" onClick={onReconnect}>
+          <button type="button" className={planeStyles.secondaryButton} onClick={onReconnect}>
             Reconnect stream
           </button>
         </div>
       ) : null}
       {events.length === 0 ? (
-        <p className={styles.emptyCopy}>
-          {run.status === 'running'
-            ? 'Waiting for the first event…'
+        <p className={planeStyles.emptyCopy}>
+          {active
+            ? run.status === 'sealing'
+              ? 'Finalizing server-sealed evidence…'
+              : 'Waiting for the first event…'
             : 'No durable lifecycle events were returned for this run.'}
         </p>
       ) : (
@@ -58,7 +68,7 @@ export default function EvaluationRunTimeline({
                 <strong>
                   {event.track_id ? TRACK_PRESENTATION[event.track_id].label : event.type}
                 </strong>
-                <span>{event.message}</span>
+                <span>{eventMessage(event)}</span>
               </div>
             </li>
           ))}

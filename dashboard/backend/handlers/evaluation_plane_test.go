@@ -17,6 +17,36 @@ import (
 )
 
 func newEvaluationHandlerService(t *testing.T, dataDir string) *evaluationplane.Service {
+	return newEvaluationHandlerServiceWithProcess(t, dataDir, nil)
+}
+
+const evaluationHandlerMOMConfig = `version: v0.3
+global:
+  router:
+    auto_model_names: [test-mom]
+providers:
+  defaults:
+    default_model: model-fast
+  models:
+    - name: model-fast
+      backend_refs: [{endpoint: fast.models.test:8000}]
+    - name: model-strong
+      backend_refs: [{endpoint: strong.models.test:8000}]
+routing:
+  modelCards:
+    - {name: model-fast, modality: text}
+    - {name: model-strong, modality: text}
+  decisions:
+    - name: route
+      rules: {}
+      modelRefs: [{model: model-fast}, {model: model-strong}]
+`
+
+func newEvaluationHandlerServiceWithProcess(
+	t *testing.T,
+	dataDir string,
+	process evaluationplane.Process,
+) *evaluationplane.Service {
 	t.Helper()
 	if dataDir == "" {
 		dataDir = t.TempDir()
@@ -26,7 +56,7 @@ func newEvaluationHandlerService(t *testing.T, dataDir string) *evaluationplane.
 	}
 	configPath := filepath.Join(dataDir, "config.yaml")
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
-		if err := os.WriteFile(configPath, []byte("version: v0.3\nrouting:\n  modelCards: []\n"), 0o600); err != nil {
+		if err := os.WriteFile(configPath, []byte(evaluationHandlerMOMConfig), 0o600); err != nil {
 			t.Fatalf("write config: %v", err)
 		}
 	}
@@ -34,6 +64,7 @@ func newEvaluationHandlerService(t *testing.T, dataDir string) *evaluationplane.
 		DataDir: dataDir, PythonPath: "python3", ConfigPath: configPath,
 		RouterAPIURL: "http://router.internal", EnvoyURL: "http://envoy.internal",
 		CodeRevision: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		Process:      process,
 	})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
@@ -41,8 +72,35 @@ func newEvaluationHandlerService(t *testing.T, dataDir string) *evaluationplane.
 	return service
 }
 
-func validCreateRunJSON(autoStart bool) string {
-	return fmt.Sprintf(`{
+func requireLiveMOMTargetID(t *testing.T, service *evaluationplane.Service) string {
+	t.Helper()
+	catalog, err := service.Catalog()
+	if err != nil {
+		t.Fatalf("read evaluation catalog: %v", err)
+	}
+	for _, target := range catalog.Targets {
+		if target.Kind == "mixture-of-models" {
+			return target.ID
+		}
+	}
+	t.Fatal("evaluation catalog has no Mixture-of-Models target")
+	return ""
+}
+
+type blockingEvaluationProcess struct{}
+
+func (blockingEvaluationProcess) Run(
+	ctx context.Context,
+	_ evaluationplane.ProcessSpec,
+	_ func(evaluationplane.WorkerEvent) error,
+) (evaluationplane.ProcessResult, error) {
+	<-ctx.Done()
+	return evaluationplane.ProcessResult{}, ctx.Err()
+}
+
+func validCreateRunJSON() string {
+	return `{
+		"client_request_id":"5b49edbb-2008-4dc3-a245-b7cc78b839b1",
         "name":"fixture",
         "description":"handler test",
         "suite_ids":["evaluation-smoke"],
@@ -52,24 +110,23 @@ func validCreateRunJSON(autoStart bool) string {
 		"change_profile":"schema_adapter",
         "sample_limit":4,
         "concurrency":1,
-        "seed":17,
-        "auto_start":%t
-    }`, autoStart)
+		"seed":17
+    }`
 }
 
 func TestEvaluationPlaneCreateIsStrictAndServerTargetAllowlisted(t *testing.T) {
 	service := newEvaluationHandlerService(t, "")
-	handler := NewEvaluationPlaneHandler(service, false)
+	handler := NewInternalEvaluationPlaneHandler(service, false)
 	tests := []struct {
 		name string
 		body string
 	}{
-		{name: "unknown endpoint", body: strings.Replace(validCreateRunJSON(false), `"auto_start":false`, `"auto_start":false,"endpoint":"https://attacker.invalid"`, 1)},
-		{name: "unknown field", body: strings.Replace(validCreateRunJSON(false), `"auto_start":false`, `"auto_start":false,"command":["sh"]`, 1)},
-		{name: "unknown target", body: strings.Replace(validCreateRunJSON(false), `"target_id":"fixture"`, `"target_id":"attacker"`, 1)},
-		{name: "unknown suite", body: strings.Replace(validCreateRunJSON(false), `"evaluation-smoke"`, `"unknown-suite"`, 1)},
-		{name: "unknown change profile", body: strings.Replace(validCreateRunJSON(false), `"change_profile":"schema_adapter"`, `"change_profile":"unknown"`, 1)},
-		{name: "auto start permission bypass", body: validCreateRunJSON(true)},
+		{name: "unknown endpoint", body: strings.Replace(validCreateRunJSON(), `"seed":17`, `"seed":17,"endpoint":"https://attacker.invalid"`, 1)},
+		{name: "unknown field", body: strings.Replace(validCreateRunJSON(), `"seed":17`, `"seed":17,"command":["sh"]`, 1)},
+		{name: "unknown target", body: strings.Replace(validCreateRunJSON(), `"target_id":"fixture"`, `"target_id":"attacker"`, 1)},
+		{name: "unknown suite", body: strings.Replace(validCreateRunJSON(), `"evaluation-smoke"`, `"unknown-suite"`, 1)},
+		{name: "unknown change profile", body: strings.Replace(validCreateRunJSON(), `"change_profile":"schema_adapter"`, `"change_profile":"unknown"`, 1)},
+		{name: "workflow field is not part of create contract", body: strings.Replace(validCreateRunJSON(), `"seed":17`, `"seed":17,"auto_start":false`, 1)},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -87,7 +144,7 @@ func TestEvaluationPlaneCreateIsStrictAndServerTargetAllowlisted(t *testing.T) {
 	}
 
 	response := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, evaluationAPIBase+"/runs", strings.NewReader(validCreateRunJSON(false)))
+	request := httptest.NewRequest(http.MethodPost, evaluationAPIBase+"/runs", strings.NewReader(validCreateRunJSON()))
 	handler.Runs(response, request)
 	if response.Code != http.StatusCreated {
 		t.Fatalf("valid create status=%d body=%s", response.Code, response.Body.String())
@@ -105,7 +162,8 @@ func TestEvaluationPlaneRunLedgerSurfacesQuarantineAndBlocksDecisions(t *testing
 	root := t.TempDir()
 	service := newEvaluationHandlerService(t, root)
 	intact, err := service.CreateRun(context.Background(), evaluationplane.CreateRunRequest{
-		Name: "intact", SuiteIDs: []string{"evaluation-smoke"}, TrackIDs: []evaluationplane.TrackID{"routing"},
+		ClientRequestID: "3d99aa02-bdf2-4cf3-bb9e-8a973b43bba1",
+		Name:            "intact", SuiteIDs: []string{"evaluation-smoke"}, TrackIDs: []evaluationplane.TrackID{"routing"},
 		Mode: evaluationplane.ModeReplay, TargetID: "fixture", ChangeProfile: "schema_adapter",
 		SampleLimit: 4, Concurrency: 1, Seed: 17,
 	})
@@ -113,7 +171,8 @@ func TestEvaluationPlaneRunLedgerSurfacesQuarantineAndBlocksDecisions(t *testing
 		t.Fatalf("create intact run: %v", err)
 	}
 	corruptRequest := evaluationplane.CreateRunRequest{
-		Name: "corrupt", SuiteIDs: []string{"evaluation-smoke"}, TrackIDs: []evaluationplane.TrackID{"routing"},
+		ClientRequestID: "cb9dd730-7424-4050-a73f-52378e634b15",
+		Name:            "corrupt", SuiteIDs: []string{"evaluation-smoke"}, TrackIDs: []evaluationplane.TrackID{"routing"},
 		Mode: evaluationplane.ModeReplay, TargetID: "fixture", ChangeProfile: "schema_adapter",
 		SampleLimit: 4, Concurrency: 1, Seed: 18,
 	}
@@ -128,10 +187,14 @@ func TestEvaluationPlaneRunLedgerSurfacesQuarantineAndBlocksDecisions(t *testing
 	); err != nil {
 		t.Fatalf("corrupt run status: %v", err)
 	}
+	if err := service.Close(); err != nil {
+		t.Fatalf("close service before index rebuild: %v", err)
+	}
+	service = newEvaluationHandlerService(t, root)
 
-	handler := NewEvaluationPlaneHandler(service, false)
+	handler := NewInternalEvaluationPlaneHandler(service, false)
 	listResponse := httptest.NewRecorder()
-	handler.RunLedger(listResponse, httptest.NewRequest(http.MethodGet, evaluationAPIBase+"/run-ledger", nil))
+	handler.Runs(listResponse, httptest.NewRequest(http.MethodGet, evaluationAPIBase+"/runs", nil))
 	if listResponse.Code != http.StatusOK {
 		t.Fatalf("list status=%d body=%s", listResponse.Code, listResponse.Body.String())
 	}
@@ -143,23 +206,10 @@ func TestEvaluationPlaneRunLedgerSurfacesQuarantineAndBlocksDecisions(t *testing
 		t.Fatalf("run ledger did not retain quarantine evidence: %+v", ledger)
 	}
 	warning := ledger.Warnings[0]
-	if warning.RunID != corrupt.ID || warning.EvidenceFile != "status.json" ||
+	if warning.EvidenceID != corrupt.ID || warning.EvidenceFile != "status.json" ||
 		strings.Contains(warning.Message, root) || strings.Contains(warning.Message, "not-json") {
 		t.Fatalf("unsafe or incomplete public warning: %+v", warning)
 	}
-	legacyResponse := httptest.NewRecorder()
-	handler.Runs(legacyResponse, httptest.NewRequest(http.MethodGet, evaluationAPIBase+"/runs", nil))
-	if legacyResponse.Code != http.StatusOK {
-		t.Fatalf("legacy list status=%d body=%s", legacyResponse.Code, legacyResponse.Body.String())
-	}
-	var legacyRuns []evaluationplane.Run
-	if err := json.NewDecoder(legacyResponse.Body).Decode(&legacyRuns); err != nil {
-		t.Fatalf("decode legacy run array contract: %v", err)
-	}
-	if len(legacyRuns) != 1 || legacyRuns[0].ID != intact.ID {
-		t.Fatalf("legacy run array contract changed: %+v", legacyRuns)
-	}
-
 	comparisonResponse := httptest.NewRecorder()
 	comparisonRequest := httptest.NewRequest(
 		http.MethodGet,
@@ -172,9 +222,9 @@ func TestEvaluationPlaneRunLedgerSurfacesQuarantineAndBlocksDecisions(t *testing
 	}
 
 	baselineBody := strings.Replace(
-		validCreateRunJSON(false),
-		`"auto_start":false`,
-		fmt.Sprintf(`"baseline_run_id":%q,"auto_start":false`, intact.ID),
+		validCreateRunJSON(),
+		`"seed":17`,
+		fmt.Sprintf(`"seed":17,"baseline_run_id":%q`, intact.ID),
 		1,
 	)
 	baselineResponse := httptest.NewRecorder()
@@ -187,24 +237,44 @@ func TestEvaluationPlaneRunLedgerSurfacesQuarantineAndBlocksDecisions(t *testing
 	}
 }
 
+func TestEvaluationPlaneRunListQueryIsStrictAndBounded(t *testing.T) {
+	service := newEvaluationHandlerService(t, "")
+	handler := NewInternalEvaluationPlaneHandler(service, false)
+	for _, path := range []string{
+		evaluationAPIBase + "/runs?limit=201",
+		evaluationAPIBase + "/runs?limit=not-an-integer",
+		evaluationAPIBase + "/runs?limit=1&limit=2",
+		evaluationAPIBase + "/runs?cursor=a&cursor=b",
+		evaluationAPIBase + "/runs?cursor=" + strings.Repeat("a", 1025),
+		evaluationAPIBase + "/runs?offset=1",
+	} {
+		response := httptest.NewRecorder()
+		handler.Runs(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("GET %s status=%d body=%s", path, response.Code, response.Body.String())
+		}
+	}
+}
+
 func TestEvaluationPlaneReadonlyDeniesEveryMutation(t *testing.T) {
 	service := newEvaluationHandlerService(t, "")
-	run, err := service.CreateRun(context.Background(), evaluationplane.CreateRunRequest{
-		Name: "fixture", SuiteIDs: []string{"evaluation-smoke"}, TrackIDs: []evaluationplane.TrackID{"routing"},
+	run, createErr := service.CreateRun(context.Background(), evaluationplane.CreateRunRequest{
+		ClientRequestID: "fd8a1e1d-36f2-4eb2-ac50-c9722b568c5c",
+		Name:            "fixture", SuiteIDs: []string{"evaluation-smoke"}, TrackIDs: []evaluationplane.TrackID{"routing"},
 		Mode: evaluationplane.ModeReplay, TargetID: "fixture", ChangeProfile: "schema_adapter",
 		SampleLimit: 4, Concurrency: 1, Seed: 17,
 	})
-	if err != nil {
-		t.Fatalf("CreateRun: %v", err)
+	if createErr != nil {
+		t.Fatalf("CreateRun: %v", createErr)
 	}
-	handler := NewEvaluationPlaneHandler(service, true)
+	handler := NewInternalEvaluationPlaneHandler(service, true)
 	tests := []struct {
 		method string
 		path   string
 		body   string
 		direct func(http.ResponseWriter, *http.Request)
 	}{
-		{method: http.MethodPost, path: evaluationAPIBase + "/runs", body: validCreateRunJSON(false), direct: handler.Runs},
+		{method: http.MethodPost, path: evaluationAPIBase + "/runs", body: validCreateRunJSON(), direct: handler.Runs},
 		{method: http.MethodPost, path: evaluationAPIBase + "/runs/" + run.ID + "/start", direct: handler.RunRoute},
 		{method: http.MethodPost, path: evaluationAPIBase + "/runs/" + run.ID + "/cancel", direct: handler.RunRoute},
 		{method: http.MethodDelete, path: evaluationAPIBase + "/runs/" + run.ID, direct: handler.RunRoute},
@@ -226,20 +296,27 @@ func TestEvaluationPlaneReadonlyDeniesEveryMutation(t *testing.T) {
 
 func TestEvaluationPlaneSSEReplaysPersistedEventsAfterRestart(t *testing.T) {
 	root := t.TempDir()
-	service := newEvaluationHandlerService(t, root)
-	run, err := service.CreateRun(context.Background(), evaluationplane.CreateRunRequest{
-		Name: "fixture", SuiteIDs: []string{"evaluation-smoke"}, TrackIDs: []evaluationplane.TrackID{"routing"},
+	service := newEvaluationHandlerServiceWithProcess(t, root, blockingEvaluationProcess{})
+	run, createErr := service.CreateRun(context.Background(), evaluationplane.CreateRunRequest{
+		ClientRequestID: "d30b5492-849f-4680-8e3e-e7c23d4a2f09",
+		Name:            "fixture", SuiteIDs: []string{"evaluation-smoke"}, TrackIDs: []evaluationplane.TrackID{"routing"},
 		Mode: evaluationplane.ModeReplay, TargetID: "fixture", ChangeProfile: "schema_adapter",
 		SampleLimit: 4, Concurrency: 1, Seed: 17,
 	})
-	if err != nil {
-		t.Fatalf("CreateRun: %v", err)
+	if createErr != nil {
+		t.Fatalf("CreateRun: %v", createErr)
 	}
-	if _, err := service.CancelRun(run.ID); err != nil {
-		t.Fatalf("CancelRun: %v", err)
+	if _, startErr := service.StartRun(context.Background(), run.ID); startErr != nil {
+		t.Fatalf("StartRun: %v", startErr)
+	}
+	if _, cancelErr := service.CancelRun(run.ID); cancelErr != nil {
+		t.Fatalf("CancelRun: %v", cancelErr)
+	}
+	if closeErr := service.Close(); closeErr != nil {
+		t.Fatalf("Close cancelled service: %v", closeErr)
 	}
 	restarted := newEvaluationHandlerService(t, root)
-	handler := NewEvaluationPlaneHandler(restarted, false)
+	handler := NewInternalEvaluationPlaneHandler(restarted, false)
 	response := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, evaluationAPIBase+"/runs/"+run.ID+"/events", nil)
 	request.Header.Set("Last-Event-ID", "1")
@@ -263,7 +340,11 @@ func TestEvaluationPlaneSSEReplaysPersistedEventsAfterRestart(t *testing.T) {
 		t.Fatalf("invalid Last-Event-ID status=%d body=%s", badResponse.Code, badResponse.Body.String())
 	}
 
-	for _, cursor := range []string{"2", "999999"} {
+	events, err := restarted.EventsAfter(run.ID, "")
+	if err != nil || len(events) == 0 || events[len(events)-1].Type != "cancelled" {
+		t.Fatalf("read cancelled terminal event: events=%+v err=%v", events, err)
+	}
+	for _, cursor := range []string{events[len(events)-1].ID, "999999"} {
 		response := httptest.NewRecorder()
 		request := httptest.NewRequest(http.MethodGet, evaluationAPIBase+"/runs/"+run.ID+"/events", nil)
 		request.Header.Set("Last-Event-ID", cursor)
@@ -285,7 +366,7 @@ func TestEvaluationPlaneSSEReplaysPersistedEventsAfterRestart(t *testing.T) {
 
 func TestEvaluationPlaneCORSRejectsHostileOriginsBeforeEvidenceAccess(t *testing.T) {
 	service := newEvaluationHandlerService(t, "")
-	handler := NewEvaluationPlaneHandler(service, false)
+	handler := NewInternalEvaluationPlaneHandler(service, false)
 	paths := []string{
 		evaluationAPIBase + "/runs/run-id/report",
 		evaluationAPIBase + "/runs/run-id/artifacts/metrics-json",

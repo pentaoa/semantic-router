@@ -39,7 +39,16 @@ def _mean(values: Iterable[float]) -> tuple[float | None, int]:
 
 def _sum_available(values: Iterable[float | None]) -> float | None:
     rows = [value for value in values if value is not None]
-    return sum(rows) if rows else None
+    return _canonical_ordered_float_sum(rows) if rows else None
+
+
+def _sum_complete(values: Iterable[float | None]) -> float | None:
+    """Sum a ledger only when every observation carries an explicit value."""
+
+    rows = list(values)
+    if not rows or any(value is None for value in rows):
+        return None
+    return _canonical_ordered_float_sum(value for value in rows if value is not None)
 
 
 def _metric(

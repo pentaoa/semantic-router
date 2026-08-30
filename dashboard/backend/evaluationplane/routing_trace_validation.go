@@ -70,7 +70,19 @@ func (s *Service) validateStoredRoutingTrace(runID string) error {
 	if err != nil {
 		return err
 	}
-	caseIDs, err := validateVisibleCases(filepath.Join(runDir, "cases.jsonl"), manifest.SampleLimit)
+	registry, _, err := s.registrySnapshot()
+	if err != nil {
+		return err
+	}
+	executionContract, err := registry.executionContracts().resolve(manifest)
+	if err != nil {
+		return err
+	}
+	caseLimit, err := manifestVisibleCaseLimit(manifest, executionContract.Executor)
+	if err != nil {
+		return err
+	}
+	caseIDs, err := validateVisibleCases(filepath.Join(runDir, "cases.jsonl"), caseLimit, manifest.TrackIDs)
 	if err != nil {
 		return err
 	}

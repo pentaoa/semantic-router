@@ -1,14 +1,16 @@
 import type { ReactNode } from 'react'
 
 import type {
-  EvaluationCoverage,
-  EvaluationGate,
-  EvaluationMetric,
   EvaluationRunStatus,
   EvaluationTrackId,
   EvaluationTrackStatus,
   GateVerdict,
 } from '../../types/evaluationPlane'
+import type {
+  EvaluationCoverage,
+  EvaluationGate,
+  EvaluationMetric,
+} from '../../types/evaluationReport'
 import { TRACK_PRESENTATION } from '../../types/evaluationPlane'
 import {
   clampFraction,
@@ -17,6 +19,7 @@ import {
   RUN_STATUS_LABELS,
   TRACK_STATUS_LABELS,
 } from './evaluationPresentation'
+import overviewStyles from './EvaluationOverview.module.css'
 import styles from './EvaluationPlane.module.css'
 
 export function RunStatusBadge({
@@ -81,7 +84,7 @@ export function CoverageBar({ coverage }: { coverage: EvaluationCoverage }) {
       </div>
       <small>
         {coverage.evaluated} of {coverage.total} case-track observations
-        {coverage.unavailable ? ` · ${coverage.unavailable} without an observation` : ''}
+        {coverage.unavailable ? ` · ${coverage.unavailable} not measured` : ''}
       </small>
     </div>
   )
@@ -95,8 +98,9 @@ interface MetricCardProps {
 }
 
 export function MetricCard({ label, value, detail, tone = 'neutral' }: MetricCardProps) {
+  const toneClass = tone === 'neutral' ? '' : overviewStyles[`metric_${tone}`]
   return (
-    <div className={`${styles.metricCard} ${styles[`metric_${tone}`]}`}>
+    <div className={`${overviewStyles.metricCard} ${toneClass}`}>
       <span>{label}</span>
       <strong>{value}</strong>
       {detail ? <small>{detail}</small> : null}
@@ -109,7 +113,7 @@ export function MetricGrid({ metrics }: { metrics: EvaluationMetric[] }) {
     return <p className={styles.emptyCopy}>No metrics were produced for this evidence slice.</p>
   }
   return (
-    <div className={styles.metricGrid}>
+    <div className={overviewStyles.metricGrid}>
       {metrics.map((metric) => (
         <MetricCard
           key={`${metric.track_id || 'all'}-${metric.id}`}

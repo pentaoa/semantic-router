@@ -3,11 +3,14 @@ package evaluationplane
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestListRunsIsolatesCorruptBundleAndRetainsWarning(t *testing.T) {
@@ -31,6 +34,9 @@ func TestListRunsIsolatesCorruptBundleAndRetainsWarning(t *testing.T) {
 	previousLogOutput := log.Writer()
 	log.SetOutput(&logged)
 	t.Cleanup(func() { log.SetOutput(previousLogOutput) })
+	if err := service.store.refreshRunIndex(); err != nil {
+		t.Fatalf("refresh index after external corruption: %v", err)
+	}
 
 	ledger, listErr := service.ListRunLedger()
 	if listErr != nil {
@@ -44,7 +50,7 @@ func TestListRunsIsolatesCorruptBundleAndRetainsWarning(t *testing.T) {
 		t.Fatalf("corrupt ledger integrity metadata=%+v", ledger)
 	}
 	publicWarning := ledger.Warnings[0]
-	if publicWarning.Code != corruptRunBundleWarningCode || publicWarning.RunID != second.ID ||
+	if publicWarning.Code != corruptRunBundleWarningCode || publicWarning.EvidenceID != second.ID ||
 		publicWarning.EvidenceFile != runFileName || publicWarning.Message != quarantinedRunMessage ||
 		strings.Contains(publicWarning.Message, root) || strings.Contains(publicWarning.Message, "decode evaluation bundle") {
 		t.Fatalf("public quarantine warning is missing or leaks diagnostics: %+v", publicWarning)
@@ -53,7 +59,7 @@ func TestListRunsIsolatesCorruptBundleAndRetainsWarning(t *testing.T) {
 		t.Fatal("GetRun silently accepted the corrupt bundle")
 	}
 	warnings := service.store.activeRunListWarnings()
-	if len(warnings) != 1 || warnings[0].Code != corruptRunBundleWarningCode || warnings[0].RunID != second.ID ||
+	if len(warnings) != 1 || warnings[0].Code != corruptRunBundleWarningCode || warnings[0].EvidenceID != second.ID ||
 		!strings.Contains(warnings[0].Message, "decode evaluation bundle") {
 		t.Fatalf("active run-list warnings=%+v, want structured corruption warning", warnings)
 	}
@@ -67,6 +73,9 @@ func TestListRunsIsolatesCorruptBundleAndRetainsWarning(t *testing.T) {
 	if repairErr := writeJSONAtomic(statusPath, second); repairErr != nil {
 		t.Fatalf("repair second run status: %v", repairErr)
 	}
+	if err := service.store.refreshRunIndex(); err != nil {
+		t.Fatalf("refresh index after external repair: %v", err)
+	}
 	ledger, listErr = service.ListRunLedger()
 	if listErr != nil || len(ledger.Runs) != 2 || !ledger.LedgerComplete || len(ledger.Warnings) != 0 {
 		t.Fatalf("ListRunLedger after repair returned %+v, err=%v", ledger, listErr)
@@ -76,16 +85,193 @@ func TestListRunsIsolatesCorruptBundleAndRetainsWarning(t *testing.T) {
 	}
 }
 
+func TestEmptyRunLedgerSerializesCanonicalArrays(t *testing.T) {
+	service, _ := newTestService(t, &controlledProcess{}, 1)
+	runs, err := service.ListRuns()
+	if err != nil || runs == nil || len(runs) != 0 {
+		t.Fatalf("ListRuns=%+v err=%v, want a non-nil empty list", runs, err)
+	}
+	ledger, err := service.ListRunLedger()
+	if err != nil || ledger.Runs == nil || ledger.Warnings == nil {
+		t.Fatalf("ListRunLedger=%+v err=%v, want canonical empty arrays", ledger, err)
+	}
+	payload, err := json.Marshal(ledger)
+	if err != nil {
+		t.Fatalf("marshal empty run ledger: %v", err)
+	}
+	if !bytes.Contains(payload, []byte(`"runs":[]`)) || !bytes.Contains(payload, []byte(`"warnings":[]`)) {
+		t.Fatalf("empty run ledger JSON=%s, want canonical arrays", payload)
+	}
+}
+
+func TestListRunLedgerUsesStableBoundedPages(t *testing.T) {
+	service, _ := newTestService(t, &controlledProcess{}, 1)
+	created := make([]Run, 0, 3)
+	baseTime := time.Date(2026, time.August, 30, 1, 2, 3, 0, time.UTC)
+	for index, id := range []string{
+		"10000000-0000-4000-8000-000000000001",
+		"10000000-0000-4000-8000-000000000002",
+		"10000000-0000-4000-8000-000000000003",
+	} {
+		request := validCreateRequest()
+		request.ClientRequestID = id
+		request.Name = id
+		run, err := service.CreateRun(context.Background(), request)
+		if err != nil {
+			t.Fatalf("CreateRun %d: %v", index, err)
+		}
+		lifecycle, err := service.store.readRunLifecycle(run)
+		if err != nil {
+			t.Fatalf("read lifecycle %d: %v", index, err)
+		}
+		run.CreatedAt = baseTime.Add(time.Duration(index) * time.Minute)
+		if err := service.store.UpdateRun(run); err != nil {
+			t.Fatalf("UpdateRun %d: %v", index, err)
+		}
+		lifecycle.CreatedAt = run.CreatedAt
+		lifecycle.PolicyDigest = ""
+		lifecycle.PolicyDigest = lifecycleDigest(lifecycle)
+		if err := writeJSONAtomic(
+			filepath.Join(service.store.runsRoot, run.ID, lifecycleFileName), lifecycle,
+		); err != nil {
+			t.Fatalf("rewrite lifecycle %d: %v", index, err)
+		}
+		created = append(created, run)
+	}
+
+	first, err := service.ListRunLedgerPage(RunListQuery{Limit: 2})
+	if err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	if len(first.Runs) != 2 || first.Runs[0].ID != created[2].ID || first.Runs[1].ID != created[1].ID ||
+		first.NextCursor == "" || first.TotalRuns != 3 || first.WarningCount != 0 || !first.LedgerComplete {
+		t.Fatalf("first page=%+v", first)
+	}
+	second, err := service.ListRunLedgerPage(RunListQuery{Limit: 2, Cursor: first.NextCursor})
+	if err != nil {
+		t.Fatalf("second page: %v", err)
+	}
+	if len(second.Runs) != 1 || second.Runs[0].ID != created[0].ID || second.NextCursor != "" || second.TotalRuns != 3 {
+		t.Fatalf("second page=%+v", second)
+	}
+	if _, err := service.ListRunLedgerPage(RunListQuery{Limit: maxRunPageLimit + 1}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("oversized page error=%v, want ErrInvalid", err)
+	}
+	if _, err := service.ListRunLedgerPage(RunListQuery{Limit: 2, Cursor: "not-a-cursor"}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("invalid cursor error=%v, want ErrInvalid", err)
+	}
+}
+
+func TestRunLedgerIndexIsMaintainedAcrossStoreInstances(t *testing.T) {
+	service, root := newTestService(t, &controlledProcess{}, 1)
+	peer, storeErr := NewStore(root)
+	if storeErr != nil {
+		t.Fatalf("NewStore peer: %v", storeErr)
+	}
+	run, createErr := service.CreateRun(context.Background(), validCreateRequest())
+	if createErr != nil {
+		t.Fatalf("CreateRun: %v", createErr)
+	}
+	peerPage, peerPageErr := peer.listRunLedger(RunListQuery{Limit: 10})
+	if peerPageErr != nil || len(peerPage.Runs) != 1 || peerPage.Runs[0].ID != run.ID {
+		t.Fatalf("peer index after create=%+v err=%v", peerPage, peerPageErr)
+	}
+
+	now := time.Now().UTC()
+	run.Status = StatusCancelled
+	run.CompletedAt = &now
+	run.Progress.Message = "Run cancelled"
+	if updateErr := peer.UpdateRun(run); updateErr != nil {
+		t.Fatalf("peer UpdateRun: %v", updateErr)
+	}
+	servicePage, servicePageErr := service.ListRunLedgerPage(RunListQuery{Limit: 10})
+	if servicePageErr != nil || len(servicePage.Runs) != 1 || servicePage.Runs[0].Status != StatusCancelled {
+		t.Fatalf("service index after peer update=%+v err=%v", servicePage, servicePageErr)
+	}
+	if deleteErr := peer.DeleteRun(run.ID); deleteErr != nil {
+		t.Fatalf("peer DeleteRun: %v", deleteErr)
+	}
+	servicePage, servicePageErr = service.ListRunLedgerPage(RunListQuery{Limit: 10})
+	if servicePageErr != nil || len(servicePage.Runs) != 0 || servicePage.TotalRuns != 0 {
+		t.Fatalf("service index after peer delete=%+v err=%v", servicePage, servicePageErr)
+	}
+}
+
+func TestRunLedgerPageUsesIndexUntilExplicitIntegrityRefresh(t *testing.T) {
+	service, root := newTestService(t, &controlledProcess{}, 1)
+	run, createErr := service.CreateRun(context.Background(), validCreateRequest())
+	if createErr != nil {
+		t.Fatalf("CreateRun: %v", createErr)
+	}
+	if writeErr := os.WriteFile(filepath.Join(root, "runs", run.ID, runFileName), []byte("not-json\n"), 0o600); writeErr != nil {
+		t.Fatalf("corrupt status outside Store: %v", writeErr)
+	}
+	page, pageErr := service.ListRunLedgerPage(RunListQuery{Limit: 10})
+	if pageErr != nil || len(page.Runs) != 1 || page.Runs[0].ID != run.ID || !page.LedgerComplete {
+		t.Fatalf("indexed page unexpectedly rescanned durable history: page=%+v err=%v", page, pageErr)
+	}
+	if integrityErr := service.RequireCompleteRunLedger(); !errors.Is(integrityErr, ErrConflict) {
+		t.Fatalf("integrity refresh error=%v, want ErrConflict", integrityErr)
+	}
+	page, pageErr = service.ListRunLedgerPage(RunListQuery{Limit: 10})
+	if pageErr != nil || len(page.Runs) != 0 || page.LedgerComplete || page.WarningCount != 1 {
+		t.Fatalf("refreshed page=%+v err=%v", page, pageErr)
+	}
+}
+
+func TestRunLedgerQuarantinesUnknownStatusFieldsAndUnexpectedEntries(t *testing.T) {
+	service, root := newTestService(t, &controlledProcess{}, 1)
+	run, createErr := service.CreateRun(context.Background(), validCreateRequest())
+	if createErr != nil {
+		t.Fatalf("CreateRun: %v", createErr)
+	}
+	encoded, marshalErr := json.Marshal(run)
+	if marshalErr != nil {
+		t.Fatalf("marshal run: %v", marshalErr)
+	}
+	encoded = append(encoded[:len(encoded)-1], []byte(`,"unexpected_field":true}`)...)
+	if writeErr := os.WriteFile(filepath.Join(root, "runs", run.ID, runFileName), encoded, 0o600); writeErr != nil {
+		t.Fatalf("write status with unknown field: %v", writeErr)
+	}
+	if writeErr := os.WriteFile(filepath.Join(root, "runs", "unexpected-entry"), []byte("not a bundle\n"), 0o600); writeErr != nil {
+		t.Fatalf("write unexpected runs entry: %v", writeErr)
+	}
+	if refreshErr := service.store.refreshRunIndex(); refreshErr != nil {
+		t.Fatalf("refresh index after external corruption: %v", refreshErr)
+	}
+
+	ledger, ledgerErr := service.ListRunLedger()
+	if ledgerErr != nil {
+		t.Fatalf("ListRunLedger: %v", ledgerErr)
+	}
+	if ledger.LedgerComplete || len(ledger.Runs) != 0 || ledger.WarningCount != 2 || len(ledger.Warnings) != 2 {
+		t.Fatalf("ledger did not quarantine all non-current entries: %+v", ledger)
+	}
+	hashedEntryID := digestBytes([]byte("unexpected-entry"))
+	foundHashedEntry := false
+	for _, warning := range ledger.Warnings {
+		if warning.EvidenceID == "unexpected-entry" {
+			t.Fatal("quarantine warning exposed an arbitrary filesystem entry name")
+		}
+		if warning.EvidenceID == hashedEntryID {
+			foundHashedEntry = true
+		}
+	}
+	if !foundHashedEntry {
+		t.Fatalf("quarantine warning omitted hashed evidence identity %q: %+v", hashedEntryID, ledger.Warnings)
+	}
+	if _, err := service.GetRun(run.ID); err == nil || !strings.Contains(err.Error(), "unknown field") {
+		t.Fatalf("GetRun unknown-field error=%v", err)
+	}
+}
+
 func TestRecoverInterruptedRunsContinuesPastCorruptBundle(t *testing.T) {
 	service, root := newTestService(t, &controlledProcess{}, 1)
 	running, createRunningErr := service.CreateRun(context.Background(), validCreateRequest())
 	if createRunningErr != nil {
 		t.Fatalf("create running candidate: %v", createRunningErr)
 	}
-	running.Status = StatusRunning
-	if updateErr := service.store.UpdateRun(running); updateErr != nil {
-		t.Fatalf("mark run running: %v", updateErr)
-	}
+	running = stageRunningTestRun(t, service, running)
 	request := validCreateRequest()
 	request.Name = "corrupt run"
 	corrupt, createCorruptErr := service.CreateRun(context.Background(), request)
@@ -108,8 +294,27 @@ func TestRecoverInterruptedRunsContinuesPastCorruptBundle(t *testing.T) {
 		t.Fatalf("valid interrupted run was not recovered: run=%+v err=%v", recovered, getErr)
 	}
 	warnings := service.store.activeRunListWarnings()
-	if len(warnings) != 1 || warnings[0].RunID != corrupt.ID {
+	if len(warnings) != 1 || warnings[0].EvidenceID != corrupt.ID {
 		t.Fatalf("corrupt bundle warning was not retained during recovery: %+v", warnings)
+	}
+}
+
+func TestDirectCreateWithBaselineRequiresACompleteLedger(t *testing.T) {
+	service, root := newTestService(t, &controlledProcess{}, 1)
+	baseline, err := service.CreateRun(context.Background(), validCreateRequest())
+	if err != nil {
+		t.Fatalf("CreateRun baseline: %v", err)
+	}
+	baseline = completeTestRun(t, service, baseline)
+	if err := os.WriteFile(filepath.Join(root, "runs", "unexpected-entry"), []byte("not a run\n"), 0o600); err != nil {
+		t.Fatalf("write quarantined entry: %v", err)
+	}
+	candidate := validCreateRequest()
+	candidate.Name = "candidate"
+	candidate.BaselineRunID = baseline.ID
+	if _, err := service.CreateRun(context.Background(), candidate); !errors.Is(err, ErrConflict) ||
+		!strings.Contains(err.Error(), "ledger is incomplete") {
+		t.Fatalf("direct baseline create error=%v, want incomplete-ledger conflict", err)
 	}
 }
 
@@ -129,6 +334,33 @@ func TestListRunsRejectsStatusIdentityAndStateCorruption(t *testing.T) {
 		{name: "schema", mutate: func(candidate *Run) { candidate.SchemaVersion = "evaluation.v2" }, match: "schema_version"},
 		{name: "identity", mutate: func(candidate *Run) { candidate.ID = "different-run" }, match: "identity"},
 		{name: "state", mutate: func(candidate *Run) { candidate.Status = "unknown" }, match: "state"},
+		{name: "pending started", mutate: func(candidate *Run) {
+			started := candidate.CreatedAt.Add(time.Second)
+			candidate.StartedAt = &started
+		}, match: "pending status"},
+		{name: "running without started", mutate: func(candidate *Run) {
+			candidate.Status = StatusRunning
+		}, match: "running status"},
+		{name: "sealing without started", mutate: func(candidate *Run) {
+			candidate.Status = StatusSealing
+		}, match: "sealing status"},
+		{name: "completed without terminal progress", mutate: func(candidate *Run) {
+			started := candidate.CreatedAt.Add(time.Second)
+			completed := started.Add(time.Second)
+			candidate.Status, candidate.StartedAt, candidate.CompletedAt = StatusCompleted, &started, &completed
+		}, match: "completed status"},
+		{name: "failed without error", mutate: func(candidate *Run) {
+			started := candidate.CreatedAt.Add(time.Second)
+			completed := started.Add(time.Second)
+			candidate.Status, candidate.StartedAt, candidate.CompletedAt = StatusFailed, &started, &completed
+		}, match: "failed status"},
+		{name: "cancelled without completion", mutate: func(candidate *Run) {
+			candidate.Status = StatusCancelled
+		}, match: "cancelled status"},
+		{name: "started before creation", mutate: func(candidate *Run) {
+			started := candidate.CreatedAt.Add(-time.Second)
+			candidate.Status, candidate.StartedAt = StatusRunning, &started
+		}, match: "predates"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -145,7 +377,7 @@ func TestListRunsRejectsStatusIdentityAndStateCorruption(t *testing.T) {
 				t.Fatalf("ListRuns returned runs=%+v err=%v, want isolated bundle", runs, err)
 			}
 			warnings := service.store.activeRunListWarnings()
-			if len(warnings) != 1 || warnings[0].RunID != run.ID || !strings.Contains(warnings[0].Message, test.match) {
+			if len(warnings) != 1 || warnings[0].EvidenceID != run.ID || !strings.Contains(warnings[0].Message, test.match) {
 				t.Fatalf("warning=%+v, want %q corruption", warnings, test.match)
 			}
 		})

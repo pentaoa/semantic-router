@@ -11,6 +11,7 @@ interface ConfirmDialogProps {
   cancelLabel?: string
   eyebrow?: string
   details?: ReactNode
+  error?: ReactNode
   pending?: boolean
   pendingLabel?: string
   tone?: 'danger' | 'warning' | 'neutral'
@@ -27,6 +28,7 @@ export default function ConfirmDialog({
   cancelLabel = 'Cancel',
   eyebrow = 'Confirm action',
   details,
+  error,
   pending = false,
   pendingLabel = 'Working…',
   tone = 'danger',
@@ -36,6 +38,7 @@ export default function ConfirmDialog({
 }: ConfirmDialogProps) {
   const titleId = useId()
   const descriptionId = useId()
+  const errorId = useId()
   const [confirmation, setConfirmation] = useState('')
   const dialogRef = useAccessibleDialog<HTMLElement>({
     isOpen,
@@ -68,7 +71,7 @@ export default function ConfirmDialog({
         role="alertdialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        aria-describedby={descriptionId}
+        aria-describedby={`${descriptionId}${error ? ` ${errorId}` : ''}`}
         aria-busy={pending}
         tabIndex={-1}
         onMouseDown={(event) => event.stopPropagation()}
@@ -85,6 +88,11 @@ export default function ConfirmDialog({
         </div>
 
         {details ? <div className={styles.details}>{details}</div> : null}
+        {error ? (
+          <div id={errorId} className={styles.error} role="alert">
+            {error}
+          </div>
+        ) : null}
 
         <form onSubmit={handleSubmit}>
           {confirmationText ? (

@@ -1,27 +1,53 @@
 {
-  "manifest_digest": "sha256:999527457ed4cd84168347e850d4d229b4ee8443432b2563218687eaecb7cfbb",
+  "manifest_digest": "sha256:3f5c746ec05379d80c415529adf97927a43c989204f1dabdc665dc8955e200c3",
   "code_revision": "8dedee734ba3abae9bceae9309903147fda8eeab",
   "change_profile": "recipe",
   "concurrency": 4,
+  "capacity_slo": {
+    "schema_version": "evaluation.v1",
+    "required_concurrency": 2,
+    "max_latency_p95_ms": 750.0,
+    "max_error_rate": 0.01,
+    "min_throughput_rps": 10.0,
+    "min_throughput_scaling_efficiency": 0.7
+  },
+  "capacity_load_protocol": {
+    "schema_version": "evaluation.v1",
+    "kind": "closed-loop",
+    "concurrency_levels": [1, 2, 4],
+    "warmup_request_multiplier": 2,
+    "measurement_requests_per_repetition": 100,
+    "repetitions_per_level": 3,
+    "confidence_level": 0.95,
+    "max_throughput_cv": 0.2,
+    "max_latency_p95_cv": 0.2
+  },
   "config_digest": "sha256:599586cf157a82869da9367c474ba6ac247ac5555b69302ae06b129b4a461c0a",
   "created_at": "2026-01-01T00:00:00.123456Z",
-  "gate_contract_version": "evaluation-release-gates.v1",
+  "gate_contract_version": "evaluation-release-gates.v2",
   "mode": "live",
   "policy_snapshot_digest": "sha256:599586cf157a82869da9367c474ba6ac247ac5555b69302ae06b129b4a461c0a",
   "redaction_policy": "public-safe-v1-策略",
-  "run_id": "golden-live",
+  "run_id": "00000000-0000-4000-8000-000000000002",
+  "name": "Live evaluation golden",
+  "description": "Cross-language live runtime contract",
   "sample_limit": 4,
   "schema_version": "evaluation.v1",
   "seed": 17,
   "suite_ids": [
-    "live-routing-core",
+    "live-mom-core",
     "live-multimodal",
     "live-capacity"
   ],
   "suite_revisions": {
     "live-capacity": "executor-v1",
     "live-multimodal": "executor-v1",
-    "live-routing-core": "executor-v1"
+    "live-mom-core": "mom-campaign-cohort-v1"
+  },
+  "suite_executors": {
+    "live-capacity": "live-runtime.v1",
+    "live-multimodal": "live-runtime.v1",
+    "live-mom-core": "live-runtime.v1"
   },
   "target": {
     "backend_topology_digest": "sha256:a315ee8c22f28603631f290662554a7d47d4706eda5adc554b252f9825f80ae9",
@@ -30,9 +56,25 @@
       "schema_version": "evaluation.v1"
     },
     "envoy_url": "https://envoy.example.test",
-    "id": "runtime",
-    "kind": "runtime",
-    "model_arms": [
+    "id": "mom-c0905088ba5b80677849d4824f21b8b075ab49c6a7f58b5b84815ccd69f3b0a5",
+    "kind": "mixture-of-models",
+    "mixture": {
+      "schema_version": "evaluation.v1",
+      "id": "mom-c0905088ba5b80677849d4824f21b8b075ab49c6a7f58b5b84815ccd69f3b0a5",
+      "entrypoint_model": "vllm-sr/mom-primary",
+      "aliases": [
+        "vllm-sr/mom-primary",
+        "vllm-sr/mom-alias"
+      ],
+      "recipe_name": "balanced",
+      "recipe_description": "Balanced 路由 Recipe",
+    "recipe_digest": "sha256:599586cf157a82869da9367c474ba6ac247ac5555b69302ae06b129b4a461c0a",
+    "pool_digest": "sha256:8045531aa56a1280de18c81d26f4278208aedbbdfa885dd253b3d5d8048f07b6",
+    "selector_policy_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+    "selector_digest": "sha256:b3cdc917c5a904154438604b18ed36d45b3753f3107d2b7c5ab731098e7131bb",
+    "adaptation_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+    "binding_digest": "sha256:4d31a4a582d30bebf732c126d4f709d91a73df16800409f0491099c17fc2a067",
+      "model_arms": [
       {
         "capabilities": [
           "chat"
@@ -69,12 +111,35 @@
         "provider_model_id_digest": "sha256:0e54649400de05d734dc0b202fffb665e49124f53c3204681907ede60f9500d3",
         "runtime_revision": "runtime-v1"
       }
-    ],
+      ],
+      "support_models": [
+        {
+          "model": "public-routing-support",
+          "provider_model_id_digest": "sha256:bcd24107cc5fb596a158e6b7d54ac1653e0c35741f7ec6dac3c25a846809ac7c",
+          "config_digest": "sha256:fc148d581b07e9f4a893e5422c7ee3f2c137c375507b54483b4fdb2c83eab26f",
+          "runtime_revision": "runtime-v1",
+          "backend_topology_digest": "sha256:a3f7b73af0c2b40ab427931a624e07745673c8b2cc9b13d84bdd9eb7281d0cf7"
+        }
+      ],
+      "fallback_arm_id": "fast",
+      "decisions": [
+        {
+          "name": "balanced-decision",
+          "algorithm": "confidence",
+          "arm_ids": [
+            "fast",
+            "strong"
+          ]
+        }
+      ]
+    },
     "router_api_url": "https://router.example.test",
     "schema_version": "evaluation.v1"
   },
   "track_ids": [
     "routing",
+    "model_pool",
+    "joint",
     "multimodal",
     "capacity"
   ]

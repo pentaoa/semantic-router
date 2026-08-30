@@ -3,38 +3,58 @@
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from cli.evaluation.canonical import sha256_digest
+from cli.evaluation.evidence import ExecutionRecord
+from cli.evaluation.paired_statistics import (
+    PairedStatisticResult,
+    paired_statistic_results,
+)
 from cli.evaluation.reporting import (
     EvaluationComparison,
     EvaluationMetric,
     EvaluationReport,
 )
+from cli.evaluation.store import LocalArtifactStore
+
+_PRIVATE_CHECKSUM_ROW = re.compile(r"^([0-9a-f]{64})  ([A-Za-z0-9][A-Za-z0-9._-]*)$")
 
 _LATENCY_REGRESSION_BUDGET = 0.05
-_PRIMARY_METRICS = frozenset(
-    {
-        "routing.accuracy",
-        "model_pool.oracle_quality",
-        "joint.realized_quality",
-        "joint.oracle_regret",
-        "joint.normalized_regret",
-        "joint.reliability",
-    }
-)
 
-_ALLOWED_TREATMENT_FACTORS = {
-    "schema_adapter": frozenset(),
-    "recipe": frozenset({"policy_snapshot_digest", "binding_snapshot_digest"}),
-    "selector": frozenset({"policy_snapshot_digest", "binding_snapshot_digest"}),
-    "model_pool": frozenset({"pool_snapshot_digest", "binding_snapshot_digest"}),
-    "runtime_capacity": frozenset({"environment_snapshot_digest"}),
-    "agent_multimodal": frozenset(
-        {"policy_snapshot_digest", "binding_snapshot_digest"}
+
+@dataclass(frozen=True)
+class _TreatmentSpec:
+    primary: str
+    allowed: frozenset[str]
+
+
+_TREATMENT_SPECS = {
+    "schema_adapter": _TreatmentSpec("code_revision", frozenset({"code_revision"})),
+    "recipe": _TreatmentSpec(
+        "policy_snapshot_digest", frozenset({"policy_snapshot_digest"})
     ),
-    "online_adaptation": frozenset(
-        {"policy_snapshot_digest", "binding_snapshot_digest"}
+    "selector": _TreatmentSpec("selector_digest", frozenset({"selector_digest"})),
+    # Pool membership is an explicit composite: it may necessarily rewrite the
+    # candidate binding and candidate-serving topology, but the pool itself is
+    # always the required primary delta.
+    "model_pool": _TreatmentSpec(
+        "pool_snapshot_digest",
+        frozenset(
+            {
+                "pool_snapshot_digest",
+                "binding_snapshot_digest",
+                "environment_snapshot_digest",
+            }
+        ),
+    ),
+    "runtime_capacity": _TreatmentSpec(
+        "environment_snapshot_digest", frozenset({"environment_snapshot_digest"})
+    ),
+    "online_adaptation": _TreatmentSpec(
+        "adaptation_digest", frozenset({"adaptation_digest"})
     ),
 }
 
@@ -44,19 +64,15 @@ class _ComparisonEvidence:
     paired: int
     improvements: int
     regressions: int
-    primary_regression: bool
     latency_over_budget: bool
+    paired_interval_count: int
+    paired_interval_failed: bool
+    paired_interval_passed: bool
 
 
-def _validate_compatibility(
+def _common_compatibility_issues(
     baseline: EvaluationReport, candidate: EvaluationReport
-) -> None:
-    if baseline.run.id == candidate.run.id:
-        raise ValueError("a run cannot be compared with itself")
-    if candidate.run.baseline_run_id != baseline.run.id:
-        raise ValueError(
-            "candidate baseline_run_id must reference the selected baseline run"
-        )
+) -> list[str]:
     checks = (
         (
             "change_profile",
@@ -65,6 +81,11 @@ def _validate_compatibility(
         ),
         ("mode", baseline.run.mode, candidate.run.mode),
         ("target_id", baseline.run.target_id, candidate.run.target_id),
+        (
+            "mixture_id",
+            baseline.run.mixture.id if baseline.run.mixture is not None else None,
+            candidate.run.mixture.id if candidate.run.mixture is not None else None,
+        ),
         ("suite_ids", set(baseline.run.suite_ids), set(candidate.run.suite_ids)),
         ("track_ids", set(baseline.run.track_ids), set(candidate.run.track_ids)),
         ("sample_limit", baseline.run.sample_limit, candidate.run.sample_limit),
@@ -86,7 +107,20 @@ def _validate_compatibility(
         incompatibilities.append("workload_snapshot_digest")
     if not baseline.provenance.benchmark_revisions:
         incompatibilities.append("benchmark_revisions")
-    factor_snapshots = (
+    return incompatibilities
+
+
+def _factor_snapshots(
+    baseline: EvaluationReport, candidate: EvaluationReport
+) -> tuple[tuple[str, str | None, str | None], ...]:
+    baseline_mixture = baseline.run.mixture
+    candidate_mixture = candidate.run.mixture
+    return (
+        (
+            "code_revision",
+            baseline.provenance.code_revision,
+            candidate.provenance.code_revision,
+        ),
         (
             "policy_snapshot_digest",
             baseline.provenance.policy_snapshot_digest,
@@ -107,27 +141,88 @@ def _validate_compatibility(
             baseline.provenance.environment_snapshot_digest,
             candidate.provenance.environment_snapshot_digest,
         ),
+        (
+            "selector_digest",
+            baseline_mixture.selector_digest if baseline_mixture is not None else None,
+            (
+                candidate_mixture.selector_digest
+                if candidate_mixture is not None
+                else None
+            ),
+        ),
+        (
+            "adaptation_digest",
+            (
+                baseline_mixture.adaptation_digest
+                if baseline_mixture is not None
+                else None
+            ),
+            (
+                candidate_mixture.adaptation_digest
+                if candidate_mixture is not None
+                else None
+            ),
+        ),
     )
-    allowed_changes = _ALLOWED_TREATMENT_FACTORS[baseline.run.change_profile]
+
+
+def _validate_treatment_factors(
+    factor_snapshots: tuple[tuple[str, str | None, str | None], ...],
+    treatment: _TreatmentSpec,
+    incompatibilities: list[str],
+) -> None:
     changed_factors: set[str] = set()
     for name, old, new in factor_snapshots:
-        if not old or not new or (old != new and name not in allowed_changes):
+        if old is None and new is None:
+            if name == treatment.primary:
+                incompatibilities.append(f"{name} snapshot unavailable")
+            continue
+        if not old or not new or (old != new and name not in treatment.allowed):
             incompatibilities.append(name)
         elif old != new:
             changed_factors.add(name)
-    if baseline.run.change_profile == "schema_adapter":
-        if baseline.provenance.code_revision == candidate.provenance.code_revision:
-            incompatibilities.append("code_revision treatment")
-    elif not changed_factors:
-        incompatibilities.append(
-            f"{baseline.run.change_profile} treatment factor did not change"
+    if treatment.primary not in changed_factors:
+        incompatibilities.append(f"{treatment.primary} treatment factor did not change")
+
+
+def _validate_compatibility(
+    baseline: EvaluationReport, candidate: EvaluationReport
+) -> None:
+    if baseline.run.id == candidate.run.id:
+        raise ValueError("a run cannot be compared with itself")
+    if candidate.run.baseline_run_id != baseline.run.id:
+        raise ValueError(
+            "candidate baseline_run_id must reference the selected baseline run"
         )
+    incompatibilities = _common_compatibility_issues(baseline, candidate)
+    treatment = _TREATMENT_SPECS.get(baseline.run.change_profile)
+    if treatment is None:
+        raise ValueError(
+            "reports are not paired-comparable; change_profile "
+            f"{baseline.run.change_profile!r} has no independent server-owned "
+            "treatment factor"
+        )
+    _validate_treatment_factors(
+        _factor_snapshots(baseline, candidate),
+        treatment,
+        incompatibilities,
+    )
+
     incompatibilities = list(dict.fromkeys(incompatibilities))
     if incompatibilities:
         raise ValueError(
             "reports are not paired-comparable; incompatible "
             + ", ".join(incompatibilities)
         )
+
+
+def _has_complete_qualified_track_vector(report: EvaluationReport) -> bool:
+    return all(
+        track.evidence_level != "E0"
+        and track.status == "completed"
+        and track.coverage.unavailable in {None, 0}
+        for track in report.tracks
+    )
 
 
 def _is_improvement(metric: EvaluationMetric, delta: float) -> bool:
@@ -144,12 +239,17 @@ def _over_budget(baseline: float, candidate: float) -> bool:
 
 
 def _paired_metrics(
-    baseline: EvaluationReport, candidate: EvaluationReport
+    baseline: EvaluationReport,
+    candidate: EvaluationReport,
+    paired_statistics: tuple[PairedStatisticResult, ...],
 ) -> tuple[list[EvaluationMetric], _ComparisonEvidence]:
     baseline_by_id = {metric.id: metric for metric in baseline.metrics}
+    statistics_by_id = {
+        statistic.metric_id: statistic for statistic in paired_statistics
+    }
     compared: list[EvaluationMetric] = []
     paired = improvements = regressions = 0
-    primary_regression = latency_over_budget = False
+    latency_over_budget = False
     for metric in candidate.metrics:
         old = baseline_by_id.get(metric.id)
         direction_matches = bool(
@@ -175,39 +275,58 @@ def _paired_metrics(
                 improvements += 1
             else:
                 regressions += 1
-                primary_regression |= metric.id in _PRIMARY_METRICS
         if "latency" in metric.id.casefold():
             latency_over_budget |= _over_budget(old.value, metric.value)
-        compared.append(
-            metric.model_copy(update={"baseline_value": old.value, "delta": delta})
-        )
+        statistic = statistics_by_id.get(metric.id)
+        update: dict[str, object] = {"baseline_value": old.value, "delta": delta}
+        if statistic is not None:
+            update.update(
+                confidence_interval=statistic.confidence_interval,
+                sample_count=statistic.sample_count,
+            )
+        compared.append(metric.model_copy(update=update))
+    qualified = [
+        statistic
+        for statistic in paired_statistics
+        if statistic.confidence_interval is not None
+    ]
+
+    def regressed(statistic: PairedStatisticResult) -> bool:
+        lower, upper = statistic.confidence_interval or (0.0, 0.0)
+        if statistic.direction == "lower_is_better":
+            return lower > 0
+        return upper < 0
+
+    def passed(statistic: PairedStatisticResult) -> bool:
+        lower, upper = statistic.confidence_interval or (0.0, 0.0)
+        if statistic.direction == "lower_is_better":
+            return upper <= 0
+        return lower >= 0
+
     return compared, _ComparisonEvidence(
         paired=paired,
         improvements=improvements,
         regressions=regressions,
-        primary_regression=primary_regression,
         latency_over_budget=latency_over_budget,
+        paired_interval_count=len(qualified),
+        paired_interval_failed=any(regressed(statistic) for statistic in qualified),
+        paired_interval_passed=bool(qualified)
+        and all(passed(statistic) for statistic in qualified),
     )
 
 
-def _comparison_verdict(
+def _comparison_failure_reason(
     baseline: EvaluationReport,
     candidate: EvaluationReport,
     evidence: _ComparisonEvidence,
-) -> tuple[str, str]:
+) -> str | None:
     required = [gate for gate in candidate.gates if gate.disposition == "required"]
     if any(gate.verdict == "fail" for gate in required):
-        return "fail", "A required candidate gate failed."
-    required_unavailable = any(gate.verdict == "unavailable" for gate in required)
+        return "A required candidate gate failed."
     if candidate.summary.verdict == "fail":
-        return "fail", "The candidate report failed."
-    quality_regressed = (
-        baseline.summary.quality_score is not None
-        and candidate.summary.quality_score is not None
-        and candidate.summary.quality_score < baseline.summary.quality_score
-    )
-    if evidence.primary_regression or quality_regressed:
-        return "fail", "A primary quality or joint-system metric regressed."
+        return "The candidate report failed."
+    if evidence.paired_interval_failed:
+        return "A registered paired statistic regressed with 95% confidence."
     summary_latency_over_budget = (
         baseline.summary.latency_p95_ms is not None
         and candidate.summary.latency_p95_ms is not None
@@ -217,22 +336,50 @@ def _comparison_verdict(
         )
     )
     if evidence.latency_over_budget or summary_latency_over_budget:
-        return "fail", "Tail latency exceeded the 5% paired regression budget."
+        return "Tail latency exceeded the 5% paired regression budget."
+    return None
+
+
+def _comparison_verdict(
+    baseline: EvaluationReport,
+    candidate: EvaluationReport,
+    evidence: _ComparisonEvidence,
+) -> tuple[str, str]:
+    failure_reason = _comparison_failure_reason(baseline, candidate, evidence)
+    if failure_reason is not None:
+        return "fail", failure_reason
+    if not _has_complete_qualified_track_vector(
+        baseline
+    ) or not _has_complete_qualified_track_vector(candidate):
+        return (
+            "unavailable",
+            "Every selected track needs complete qualified evidence for paired promotion.",
+        )
+    required = [gate for gate in candidate.gates if gate.disposition == "required"]
+    required_unavailable = any(gate.verdict == "unavailable" for gate in required)
     if candidate.summary.verdict == "unavailable" or required_unavailable:
         return "unavailable", "Required candidate evidence is unavailable."
-    if evidence.paired == 0:
-        return "unavailable", "No direction-aware paired metric evidence is available."
+    if evidence.paired_interval_passed:
+        return "pass", "Registered case-aligned paired confidence intervals passed."
+    if evidence.paired_interval_count == 0:
+        return "unavailable", "No registered paired statistic has a valid interval."
     return (
         "unavailable",
-        "Aggregate point deltas are diagnostic only; a case-aligned paired delta confidence interval is required for promotion.",
+        "A registered paired confidence interval crosses the promotion boundary.",
     )
 
 
 def compare_reports(
-    baseline: EvaluationReport, candidate: EvaluationReport
+    baseline: EvaluationReport,
+    candidate: EvaluationReport,
+    baseline_records: list[ExecutionRecord],
+    candidate_records: list[ExecutionRecord],
 ) -> EvaluationComparison:
     _validate_compatibility(baseline, candidate)
-    compared, evidence = _paired_metrics(baseline, candidate)
+    paired_statistics = paired_statistic_results(
+        baseline_records, candidate_records, seed=candidate.run.seed
+    )
+    compared, evidence = _paired_metrics(baseline, candidate, paired_statistics)
     verdict, reason = _comparison_verdict(baseline, candidate, evidence)
     summary = (
         f"Compared {len(compared)} metrics ({evidence.paired} paired): "
@@ -264,4 +411,55 @@ def compare_reports(
         gates=candidate.gates,
         recommendations=recommendations,
         created_at=datetime.now(timezone.utc),
+    )
+
+
+def _load_private_records(
+    store: LocalArtifactStore, run_id: str
+) -> list[ExecutionRecord]:
+    records_bytes = store.read_run_bytes(run_id, "records.jsonl")
+    receipt = store.read_run_text(run_id, "private-checksums.sha256")
+    checksums: dict[str, str] = {}
+    for line in receipt.splitlines():
+        match = _PRIVATE_CHECKSUM_ROW.fullmatch(line)
+        if match is None or match.group(2) in checksums:
+            raise ValueError("private checksum receipt is invalid")
+        checksums[match.group(2)] = match.group(1)
+    expected = checksums.get("records.jsonl")
+    observed = sha256_digest(records_bytes).removeprefix("sha256:")
+    if expected is None or expected != observed:
+        raise ValueError("private records do not match their immutable receipt")
+    if not records_bytes or not records_bytes.endswith(b"\n"):
+        raise ValueError("private records JSONL framing is invalid")
+    records: list[ExecutionRecord] = []
+    for index, line in enumerate(records_bytes.splitlines(), 1):
+        try:
+            records.append(ExecutionRecord.model_validate_json(line))
+        except ValueError as exc:
+            raise ValueError(
+                f"private record {index} does not match the current contract"
+            ) from exc
+    return records
+
+
+def compare_runs(
+    store: LocalArtifactStore,
+    baseline_run_id: str,
+    candidate_run_id: str,
+) -> EvaluationComparison:
+    """Compare two sealed run bundles using their private aligned evidence."""
+
+    baseline = EvaluationReport.model_validate(
+        store.read_run_json(baseline_run_id, "report.json")
+    )
+    candidate = EvaluationReport.model_validate(
+        store.read_run_json(candidate_run_id, "report.json")
+    )
+    if baseline.run.id != baseline_run_id or candidate.run.id != candidate_run_id:
+        raise ValueError("report identity does not match its run bundle")
+    return compare_reports(
+        baseline,
+        candidate,
+        _load_private_records(store, baseline_run_id),
+        _load_private_records(store, candidate_run_id),
     )

@@ -1,0 +1,118 @@
+.gateList {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.gateRow {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.65fr) minmax(280px, 1fr) auto;
+  align-items: start;
+  gap: 0.85rem;
+  padding: 0.8rem;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: rgba(255, 255, 255, 0.015);
+}
+
+.gateRow[data-verdict='fail'] {
+  border-left: 2px solid var(--color-danger);
+}
+
+.gateRow[data-verdict='unavailable'] {
+  border-left: 2px solid var(--color-warning);
+}
+
+.gateIdentity,
+.gateEvidence {
+  display: grid;
+  gap: 0.3rem;
+  min-width: 0;
+}
+
+.gateIdentity > div,
+.gateEvidence > div {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.gateIdentity strong {
+  color: var(--text-primary);
+  font-size: var(--text-xs);
+}
+
+.gateIdentity code {
+  color: var(--text-muted);
+  font-size: 0.68rem;
+}
+
+.gateIdentity p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+  line-height: 1.5;
+}
+
+.gateEvidence > span {
+  color: var(--text-muted);
+  font-size: 0.68rem;
+}
+
+.gateEvidence details summary {
+  color: var(--text-secondary);
+  font-size: 0.68rem;
+  cursor: pointer;
+}
+
+.gateEvidence ul {
+  display: grid;
+  gap: 0.2rem;
+  margin: 0.35rem 0 0;
+  padding-left: 1rem;
+}
+
+.gateEvidence code {
+  display: block;
+  max-width: 400px;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 0.64rem;
+  text-overflow: ellipsis;
+}
+
+.recommendations {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0;
+  padding-left: 1.2rem;
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  line-height: 1.55;
+}
+
+.emptyRecommendations {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+
+@media (max-width: 1000px) {
+  .gateRow {
+    grid-template-columns: minmax(220px, 0.75fr) minmax(260px, 1fr);
+  }
+
+  .gateRow > :last-child {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 760px) {
+  .gateRow {
+    grid-template-columns: 1fr;
+  }
+
+  .gateRow > :last-child {
+    grid-column: auto;
+  }
+}

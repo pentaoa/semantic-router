@@ -92,27 +92,30 @@
 }
 
 .heroCompact {
-  padding: 0.85rem 1rem;
+  padding: 0.7rem 0.9rem 0.75rem;
+  isolation: isolate;
 }
 
 .heroCompact .title {
-  margin-top: 0.4rem;
-  font-size: clamp(1.65rem, 2vw, 1.9rem);
+  margin-top: 0.3rem;
+  font-size: clamp(1.55rem, 1.8vw, 1.75rem);
   line-height: 1.1;
 }
 
 .heroCompact .description {
-  margin-top: 0.35rem;
-  line-height: 1.4;
+  max-width: 58rem;
+  margin-top: 0.25rem;
+  font-size: 0.86rem;
+  line-height: 1.35;
 }
 
 .heroCompact .metaRow {
-  margin-top: 0.65rem;
+  margin-top: 0.5rem;
 }
 
 .heroCompact .metaValue {
-  margin-top: 0.15rem;
-  font-size: 0.85rem;
+  margin-top: 0;
+  font-size: 0.8rem;
 }
 
 @media (max-width: 900px) {
@@ -126,6 +129,10 @@
 
   .metaItem {
     flex: 1 1 auto;
+  }
+
+  .heroCompact {
+    padding: 0.7rem 0.85rem 0.75rem;
   }
 }
 
@@ -142,5 +149,54 @@
     flex-basis: 100%;
     padding: 0;
     border-left: 0;
+  }
+
+  .heroCompact {
+    padding: 0.6rem 0.75rem 0.65rem;
+  }
+
+  .heroCompact .eyebrow {
+    min-height: 14px;
+    padding-left: 0.5rem;
+    font-size: 0.61rem;
+  }
+
+  .heroCompact .title {
+    margin-top: 0.22rem;
+    font-size: 1.38rem;
+  }
+
+  .heroCompact .description {
+    margin-top: 0.2rem;
+    font-size: 0.78rem;
+    line-height: 1.32;
+  }
+
+  .heroCompact .metaRow {
+    display: grid;
+    grid-template-columns: auto auto auto;
+    align-items: center;
+    width: fit-content;
+    max-width: 100%;
+    margin-top: 0.4rem;
+  }
+
+  .heroCompact .metaItem {
+    display: inline-flex;
+    flex-basis: auto;
+    gap: 0.25rem;
+    padding: 0 0.45rem;
+    border-left: 1px solid rgba(255, 255, 255, 0.1);
+  }
+
+  .heroCompact .metaItem:first-child {
+    padding-left: 0;
+    border-left: 0;
+  }
+
+  .heroCompact .metaLabel,
+  .heroCompact .metaValue {
+    font-size: 0.66rem;
+    white-space: nowrap;
   }
 }

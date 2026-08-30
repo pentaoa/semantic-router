@@ -75,11 +75,8 @@ func (s *Service) rejectConfiguredSecretArtifact(reader io.ReadSeeker, mediaType
 // confidentiality boundary. Token scanning compares decoded string values and
 // also covers newline-delimited streams without materializing the artifact.
 func (s *Service) rejectConfiguredSecretJSONReader(reader io.Reader) error {
-	if s.envoyAPIKeyEnv == "" {
-		return nil
-	}
-	secret, present := os.LookupEnv(s.envoyAPIKeyEnv)
-	if !present || secret == "" {
+	secrets := s.configuredPublicSecrets()
+	if len(secrets) == 0 {
 		return nil
 	}
 	decoder := json.NewDecoder(reader)
@@ -92,27 +89,59 @@ func (s *Service) rejectConfiguredSecretJSONReader(reader io.Reader) error {
 			return fmt.Errorf("%w: public evaluation JSON is invalid during credential scan", ErrInvalid)
 		}
 		value, ok := token.(string)
-		if ok && strings.Contains(value, secret) {
-			return fmt.Errorf("%w: public evaluation evidence contains a configured credential", ErrInvalid)
+		if ok {
+			for _, secret := range secrets {
+				if strings.Contains(value, secret) {
+					return fmt.Errorf("%w: public evaluation evidence contains a configured credential", ErrInvalid)
+				}
+			}
 		}
 	}
 }
 
 func (s *Service) configuredPublicSecretPatterns() [][]byte {
-	if s.envoyAPIKeyEnv == "" {
-		return nil
-	}
-	secret, present := os.LookupEnv(s.envoyAPIKeyEnv)
-	if !present || secret == "" {
-		return nil
-	}
-	patterns := [][]byte{[]byte(secret)}
-	encoded, err := json.Marshal(secret)
-	if err == nil && len(encoded) >= 2 {
-		escaped := encoded[1 : len(encoded)-1]
-		if len(escaped) > 0 && !bytes.Equal(escaped, patterns[0]) {
-			patterns = append(patterns, escaped)
+	secrets := s.configuredPublicSecrets()
+	patterns := make([][]byte, 0, len(secrets)*2)
+	for _, secret := range secrets {
+		raw := []byte(secret)
+		patterns = append(patterns, raw)
+		encoded, err := json.Marshal(secret)
+		if err == nil && len(encoded) >= 2 {
+			escaped := encoded[1 : len(encoded)-1]
+			if len(escaped) > 0 && !bytes.Equal(escaped, raw) {
+				patterns = append(patterns, escaped)
+			}
 		}
 	}
 	return patterns
+}
+
+func (s *Service) configuredPublicSecrets() []string {
+	envNames := []string{s.routerAPIKeyEnv, s.envoyAPIKeyEnv}
+	for _, endpoint := range []*ServiceEndpoint{
+		s.agentTaskLedger,
+		s.faultRecoveryLedger,
+		s.hardPolicyLedger,
+		s.productionExperimentLedger,
+	} {
+		if endpoint != nil && endpoint.APIKey != nil {
+			envNames = append(envNames, endpoint.APIKey.Env)
+		}
+	}
+	seen := make(map[string]struct{}, len(envNames))
+	secrets := make([]string, 0, len(envNames))
+	for _, envName := range envNames {
+		envName = strings.TrimSpace(envName)
+		if envName == "" {
+			continue
+		}
+		if _, duplicate := seen[envName]; duplicate {
+			continue
+		}
+		seen[envName] = struct{}{}
+		if secret, present := os.LookupEnv(envName); present && secret != "" {
+			secrets = append(secrets, secret)
+		}
+	}
+	return secrets
 }

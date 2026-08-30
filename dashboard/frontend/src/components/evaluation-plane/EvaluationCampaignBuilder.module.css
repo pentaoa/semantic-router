@@ -1,0 +1,392 @@
+.builder {
+  min-width: 0;
+  padding: 1rem 0 0;
+  border-bottom: 1px solid var(--border-subtle);
+  background: transparent;
+  isolation: isolate;
+}
+
+.builderHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.builderHeader h3 {
+  margin: 0.25rem 0 0;
+  color: var(--text-primary);
+  letter-spacing: -0.025em;
+}
+
+.builderHeader p {
+  max-width: 56rem;
+  margin: 0.35rem 0 0;
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  line-height: 1.55;
+}
+
+.profileGrid {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.45fr) minmax(0, 1fr);
+  gap: 0.85rem;
+  margin-top: 0.9rem;
+}
+
+.field {
+  display: grid;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.field > span {
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  font-weight: 650;
+}
+
+.field input,
+.field textarea,
+.field select,
+.roleMatrix select {
+  width: 100%;
+}
+
+.field input,
+.field select,
+.roleMatrix select {
+  min-height: 42px;
+}
+
+.field textarea {
+  min-height: 92px;
+  resize: vertical;
+}
+
+.field small {
+  color: var(--text-muted);
+  font-size: 0.69rem;
+  line-height: 1.45;
+}
+
+.profileSummary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0;
+  padding: 0;
+  border-top: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.profileSummary > div {
+  display: grid;
+  gap: 0.15rem;
+  padding: 0.65rem 0.75rem;
+  border-left: 1px solid var(--border-subtle);
+}
+
+.profileSummary > div:first-child {
+  border-left: 0;
+}
+
+.profileSummary dt {
+  color: var(--text-muted);
+  font-size: 0.68rem;
+}
+
+.profileSummary dd {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: var(--text-xs);
+  font-weight: 650;
+}
+
+.roleMatrixFrame {
+  max-width: 100%;
+  margin-top: 0.85rem;
+  overflow-x: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.roleMatrixFrame:focus-visible {
+  outline: 2px solid var(--brand-amd);
+  outline-offset: 2px;
+}
+
+.roleMatrix {
+  width: 100%;
+  min-width: 720px;
+  border-collapse: collapse;
+}
+
+.roleMatrix th,
+.roleMatrix td {
+  padding: 0.65rem 0.75rem;
+  border-bottom: 1px solid var(--border-subtle);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.roleMatrix thead th {
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  font-weight: 650;
+  letter-spacing: 0.055em;
+  text-transform: uppercase;
+}
+
+.roleMatrix tbody tr:last-child > * {
+  border-bottom: 0;
+}
+
+.roleMatrix tbody tr[data-selected='true'] {
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.roleMatrix tbody th {
+  width: 34%;
+}
+
+.roleMatrix tbody th strong,
+.roleMatrix tbody th small,
+.roleMatrix td > small {
+  display: block;
+}
+
+.roleMatrix tbody th strong {
+  color: var(--text-primary);
+  font-size: 0.76rem;
+}
+
+.roleMatrix tbody th small,
+.roleMatrix td > small {
+  margin-top: 0.18rem;
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  font-weight: 400;
+  line-height: 1.4;
+}
+
+.roleMatrix tbody td:nth-child(2) {
+  width: 17%;
+}
+
+.roleMatrix select {
+  min-height: 38px;
+}
+
+.pairInputs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.45rem;
+}
+
+.pairInputs label {
+  min-width: 0;
+}
+
+.roleMatrix output {
+  display: flex;
+  align-items: center;
+  min-height: 38px;
+  padding: 0.45rem 0.6rem;
+  border-left: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  font-size: 0.7rem;
+  overflow-wrap: anywhere;
+}
+
+.roleEmpty {
+  color: #f9d38b !important;
+}
+
+.roleReady {
+  color: var(--text-secondary) !important;
+}
+
+.formGrid {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.45fr) minmax(0, 1fr);
+  gap: 0.85rem;
+  margin-top: 0.85rem;
+}
+
+.contextDisclosure {
+  min-width: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.contextDisclosure > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.65rem 0.75rem;
+  cursor: pointer;
+  list-style: none;
+}
+
+.contextDisclosure > summary::-webkit-details-marker {
+  display: none;
+}
+
+.contextDisclosure > summary:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -3px;
+}
+
+.contextDisclosure > summary span {
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  font-weight: 650;
+}
+
+.contextDisclosure > summary small {
+  color: var(--text-muted);
+  font-size: 0.68rem;
+}
+
+.contextDisclosure[open] > summary {
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.contextDisclosure .field {
+  padding: 0.7rem;
+}
+
+.ledgerBoundary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-top: 0.85rem;
+  padding: 0.75rem 0.85rem;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: rgba(255, 255, 255, 0.02);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  line-height: 1.45;
+}
+
+.ledgerBoundary > div {
+  display: grid;
+  gap: 0.15rem;
+}
+
+.ledgerBoundary strong {
+  color: var(--text-primary);
+}
+
+.ledgerBoundary button,
+.submitButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 40px;
+  padding: 0.52rem 0.85rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  font-size: var(--text-xs);
+  font-weight: 700;
+  transition:
+    transform var(--transition-fast),
+    background var(--transition-fast),
+    border-color var(--transition-fast);
+}
+
+.ledgerBoundary button {
+  background: rgba(255, 255, 255, 0.035);
+  color: var(--text-primary);
+}
+
+.submitButton {
+  border-color: var(--action-primary-bg);
+  background: var(--action-primary-bg);
+  color: var(--surface-panel);
+}
+
+.ledgerBoundary button:hover:not(:disabled) {
+  border-color: rgba(255, 255, 255, 0.3);
+  background: var(--surface-raised);
+}
+
+.submitButton:hover:not(:disabled) {
+  background: #fff;
+  transform: translateY(-1px);
+}
+
+.ledgerBoundary button:disabled,
+.submitButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+.formActions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-top: 0.9rem;
+  padding: 0.8rem 0;
+  border-top: 1px solid var(--border-subtle);
+  background: var(--surface-shell);
+}
+
+.formActions > span {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+}
+
+.builderNotice {
+  margin-top: 0.85rem;
+}
+
+@media (max-width: 760px) {
+  .builderHeader,
+  .ledgerBoundary,
+  .formActions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .profileGrid,
+  .formGrid,
+  .pairInputs {
+    grid-template-columns: 1fr;
+  }
+
+  .profileSummary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .profileSummary > div:nth-child(odd) {
+    border-left: 0;
+  }
+
+  .formActions button {
+    width: 100%;
+  }
+}
+
+@media (max-width: 480px) {
+  .builder {
+    padding-top: 0.85rem;
+  }
+
+  .profileSummary {
+    grid-template-columns: 1fr;
+  }
+
+  .profileSummary > div {
+    border-left: 0;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .profileSummary > div:last-child {
+    border-bottom: 0;
+  }
+}
