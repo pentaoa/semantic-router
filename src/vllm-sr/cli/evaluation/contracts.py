@@ -24,6 +24,7 @@ from cli.evaluation.capacity_load_contract import (
 from cli.evaluation.constants import BUILTIN_SUITE_IDS, SCHEMA_VERSION, TRACK_IDS
 from cli.evaluation.contract_validation import (
     is_portable_id,
+    is_subject_target_id,
     is_valid_suite_revision,
     validate_canonical_uuid,
     validate_http_origin,
@@ -506,11 +507,10 @@ class EvaluationTarget(StrictModel):
     @model_validator(mode="after")
     def validate_runtime_connectivity(self) -> EvaluationTarget:
         if self.mixture is not None and (
-            self.id != self.mixture.id or self.kind != "mixture-of-models"
+            not is_subject_target_id(self.id, self.mixture.id)
+            or self.kind != "mixture-of-models"
         ):
-            raise ValueError(
-                "a frozen mixture target must use its server-owned id and kind"
-            )
+            raise ValueError("mixture target must bind its server-owned subject id")
         if self.router_api_key is not None and self.router_api_url is None:
             raise ValueError("router_api_key requires router_api_url")
         if self.envoy_api_key is not None and self.envoy_url is None:

@@ -9,6 +9,7 @@ from types import MappingProxyType
 from typing import Literal
 
 from cli.evaluation.constants import TRACK_IDS
+from cli.evaluation.contract_validation import is_subject_target_id
 from cli.evaluation.contracts import EvaluationTarget, ManifestMixture, RunManifest
 from cli.evaluation.execution_contract import (
     FIXTURE_REPLAY_EXECUTOR_ID,
@@ -300,7 +301,7 @@ class TargetRegistry:
             target.envoy_url is None
             or target.backend_topology_digest is None
             or target.mixture is None
-            or target.id != target.mixture.id
+            or not is_subject_target_id(target.id, target.mixture.id)
             or target.kind != "mixture-of-models"
         ):
             raise ValueError("brokered-runtime target is incomplete")

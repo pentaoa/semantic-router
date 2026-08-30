@@ -561,6 +561,39 @@ def test_selector_support_identity_is_strict_and_digest_bound() -> None:
         SupportModelIdentity.model_validate(unsafe)
 
 
+def test_mixture_target_identity_supports_explicit_deployment_scope() -> None:
+    mixture = _mixture(
+        (
+            EvaluationTargetArm(
+                id="contract-arm",
+                model="contract/model",
+                provider_model_id_digest=digest_value("contract/provider-model"),
+                modalities=("text",),
+                capabilities=("chat", "text"),
+                context_window_tokens=4096,
+                input_cost_per_million_tokens_usd=0.1,
+                output_cost_per_million_tokens_usd=0.2,
+                config_digest=digest_value("contract-arm"),
+            ),
+        )
+    )
+    standalone = EvaluationTarget(
+        id=mixture.id,
+        kind="mixture-of-models",
+        mixture=mixture,
+    )
+    scoped = standalone.model_copy(update={"id": f"candidate--{mixture.id}"})
+
+    assert EvaluationTarget.model_validate(scoped.model_dump()) == scoped
+    with pytest.raises(ValidationError, match="server-owned subject id"):
+        EvaluationTarget.model_validate(
+            {
+                **standalone.model_dump(mode="json"),
+                "id": "candidate--unrelated-mixture",
+            }
+        )
+
+
 def test_runtime_catalog_tracks_are_capability_dependent() -> None:
     matrix = _golden("capability-matrix.json")
     assert matrix["schema_version"] == SCHEMA_VERSION
@@ -624,6 +657,10 @@ def test_live_manifest_requires_the_current_runtime_endpoint_contract() -> None:
         if executor.id == "live-runtime.v1"
     )
     DEFAULT_TARGET_REGISTRY.resolve(parsed, live_executor)
+    scoped = parsed.with_semantic_updates(
+        target=parsed.target.model_copy(update={"id": f"candidate--{mixture_id}"})
+    )
+    DEFAULT_TARGET_REGISTRY.resolve(scoped, live_executor)
     assert parsed.target.envoy_url == "http://envoy:8801"
     assert parsed.target.mixture is not None
     assert parsed.target.mixture.model_arms[0].id == "fast"

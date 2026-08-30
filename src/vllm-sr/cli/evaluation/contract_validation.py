@@ -34,6 +34,14 @@ def is_portable_id(value: str) -> bool:
     return _ID_RE.fullmatch(value) is not None
 
 
+def is_subject_target_id(value: str, subject_id: str) -> bool:
+    """Accept a standalone subject or its explicit deployment-scoped target."""
+    deployment_suffix = f"--{subject_id}"
+    return value == subject_id or (
+        value.endswith(deployment_suffix) and len(value) > len(deployment_suffix)
+    )
+
+
 def validate_canonical_uuid(value: str) -> str:
     try:
         parsed = uuid.UUID(value)
