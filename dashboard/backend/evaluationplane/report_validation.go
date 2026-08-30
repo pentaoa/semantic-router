@@ -474,7 +474,8 @@ func validateReportMetrics(metrics []Metric, selectedTrackIDs []TrackID) error {
 			if metric.Value == nil {
 				return fmt.Errorf("evaluation metric %q comparison requires a candidate value", metric.ID)
 			}
-			if *metric.Delta != *metric.Value-*metric.BaselineValue {
+			if !reducedFloatsEqual(*metric.Delta, *metric.Value-*metric.BaselineValue) &&
+				!reducedFloatsEqual(*metric.Value, *metric.BaselineValue+*metric.Delta) {
 				return fmt.Errorf("evaluation metric %q delta does not match value minus baseline_value", metric.ID)
 			}
 		}

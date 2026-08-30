@@ -138,6 +138,16 @@ func TestValidateReportMetricsRejectsMisleadingNumericEvidence(t *testing.T) {
 	if err := validateReportMetrics([]Metric{compared}, []TrackID{"routing"}); err != nil {
 		t.Fatalf("consistent comparison metric rejected: %v", err)
 	}
+	roundedComparison := validMetric()
+	roundedComparison.ID = "routing.latency_p95_ms"
+	roundedComparison.Name = "Latency p95"
+	roundedComparison.Unit = "ms"
+	roundedComparison.Value = float64Pointer(1000.1)
+	roundedComparison.BaselineValue = float64Pointer(1000)
+	roundedComparison.Delta = float64Pointer(0.1)
+	if err := validateReportMetrics([]Metric{roundedComparison}, []TrackID{"routing"}); err != nil {
+		t.Fatalf("JSON-rounded comparison metric rejected: %v", err)
+	}
 
 	tests := []struct {
 		name   string

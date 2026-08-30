@@ -208,13 +208,14 @@ export function isServerReducedMetric(metricID: string): boolean {
 export function selectHeadlineMetrics(report: EvaluationReport, limit = 4): EvaluationMetric[] {
   const available = report.metrics.filter((metric) => {
     if (metric.value === null || !Number.isFinite(metric.value)) return false
+    if (metric.track_id && !report.run.track_ids.includes(metric.track_id)) return false
     return isServerReducedMetric(metric.id)
   })
   const byID = new Map(available.map((metric) => [metric.id, metric]))
   const selected: EvaluationMetric[] = []
   for (const id of HEADLINE_METRIC_PRIORITY) {
     const metric = byID.get(id)
-    if (!metric || !report.run.track_ids.includes(metric.track_id || 'joint')) continue
+    if (!metric) continue
     selected.push(metric)
     byID.delete(id)
     if (selected.length === limit) return selected

@@ -79,6 +79,32 @@ describe('evaluation presentation', () => {
     ])
   })
 
+  it('prioritizes trackless system headlines for non-joint runs', () => {
+    const report = {
+      attestation_revision: EVALUATION_ATTESTATION_REVISION,
+      run: { evidence_level: 'E2', track_ids: ['capacity'] },
+      metrics: [
+        {
+          id: 'safety.violation_rate',
+          name: 'System violation rate',
+          value: 0,
+          unit: 'violations/case',
+        },
+        {
+          id: 'capacity.success_rate',
+          name: 'Capacity success rate',
+          track_id: 'capacity',
+          value: 1,
+          unit: 'fraction',
+        },
+      ],
+    } as EvaluationReport
+
+    expect(selectHeadlineMetrics(report, 1).map((metric) => metric.id)).toEqual([
+      'safety.violation_rate',
+    ])
+  })
+
   it('derives promotion from required gate evidence', () => {
     const report = {
       summary: { verdict: 'pass' },
