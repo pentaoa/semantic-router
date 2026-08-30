@@ -13,62 +13,6 @@ import (
 	routerconfig "github.com/vllm-project/semantic-router/src/semantic-router/pkg/config"
 )
 
-const modelArmTestYAML = `version: v0.3
-providers:
-  defaults:
-    default_model: Org/Fast Model
-  models:
-    - name: Org/Fast Model
-      provider_model_id: PrivateOrg/Secret-Upstream-ID
-      backend_refs:
-        - name: private-primary
-          endpoint: private.models.example.test:8000/v1
-          api_key: literal-test-secret
-      pricing:
-        currency: USD
-        prompt_per_1m: 1.25
-        completion_per_1m: 4.5
-    - name: local/omni
-      backend_refs:
-        - name: local-primary
-          endpoint: local-private.example.test:8001
-    - name: metadata-only
-      provider_model_id: metadata-only-upstream
-      pricing:
-        currency: USD
-        prompt_per_1m: 0.1
-        completion_per_1m: 0.2
-    - name: non-usd
-      provider_model_id: foreign-upstream
-      backend_refs:
-        - endpoint: foreign-private.example.test:8002
-      pricing:
-        currency: EUR
-        prompt_per_1m: 0.1
-        completion_per_1m: 0.2
-    - name: ambiguous-unpriced
-      backend_refs:
-        - endpoint: ambiguous-private.example.test:8003
-      pricing:
-        prompt_per_1m: 0.1
-        completion_per_1m: 0.2
-routing:
-  modelCards:
-    - name: Org/Fast Model
-      param_size: 7B
-      context_window_size: 32768
-      capabilities: [vision, chat, vision, ""]
-      modality: ar
-    - name: local/omni
-      capabilities: [omni, audio, document_understanding, video_understanding]
-      modality: omni
-    - name: metadata-only
-      modality: text
-    - name: non-usd
-      modality: text
-    - name: ambiguous-unpriced
-      modality: text
-`
 func TestMixtureSnapshotGroupsAliasesAndScopesRecipePools(t *testing.T) {
 	snapshot, err := ModelArmSnapshotFromYAML([]byte(multiRecipeMixtureTestYAML), "revision")
 	if err != nil {
@@ -695,11 +639,12 @@ func TestValidProviderArmRequiresBackendAndTruthfulUSDPricing(t *testing.T) {
 			},
 		},
 		{
-			name: "unknown non-zero currency",
+			name: "omitted currency defaults to USD",
 			provider: routerconfig.CanonicalProviderModel{
 				Name: "ambiguous", BackendRefs: backend,
 				Pricing: routerconfig.ModelPricing{PromptPer1M: 1},
 			},
+			want: true,
 		},
 		{
 			name: "non USD",
@@ -726,7 +671,13 @@ func TestValidProviderArmRequiresBackendAndTruthfulUSDPricing(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if got := validProviderArm(test.provider, strings.TrimSpace(test.provider.Name)); got != test.want {
+			model := strings.TrimSpace(test.provider.Name)
+			pricing := test.provider.Pricing
+			if pricing.Currency == "" {
+				pricing.Currency = "USD"
+			}
+			binding := mixtureModelBinding{EffectiveModel: model, BaseModel: model}
+			if got := validProviderArm(test.provider, binding, pricing); got != test.want {
 				t.Fatalf("validProviderArm() = %v, want %v", got, test.want)
 			}
 		})

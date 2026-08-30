@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	"math"
 	"os"
 	"sort"
 	"strings"
@@ -181,143 +180,6 @@ func containsString(values []string, want string) bool {
 	return false
 }
 
-func modelArmsFromCanonical(
-	canonical routerconfig.CanonicalConfig,
-	runtimeRevision string,
-) []ModelArm {
-	cards := make(map[string]routerconfig.RoutingModel, len(canonical.Routing.ModelCards))
-	for _, card := range canonical.Routing.ModelCards {
-		cards[card.Name] = card
-	}
-
-	arms := make([]ModelArm, 0, len(canonical.Providers.Models))
-	seenModels := make(map[string]struct{}, len(canonical.Providers.Models))
-	for _, provider := range canonical.Providers.Models {
-		model := strings.TrimSpace(provider.Name)
-		if !validProviderArm(provider, model) {
-			continue
-		}
-		if _, duplicate := seenModels[model]; duplicate {
-			continue
-		}
-		seenModels[model] = struct{}{}
-
-		providerIdentity := strings.TrimSpace(provider.ProviderModelID)
-		if providerIdentity == "" {
-			providerIdentity = model
-		}
-		card := cards[provider.Name]
-		arm := ModelArm{
-			ID:                            portableModelArmID(model),
-			Model:                         model,
-			ProviderModelIDDigest:         digestString(providerIdentity),
-			InputCostPerMillionTokensUSD:  provider.Pricing.PromptPer1M,
-			OutputCostPerMillionTokensUSD: provider.Pricing.CompletionPer1M,
-			Capabilities:                  normalizedCapabilities(card.Capabilities),
-			Modalities:                    normalizedModalities(card),
-			ContextWindowTokens:           positiveInt(card.ContextWindowSize),
-			ParameterSize:                 boundedOptionalString(card.ParamSize, 64),
-			RuntimeRevision:               runtimeRevisionPointer(runtimeRevision),
-		}
-		arm.ConfigDigest = stringPointer(modelArmConfigDigest(provider, arm))
-		arms = append(arms, arm)
-	}
-
-	sort.Slice(arms, func(i, j int) bool {
-		return arms[i].Model < arms[j].Model
-	})
-	if len(arms) == 0 {
-		return nil
-	}
-	return arms
-}
-
-type armConfigFingerprint struct {
-	Model                         string   `json:"model"`
-	ProviderModelIDDigest         string   `json:"provider_model_id_digest"`
-	ReasoningFamily               string   `json:"reasoning_family,omitempty"`
-	APIFormat                     string   `json:"api_format,omitempty"`
-	InputCostPerMillionTokensUSD  float64  `json:"input_cost_per_million_tokens_usd"`
-	OutputCostPerMillionTokensUSD float64  `json:"output_cost_per_million_tokens_usd"`
-	Capabilities                  []string `json:"capabilities,omitempty"`
-	Modalities                    []string `json:"modalities,omitempty"`
-	ContextWindowTokens           *int     `json:"context_window_tokens,omitempty"`
-	ParameterSize                 *string  `json:"parameter_size,omitempty"`
-	ExternalModelIDDigest         string   `json:"external_model_ids_digest,omitempty"`
-}
-
-type externalSelectorConfigFingerprint struct {
-	Model                 string  `json:"model"`
-	Provider              string  `json:"provider"`
-	ModelRole             string  `json:"model_role"`
-	ProviderModelIDDigest string  `json:"provider_model_id_digest"`
-	EndpointName          string  `json:"endpoint_name,omitempty"`
-	UseChatTemplate       bool    `json:"use_chat_template,omitempty"`
-	PromptTemplateDigest  string  `json:"prompt_template_digest,omitempty"`
-	TimeoutSeconds        int     `json:"timeout_seconds,omitempty"`
-	ParserType            string  `json:"parser_type,omitempty"`
-	Threshold             float32 `json:"threshold,omitempty"`
-	MaxTokens             int     `json:"max_tokens,omitempty"`
-	Temperature           float64 `json:"temperature,omitempty"`
-	MaxRequestBytes       int64   `json:"max_request_bytes,omitempty"`
-	MaxResponseBytes      int64   `json:"max_response_bytes,omitempty"`
-}
-
-type externalSelectorTopologyFingerprint struct {
-	AddressDigest string `json:"address_digest"`
-	Port          int    `json:"port"`
-	Protocol      string `json:"protocol,omitempty"`
-}
-
-func externalSelectorSupportModel(external routerconfig.ExternalModelConfig) (SupportModel, bool) {
-	model := strings.TrimSpace(external.Name)
-	providerModel := strings.TrimSpace(external.ModelName)
-	address := strings.TrimSpace(external.ModelEndpoint.Address)
-	if model == "" || providerModel == "" || address == "" ||
-		external.ModelEndpoint.Port < 1 || external.ModelEndpoint.Port > 65535 {
-		return SupportModel{}, false
-	}
-	providerDigest := digestString(providerModel)
-	promptTemplateDigest := ""
-	if promptTemplate := strings.TrimSpace(external.ModelEndpoint.PromptTemplate); promptTemplate != "" {
-		promptTemplateDigest = digestString(promptTemplate)
-	}
-	configDigest := digestJSON(externalSelectorConfigFingerprint{
-		Model: model, Provider: strings.TrimSpace(external.Provider),
-		ModelRole: external.ModelRole, ProviderModelIDDigest: providerDigest,
-		EndpointName:         strings.TrimSpace(external.ModelEndpoint.Name),
-		UseChatTemplate:      external.ModelEndpoint.UseChatTemplate,
-		PromptTemplateDigest: promptTemplateDigest,
-		TimeoutSeconds:       external.TimeoutSeconds, ParserType: strings.TrimSpace(external.ParserType),
-		Threshold: external.Threshold, MaxTokens: external.MaxTokens, Temperature: external.Temperature,
-		MaxRequestBytes: external.MaxRequestBytes, MaxResponseBytes: external.MaxResponseBytes,
-	})
-	topologyDigest := digestJSON(externalSelectorTopologyFingerprint{
-		AddressDigest: digestString(address), Port: external.ModelEndpoint.Port,
-		Protocol: strings.ToLower(strings.TrimSpace(external.ModelEndpoint.Protocol)),
-	})
-	return SupportModel{
-		Model: model, ProviderModelIDDigest: providerDigest, ConfigDigest: configDigest,
-		BackendTopologyDigest: topologyDigest,
-	}, true
-}
-
-func modelArmConfigDigest(provider routerconfig.CanonicalProviderModel, arm ModelArm) string {
-	externalDigest := ""
-	if len(provider.ExternalModelIDs) > 0 {
-		externalDigest = digestJSON(provider.ExternalModelIDs)
-	}
-	return digestJSON(armConfigFingerprint{
-		Model: arm.Model, ProviderModelIDDigest: arm.ProviderModelIDDigest,
-		ReasoningFamily: provider.ReasoningFamily, APIFormat: provider.APIFormat,
-		InputCostPerMillionTokensUSD:  arm.InputCostPerMillionTokensUSD,
-		OutputCostPerMillionTokensUSD: arm.OutputCostPerMillionTokensUSD,
-		Capabilities:                  arm.Capabilities, Modalities: arm.Modalities,
-		ContextWindowTokens: arm.ContextWindowTokens, ParameterSize: arm.ParameterSize,
-		ExternalModelIDDigest: externalDigest,
-	})
-}
-
 type topologyBackendFingerprint struct {
 	Name             string   `json:"name,omitempty"`
 	EndpointDigest   string   `json:"endpoint_digest,omitempty"`
@@ -398,50 +260,6 @@ func digestJSON(value any) string {
 		panic(fmt.Sprintf("canonical evaluation digest: %v", err))
 	}
 	return digestBytes(encoded)
-}
-
-func validProviderArm(provider routerconfig.CanonicalProviderModel, model string) bool {
-	if model == "" || len(model) > 512 || len(provider.BackendRefs) == 0 {
-		return false
-	}
-	pricing := provider.Pricing
-	if pricing.PromptPer1M < 0 || pricing.CompletionPer1M < 0 ||
-		math.IsNaN(pricing.PromptPer1M) || math.IsNaN(pricing.CompletionPer1M) ||
-		math.IsInf(pricing.PromptPer1M, 0) || math.IsInf(pricing.CompletionPer1M, 0) {
-		return false
-	}
-	currency := strings.TrimSpace(pricing.Currency)
-	if strings.EqualFold(currency, "USD") {
-		return true
-	}
-	return currency == "" && pricing.PromptPer1M == 0 && pricing.CompletionPer1M == 0
-}
-
-func portableModelArmID(model string) string {
-	var base strings.Builder
-	lastSeparator := false
-	for _, value := range strings.ToLower(model) {
-		if (value >= 'a' && value <= 'z') || (value >= '0' && value <= '9') || value == '.' || value == '_' {
-			base.WriteRune(value)
-			lastSeparator = false
-			continue
-		}
-		if !lastSeparator && base.Len() > 0 {
-			base.WriteByte('-')
-			lastSeparator = true
-		}
-	}
-	readable := strings.Trim(base.String(), ".-_")
-	if readable == "" || !startsWithASCIILetterOrDigit(readable) {
-		readable = "model"
-	}
-	// A full digest makes IDs collision-resistant even when different model
-	// names normalize to the same portable prefix. 63+1+64 is the Python
-	// contract's 128-character maximum.
-	if len(readable) > 63 {
-		readable = strings.TrimRight(readable[:63], ".-_")
-	}
-	return readable + "-" + strings.TrimPrefix(digestString(model), "sha256:")
 }
 
 func normalizedCapabilities(values []string) []string {
@@ -532,11 +350,6 @@ func digestBytes(data []byte) string {
 
 func digestString(value string) string {
 	return digestBytes([]byte(value))
-}
-
-func startsWithASCIILetterOrDigit(value string) bool {
-	first := value[0]
-	return (first >= 'a' && first <= 'z') || (first >= '0' && first <= '9')
 }
 
 func positiveInt(value int) *int {

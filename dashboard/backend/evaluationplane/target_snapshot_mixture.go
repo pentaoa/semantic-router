@@ -8,13 +8,6 @@ import (
 	routerconfig "github.com/vllm-project/semantic-router/src/semantic-router/pkg/config"
 )
 
-type mixtureModelInventory struct {
-	poolModels     map[string]struct{}
-	decisionModels [][]string
-	supportModels  map[string]struct{}
-	fallbackModel  string
-}
-
 func mixtureSnapshotsFromConfig(
 	cfg *routerconfig.RouterConfig,
 	canonical routerconfig.CanonicalConfig,
@@ -23,7 +16,7 @@ func mixtureSnapshotsFromConfig(
 	if cfg == nil {
 		return nil, nil
 	}
-	armsByModel := modelArmsByName(canonical, runtimeRevision)
+	armResolver := newModelArmResolver(cfg, canonical, runtimeRevision)
 	aliasesByRecipe, recipeOrder := recipeEntrypointAliases(cfg)
 	mixtures := make([]MixtureTargetSnapshot, 0, len(recipeOrder))
 	for _, recipeName := range recipeOrder {
@@ -34,25 +27,13 @@ func mixtureSnapshotsFromConfig(
 		aliases := append([]string(nil), aliasesByRecipe[recipeName]...)
 		entrypoint := preferredRecipeEntrypoint(cfg, recipeName, aliases)
 		mixtures = append(mixtures, mixtureSnapshotForRecipe(
-			cfg, canonical, recipe, entrypoint, aliases, armsByModel,
+			cfg, canonical, recipe, entrypoint, aliases, armResolver,
 		))
 	}
 	if len(mixtures) == 0 {
 		return nil, nil
 	}
 	return mixtures, nil
-}
-
-func modelArmsByName(
-	canonical routerconfig.CanonicalConfig,
-	runtimeRevision string,
-) map[string]ModelArm {
-	allArms := modelArmsFromCanonical(canonical, runtimeRevision)
-	armsByModel := make(map[string]ModelArm, len(allArms))
-	for _, arm := range allArms {
-		armsByModel[arm.Model] = arm
-	}
-	return armsByModel
 }
 
 func recipeEntrypointAliases(
@@ -113,17 +94,17 @@ func mixtureSnapshotForRecipe(
 	recipe *routerconfig.RoutingRecipe,
 	entrypoint string,
 	aliases []string,
-	armsByModel map[string]ModelArm,
+	armResolver modelArmResolver,
 ) MixtureTargetSnapshot {
 	scopedRouting := routerconfig.CanonicalConfigFromRouterConfig(cfg.ConfigForRecipe(recipe)).Routing
 	inventory := collectMixtureModelInventory(canonical, recipe)
-	poolArms, armIDByModel, armsReady := resolveMixtureArms(inventory.poolModels, armsByModel)
+	poolArms, armIDByModel, armsReady := resolveMixtureArms(inventory.poolModels, armResolver)
 	supportModels, supportReady := resolveMixtureSupportModels(
-		canonical, scopedRouting, inventory, armsByModel,
+		canonical, scopedRouting, inventory, armResolver,
 	)
 	decisions, decisionsReady := resolveMixtureDecisions(recipe, inventory.decisionModels, armIDByModel)
 	ready := strings.TrimSpace(entrypoint) != "" && len(inventory.poolModels) > 0 &&
-		armsReady && supportReady && decisionsReady
+		inventory.valid && armsReady && supportReady && decisionsReady
 
 	mixtureID := mixtureTargetID(recipe.Name)
 	fallbackArmID := armIDByModel[inventory.fallbackModel]
@@ -142,65 +123,22 @@ func mixtureSnapshotForRecipe(
 		ModelArms: copyModelArms(poolArms), SupportModels: supportModels,
 		FallbackArmID: fallbackArmID, Decisions: decisions,
 	}
-	topologyDigest := backendTopologyDigestForModels(canonical, inventory.poolModels)
+	topologyDigest := backendTopologyDigestForModels(canonical, baseModelsForBindings(inventory.poolModels))
 	if !digestPattern.MatchString(topologyDigest) {
 		ready = false
 	}
 	return MixtureTargetSnapshot{Mixture: mixture, BackendTopologyDigest: topologyDigest, Ready: ready}
 }
 
-func collectMixtureModelInventory(
-	canonical routerconfig.CanonicalConfig,
-	recipe *routerconfig.RoutingRecipe,
-) mixtureModelInventory {
-	inventory := mixtureModelInventory{
-		poolModels:     make(map[string]struct{}),
-		decisionModels: make([][]string, len(recipe.Profile.Decisions)),
-		supportModels:  make(map[string]struct{}),
-		fallbackModel:  strings.TrimSpace(canonical.Providers.Defaults.DefaultModel),
-	}
-	for index, decision := range recipe.Profile.Decisions {
-		for _, ref := range decision.ModelRefs {
-			addMixtureModel(inventory.poolModels, &inventory.decisionModels[index], ref.Model)
-		}
-		for _, iteration := range decision.CandidateIterations {
-			if strings.TrimSpace(iteration.Source) != "models" {
-				continue
-			}
-			for _, ref := range iteration.Models {
-				addMixtureModel(inventory.poolModels, &inventory.decisionModels[index], ref.Model)
-			}
-		}
-	}
-	if inventory.fallbackModel != "" {
-		inventory.poolModels[inventory.fallbackModel] = struct{}{}
-		for index, decision := range recipe.Profile.Decisions {
-			if len(decision.ModelRefs) == 0 {
-				inventory.decisionModels[index] = []string{inventory.fallbackModel}
-			}
-		}
-	}
-	for _, decision := range recipe.Profile.Decisions {
-		if decision.Algorithm == nil || decision.Algorithm.Prompt == nil {
-			continue
-		}
-		model := strings.TrimSpace(decision.Algorithm.Prompt.Model)
-		if _, candidate := inventory.poolModels[model]; model != "" && !candidate {
-			inventory.supportModels[model] = struct{}{}
-		}
-	}
-	return inventory
-}
-
 func resolveMixtureArms(
-	poolModels map[string]struct{},
-	armsByModel map[string]ModelArm,
+	poolModels map[string]mixtureModelBinding,
+	armResolver modelArmResolver,
 ) ([]ModelArm, map[string]string, bool) {
 	ready := true
 	poolArms := make([]ModelArm, 0, len(poolModels))
 	armIDByModel := make(map[string]string, len(poolModels))
-	for model := range poolModels {
-		arm, ok := armsByModel[model]
+	for model, binding := range poolModels {
+		arm, ok := armResolver.resolve(binding)
 		if !ok {
 			ready = false
 			continue
@@ -216,13 +154,15 @@ func resolveMixtureSupportModels(
 	canonical routerconfig.CanonicalConfig,
 	routing routerconfig.CanonicalRouting,
 	inventory mixtureModelInventory,
-	armsByModel map[string]ModelArm,
+	armResolver modelArmResolver,
 ) ([]SupportModel, bool) {
 	ready := true
 	supportByName := make(map[string]SupportModel, len(inventory.supportModels)+len(routing.Signals.Classifiers))
-	for model := range inventory.supportModels {
-		arm, ok := armsByModel[model]
-		topologyDigest := backendTopologyDigestForModels(canonical, map[string]struct{}{model: {}})
+	for model, binding := range inventory.supportModels {
+		arm, ok := armResolver.resolve(binding)
+		topologyDigest := backendTopologyDigestForModels(
+			canonical, map[string]struct{}{binding.BaseModel: {}},
+		)
 		if !ok || arm.ConfigDigest == nil || !digestPattern.MatchString(topologyDigest) {
 			ready = false
 			continue
@@ -235,12 +175,14 @@ func resolveMixtureSupportModels(
 	}
 	externalModels := externalModelsByName(canonical)
 	for _, classifier := range routing.Signals.Classifiers {
-		if strings.TrimSpace(classifier.Type) != "llm" {
+		backendType := strings.TrimSpace(classifier.Type)
+		if backendType != routerconfig.ClassifierSignalTypeLLM &&
+			backendType != routerconfig.ClassifierSignalTypeSequenceClassifier {
 			continue
 		}
 		modelName := strings.TrimSpace(classifier.Model)
 		external, exists := externalModels[modelName]
-		support, valid := externalSelectorSupportModel(external)
+		support, valid := externalSelectorSupportModel(external, backendType)
 		_, candidate := inventory.poolModels[modelName]
 		prior, duplicate := supportByName[modelName]
 		if !exists || !valid || candidate || (duplicate && prior != support) {
@@ -297,17 +239,6 @@ func resolveMixtureDecisions(
 		})
 	}
 	return result, ready
-}
-
-func addMixtureModel(pool map[string]struct{}, decisionModels *[]string, raw string) {
-	model := strings.TrimSpace(raw)
-	if model == "" {
-		return
-	}
-	pool[model] = struct{}{}
-	if !containsString(*decisionModels, model) {
-		*decisionModels = append(*decisionModels, model)
-	}
 }
 
 func decisionAlgorithmName(decision routerconfig.Decision) string {
