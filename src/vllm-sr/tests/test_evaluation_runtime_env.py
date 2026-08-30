@@ -172,10 +172,12 @@ def test_evaluation_deployments_are_mounted_read_only_into_dashboard(
 ):
     registry_root = tmp_path / "deployments"
     registry_root.mkdir()
-    (registry_root / "config.yaml").write_text("version: v0.3\n", encoding="utf-8")
+    baseline_root = registry_root / "baseline"
+    baseline_root.mkdir()
+    (baseline_root / "config.yaml").write_text("version: v0.3\n", encoding="utf-8")
     (registry_root / "registry.json").write_text(
         '{"schema_version":"evaluation-deployments.v1","deployments":['
-        '{"id":"baseline","name":"Baseline","config_file":"config.yaml",'
+        '{"id":"baseline","name":"Baseline","config_file":"baseline/config.yaml",'
         '"router_origin":"https://router.internal",'
         '"envoy_origin":"https://envoy.internal"}]}',
         encoding="utf-8",
@@ -201,22 +203,28 @@ def test_evaluation_deployments_are_mounted_read_only_into_dashboard(
     assert (Path(mounted_root) / "registry.json").read_bytes() == (
         registry_root / "registry.json"
     ).read_bytes()
-    assert stat.S_IMODE(Path(mounted_root).stat().st_mode) == 0o500
-    assert stat.S_IMODE((Path(mounted_root) / "registry.json").stat().st_mode) == 0o400
-    assert stat.S_IMODE((Path(mounted_root) / "config.yaml").stat().st_mode) == 0o400
+    assert stat.S_IMODE(Path(mounted_root).stat().st_mode) == 0o550
+    assert stat.S_IMODE((Path(mounted_root) / "registry.json").stat().st_mode) == 0o440
+    assert stat.S_IMODE((Path(mounted_root) / "baseline").stat().st_mode) == 0o550
+    assert (
+        stat.S_IMODE((Path(mounted_root) / "baseline" / "config.yaml").stat().st_mode)
+        == 0o440
+    )
 
     original_registry = (Path(mounted_root) / "registry.json").read_bytes()
-    original_config = (Path(mounted_root) / "config.yaml").read_bytes()
+    original_config = (Path(mounted_root) / "baseline" / "config.yaml").read_bytes()
     (registry_root / "registry.json").write_text(
         '{"schema_version":"evaluation-deployments.v1","deployments":[]}',
         encoding="utf-8",
     )
-    (registry_root / "config.yaml").write_text(
+    (baseline_root / "config.yaml").write_text(
         "attacker: substituted\n", encoding="utf-8"
     )
 
     assert (Path(mounted_root) / "registry.json").read_bytes() == original_registry
-    assert (Path(mounted_root) / "config.yaml").read_bytes() == original_config
+    assert (
+        Path(mounted_root) / "baseline" / "config.yaml"
+    ).read_bytes() == original_config
 
 
 def test_evaluation_deployment_mount_is_zero_config_by_default():

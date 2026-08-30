@@ -15,9 +15,14 @@ _REGISTRY_NAME = "registry.json"
 _MAX_REGISTRY_BYTES = 1 << 20
 _MAX_CONFIG_BYTES = 16 << 20
 _SNAPSHOT_DIRECTORY = "evaluation-deployment-snapshots"
+_SNAPSHOT_DIGEST_DOMAIN = b"evaluation-deployment-snapshot.v2\0"
 _PRIVATE_DIRECTORY_MODE = 0o700
-_SNAPSHOT_DIRECTORY_MODE = 0o500
-_SNAPSHOT_FILE_MODE = 0o400
+# The Dashboard runs as a non-root UID with the invoking host user's primary
+# group added as a supplementary group. Keep snapshots immutable and private
+# from all other users while allowing that container identity to traverse and
+# read the bind-mounted snapshot.
+_SNAPSHOT_DIRECTORY_MODE = 0o550
+_SNAPSHOT_FILE_MODE = 0o440
 _STAGING_FILE_MODE = 0o600
 _DEPLOYMENT_FIELDS = {
     "id",
@@ -221,7 +226,7 @@ def _validate_relative_path(relative: str) -> None:
 
 
 def _snapshot_digest(files: dict[str, bytes]) -> str:
-    digest = hashlib.sha256(b"evaluation-deployment-snapshot.v1\0")
+    digest = hashlib.sha256(_SNAPSHOT_DIGEST_DOMAIN)
     for relative in sorted(files):
         digest.update(relative.encode())
         digest.update(b"\0")
