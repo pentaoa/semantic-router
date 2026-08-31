@@ -2,10 +2,12 @@
   display: grid;
   min-width: 0;
   gap: 0;
-  overflow: hidden;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-lg);
-  background: var(--surface-panel);
+  overflow: visible;
+  border: 0;
+  border-top: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle);
+  border-radius: 0;
+  background: transparent;
 }
 
 .decisionHero {
@@ -13,7 +15,7 @@
   align-items: flex-start;
   justify-content: space-between;
   gap: 1rem;
-  padding: 1.25rem;
+  padding: 1.15rem 0;
   border-bottom: 1px solid var(--border-subtle);
 }
 
@@ -79,11 +81,12 @@
 
 .decisionSection {
   min-width: 0;
-  margin: 1rem;
-  padding: 1rem;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-lg);
-  background: rgba(255, 255, 255, 0.012);
+  margin: 0;
+  padding: 1.1rem 0;
+  border: 0;
+  border-top: 1px solid var(--border-subtle);
+  border-radius: 0;
+  background: transparent;
 }
 
 .sectionHeader {
@@ -122,11 +125,7 @@
 @media (max-width: 480px) {
   .decisionHero,
   .decisionSection {
-    padding: 0.9rem;
-  }
-
-  .decisionSection {
-    margin: 0.75rem;
+    padding: 0.9rem 0;
   }
 
   .decisionMeta {

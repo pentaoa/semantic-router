@@ -6,6 +6,7 @@ import type {
 import { EVALUATION_CAMPAIGN_CONTRACT_VERSION } from '../../types/evaluationPlane'
 import EvaluationCampaignBuilder from './EvaluationCampaignBuilder'
 import EvaluationCampaignDecision from './EvaluationCampaignDecision'
+import { EvaluationActionButton } from './EvaluationPrimitives'
 import useEvaluationCampaignBuilder from './useEvaluationCampaignBuilder'
 import styles from './EvaluationCampaign.module.css'
 
@@ -93,9 +94,14 @@ export default function EvaluationCampaign({
       {campaignError ? (
         <div className={styles.inlineError} role="alert">
           <span>{campaignError}</span>
-          <button type="button" disabled={campaignLoading} onClick={onRetryCampaign}>
+          <EvaluationActionButton
+            type="button"
+            compact
+            disabled={campaignLoading}
+            onClick={onRetryCampaign}
+          >
             {campaignLoading ? 'Retrying decision…' : 'Retry decision'}
-          </button>
+          </EvaluationActionButton>
         </div>
       ) : null}
       {campaign ? (

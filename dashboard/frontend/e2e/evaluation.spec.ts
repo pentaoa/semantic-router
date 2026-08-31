@@ -202,6 +202,7 @@ async function expectResponsiveEvaluationSurface(
   surface: (typeof responsiveEvaluationSurfaces)[number],
   viewportName: string,
 ) {
+  const mobileViewport = viewportName.startsWith('mobile')
   await page.goto(surface.route)
   await expect(page.getByText(surface.visibleText, { exact: true }).first()).toBeVisible()
   const brand = page.getByRole('link', { name: 'vLLM Semantic Router home' })
@@ -214,7 +215,7 @@ async function expectResponsiveEvaluationSurface(
     .locator('xpath=ancestor::header[1]')
   await expect(hero).toBeVisible()
   await expect.poll(async () => (await hero.boundingBox())?.y ?? Infinity).toBeLessThan(100)
-  if (viewportName === 'mobile') {
+  if (mobileViewport) {
     await expect.poll(async () => (await hero.boundingBox())?.height ?? Infinity).toBeLessThan(190)
   }
   await expect(page.getByRole('tablist', { name: 'Evaluation plane views' })).toBeVisible()
@@ -232,7 +233,7 @@ async function expectResponsiveEvaluationSurface(
       )
     })
     .toBe(true)
-  if (viewportName === 'mobile') {
+  if (mobileViewport) {
     const hasLeftOverflow = surface.tab !== 'Overview'
     const hasRightOverflow = surface.tab !== 'Compare'
     if (hasLeftOverflow) {
@@ -1525,6 +1526,7 @@ test.describe('Evaluation Plane', () => {
   })
 
   const responsiveViewports = [
+    { name: 'mobile-compact', width: 320, height: 568 },
     { name: 'mobile', width: 390, height: 844 },
     { name: 'tablet', width: 1024, height: 768 },
     { name: 'desktop', width: 1440, height: 900 },

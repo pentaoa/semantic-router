@@ -463,6 +463,34 @@ describe('EvaluationExperimentForm contract', () => {
     expect(markup).toContain('<option value="fixture" selected="">Fixture</option>')
   })
 
+  it('renders only the executable suite and selected track for a partial-capability target', () => {
+    const markup = renderToStaticMarkup(
+      createElement(EvaluationExperimentForm, {
+        catalog: {
+          ...catalog,
+          targets: [{ ...catalog.targets[0], track_ids: ['routing'] }],
+        },
+        runs: [],
+        totalRuns: 0,
+        canCreate: true,
+        canAutoStart: true,
+        runLedgerAvailable: true,
+        runLedgerComplete: true,
+        hasMoreRuns: false,
+        loadingMoreRuns: false,
+        pending: false,
+        onLoadMoreRuns: () => undefined,
+        onSubmit: async () => true,
+      }),
+    )
+
+    expect(markup).toContain('Routing suite')
+    expect(markup).not.toContain('Pool suite')
+    expect(markup).toContain('1 tracks')
+    expect(markup).toContain('Not supported for replay on this target')
+    expect(markup).not.toContain('2 tracks')
+  })
+
   it('does not substitute replay evidence for a missing Mixture deep link', () => {
     const markup = renderToStaticMarkup(
       createElement(EvaluationExperimentForm, {

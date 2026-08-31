@@ -152,7 +152,7 @@
   }
 
   .heroCompact {
-    padding: 0.6rem 0.75rem 0.65rem;
+    padding: 0.45rem 0.75rem 0.5rem;
   }
 
   .heroCompact .eyebrow {
@@ -174,15 +174,14 @@
 
   .heroCompact .metaRow {
     display: grid;
-    grid-template-columns: auto auto auto;
-    align-items: center;
-    width: fit-content;
-    max-width: 100%;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    align-items: start;
+    width: 100%;
     margin-top: 0.4rem;
   }
 
   .heroCompact .metaItem {
-    display: inline-flex;
+    display: grid;
     flex-basis: auto;
     gap: 0.25rem;
     padding: 0 0.45rem;
@@ -197,6 +196,7 @@
   .heroCompact .metaLabel,
   .heroCompact .metaValue {
     font-size: 0.66rem;
-    white-space: nowrap;
+    overflow-wrap: anywhere;
+    white-space: normal;
   }
 }

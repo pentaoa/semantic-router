@@ -11,6 +11,7 @@ import type {
 import { buildEvaluationCampaignRequest, campaignSlotRunIDs } from './evaluationCampaignSupport'
 import type { EvaluationCampaignBuilderModel } from './useEvaluationCampaignBuilder'
 import EvaluationCampaignControlledPair from './EvaluationCampaignControlledPair'
+import { EvaluationActionButton } from './EvaluationPrimitives'
 import commonStyles from './EvaluationCampaign.module.css'
 import styles from './EvaluationCampaignBuilder.module.css'
 
@@ -198,13 +199,13 @@ export default function EvaluationCampaignBuilder({
               prevent a partial evidence decision.
             </span>
           </div>
-          <button
+          <EvaluationActionButton
             type="button"
             disabled={createPending || loadingAllRuns || !runLedgerAvailable}
             onClick={onLoadAllRuns}
           >
             {loadingAllRuns ? 'Loading full ledger…' : 'Load complete ledger'}
-          </button>
+          </EvaluationActionButton>
         </div>
       ) : null}
 
@@ -364,9 +365,14 @@ export default function EvaluationCampaignBuilder({
       {createError ? (
         <div className={`${commonStyles.inlineError} ${styles.builderNotice}`} role="alert">
           <span>{createError}</span>
-          <button type="button" disabled={createPending} onClick={onClearCreateError}>
+          <EvaluationActionButton
+            type="button"
+            compact
+            disabled={createPending}
+            onClick={onClearCreateError}
+          >
             Dismiss
-          </button>
+          </EvaluationActionButton>
         </div>
       ) : null}
       {!canCreate ? (
@@ -382,13 +388,13 @@ export default function EvaluationCampaignBuilder({
         <span>
           {model.validation || 'All catalog slot checks passed. The server will attest evidence.'}
         </span>
-        <button
+        <EvaluationActionButton
           type="submit"
-          className={styles.submitButton}
+          variant="primary"
           disabled={Boolean(model.validation) || !canCreate || createPending}
         >
           {createPending ? 'Attesting campaign…' : 'Create promotion decision'}
-        </button>
+        </EvaluationActionButton>
       </div>
     </form>
   )

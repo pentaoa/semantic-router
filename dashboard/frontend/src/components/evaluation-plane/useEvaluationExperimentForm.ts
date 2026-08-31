@@ -115,6 +115,13 @@ export default function useEvaluationExperimentForm({
       : undefined) ||
     ''
   const initialSuite = compatibleEvaluationSuites(catalog, defaultTargetID, initialMode)[0]
+  const initialTrackIDs = reconcileEvaluationScope(
+    catalog,
+    defaultTargetID,
+    initialMode,
+    initialSuite ? [initialSuite.id] : [],
+    initialSuite?.track_ids || [],
+  ).trackIDs
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
   const [mode, setMode] = useState<EvaluationMode>(initialMode)
@@ -123,7 +130,7 @@ export default function useEvaluationExperimentForm({
   )
   const [targetID, setTargetID] = useState(defaultTargetID)
   const [suiteIDs, setSuiteIDs] = useState<string[]>(initialSuite ? [initialSuite.id] : [])
-  const [trackIDs, setTrackIDs] = useState<EvaluationTrackId[]>(initialSuite?.track_ids || [])
+  const [trackIDs, setTrackIDs] = useState<EvaluationTrackId[]>(initialTrackIDs)
   const [sampleLimit, setSampleLimit] = useState(100)
   const [concurrency, setConcurrency] = useState(4)
   const [capacitySLOInput, setCapacitySLOInput] =
@@ -141,7 +148,15 @@ export default function useEvaluationExperimentForm({
     setMode('live')
     setTargetID(requestedTarget.id)
     setSuiteIDs(suite ? [suite.id] : [])
-    setTrackIDs(suite?.track_ids || [])
+    setTrackIDs(
+      reconcileEvaluationScope(
+        catalog,
+        requestedTarget.id,
+        'live',
+        suite ? [suite.id] : [],
+        suite?.track_ids || [],
+      ).trackIDs,
+    )
   }, [baselineRunID, catalog, pending, requestedTarget])
 
   const availableTrackIDs = useMemo(

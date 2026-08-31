@@ -4,7 +4,7 @@ import type { EvaluationRun } from '../../types/evaluationPlane'
 import type { EvaluationCampaign } from '../../types/evaluationCampaign'
 import { TRACK_PRESENTATION } from '../../types/evaluationPlane'
 import ProductIcon from '../ProductIcon'
-import { GateVerdictBadge } from './EvaluationPrimitives'
+import { EvaluationActionButton, GateVerdictBadge } from './EvaluationPrimitives'
 import commonStyles from './EvaluationCampaign.module.css'
 import styles from './EvaluationCampaignDecisionLayout.module.css'
 import evidenceStyles from './EvaluationCampaignEvidence.module.css'
@@ -142,9 +142,9 @@ export default function EvaluationCampaignDecision({
         </div>
         <div className={styles.decisionHeroActions}>
           <GateVerdictBadge verdict={decision.verdict} disposition="required" />
-          <button type="button" className={commonStyles.secondaryButton} onClick={onStartAnother}>
+          <EvaluationActionButton type="button" onClick={onStartAnother}>
             Build another campaign
-          </button>
+          </EvaluationActionButton>
         </div>
       </header>
 

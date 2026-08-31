@@ -4,7 +4,7 @@ import EvaluationGateList from './EvaluationGateList'
 import EvaluationMetricTable from './EvaluationMetricTable'
 import EvaluationComparisonStatistics from './EvaluationComparisonStatistics'
 import { effectiveGateVerdict } from './evaluationPresentation'
-import { GateVerdictBadge } from './EvaluationPrimitives'
+import { EvaluationActionButton, GateVerdictBadge } from './EvaluationPrimitives'
 import { cohortMismatches, eligibleComparisonCandidates } from './evaluationRunSupport'
 import styles from './EvaluationCompare.module.css'
 import disclosureStyles from './EvaluationReportDisclosures.module.css'
@@ -123,13 +123,18 @@ export default function EvaluationCompare({
             />
             <small id="evaluation-baseline-help">Read-only scientific lineage</small>
           </label>
-          <button type="button" disabled={invalidPair || loading} onClick={onCompare}>
+          <EvaluationActionButton
+            type="button"
+            variant="primary"
+            disabled={invalidPair || loading}
+            onClick={onCompare}
+          >
             {resourcesLoading
               ? 'Loading run identities…'
               : loading
                 ? 'Comparing paired evidence…'
                 : 'Compare paired evidence'}
-          </button>
+          </EvaluationActionButton>
         </div>
       </section>
 
@@ -147,9 +152,9 @@ export default function EvaluationCompare({
       {resourcesError ? (
         <div className={heroStyles.error} role="alert">
           <span>{resourcesError}</span>
-          <button type="button" onClick={onRetryResources}>
+          <EvaluationActionButton type="button" compact onClick={onRetryResources}>
             Retry run identities
-          </button>
+          </EvaluationActionButton>
         </div>
       ) : null}
       {runLedgerAvailable && runLedgerComplete && hasMoreRuns ? (
@@ -157,9 +162,14 @@ export default function EvaluationCompare({
           <span>
             Candidate selection covers {runs.length} of {totalRuns} loaded runs.
           </span>
-          <button type="button" disabled={loadingMoreRuns} onClick={onLoadMoreRuns}>
+          <EvaluationActionButton
+            type="button"
+            compact
+            disabled={loadingMoreRuns}
+            onClick={onLoadMoreRuns}
+          >
             {loadingMoreRuns ? 'Loading older runs…' : 'Load older candidates'}
-          </button>
+          </EvaluationActionButton>
         </div>
       ) : null}
       {runLedgerAvailable &&
@@ -173,9 +183,9 @@ export default function EvaluationCompare({
             <p>Create a new run from a completed baseline; the form pins the exact cohort.</p>
           </div>
           {onCreateRun ? (
-            <button type="button" onClick={onCreateRun}>
+            <EvaluationActionButton type="button" variant="primary" onClick={onCreateRun}>
               Create candidate run
-            </button>
+            </EvaluationActionButton>
           ) : null}
         </div>
       ) : null}

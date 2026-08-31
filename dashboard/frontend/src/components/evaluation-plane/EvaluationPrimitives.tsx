@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import type { ButtonHTMLAttributes, ReactNode } from 'react'
 
 import type {
   EvaluationRunStatus,
@@ -21,6 +21,26 @@ import {
 } from './evaluationPresentation'
 import overviewStyles from './EvaluationOverview.module.css'
 import styles from './EvaluationPlane.module.css'
+
+interface EvaluationActionButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
+  variant?: 'primary' | 'secondary'
+  compact?: boolean
+}
+
+export function EvaluationActionButton({
+  variant = 'secondary',
+  compact = false,
+  className = '',
+  ...props
+}: EvaluationActionButtonProps) {
+  const variantClass = variant === 'primary' ? styles.primaryButton : styles.secondaryButton
+  return (
+    <button
+      {...props}
+      className={`${variantClass} ${compact ? styles.compactButton : ''} ${className}`.trim()}
+    />
+  )
+}
 
 export function RunStatusBadge({
   status,

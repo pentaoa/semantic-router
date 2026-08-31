@@ -164,6 +164,12 @@
   height: 15px;
 }
 
+.compactButton {
+  min-height: 34px;
+  padding: 0.38rem 0.65rem;
+  font-size: 0.72rem;
+}
+
 .schemaBadge,
 .badge,
 .chip {

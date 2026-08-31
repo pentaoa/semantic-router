@@ -137,34 +137,6 @@
   font-size: 0.75rem;
 }
 
-.actions button {
-  min-height: 42px;
-  padding: 0.6rem 1rem;
-  border: 1px solid var(--action-primary-bg);
-  border-radius: var(--radius-lg);
-  background: var(--action-primary-bg);
-  color: var(--surface-panel);
-  font-size: var(--text-xs);
-  font-weight: 720;
-  transition:
-    background var(--transition-fast),
-    transform var(--transition-fast);
-}
-
-.actions button:hover:not(:disabled) {
-  background: #fff;
-  transform: translateY(-1px);
-}
-
-.actions button:active:not(:disabled) {
-  transform: translateY(1px);
-}
-
-.actions button:disabled {
-  cursor: not-allowed;
-  opacity: 0.48;
-}
-
 .formFields:disabled,
 .formFields[aria-busy='true'] {
   cursor: wait;

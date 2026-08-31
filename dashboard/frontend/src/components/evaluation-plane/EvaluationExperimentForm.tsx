@@ -8,6 +8,7 @@ import EvaluationExperimentBudget from './EvaluationExperimentBudget'
 import EvaluationExperimentCapacitySLO from './EvaluationExperimentCapacitySLO'
 import EvaluationExperimentGateScope from './EvaluationExperimentGateScope'
 import EvaluationExperimentIdentity from './EvaluationExperimentIdentity'
+import { EvaluationActionButton } from './EvaluationPrimitives'
 import useEvaluationExperimentForm from './useEvaluationExperimentForm'
 import styles from './EvaluationForm.module.css'
 
@@ -142,9 +143,9 @@ export default function EvaluationExperimentForm({
             {selectedTarget?.mixture?.entrypoint_model || selectedTarget?.name || 'not selected'}
             {form.capacitySLOActive ? ' · capacity SLO + load protocol frozen' : ''}
           </span>
-          <button type="submit" disabled={pending}>
+          <EvaluationActionButton type="submit" variant="primary" disabled={pending}>
             {pending ? 'Creating…' : form.autoStart ? 'Create and start' : 'Create draft'}
-          </button>
+          </EvaluationActionButton>
         </div>
       </fieldset>
     </form>

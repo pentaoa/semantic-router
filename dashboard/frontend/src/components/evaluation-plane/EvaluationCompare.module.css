@@ -4,10 +4,12 @@
   align-items: end;
   gap: 1.5rem;
   min-width: 0;
-  padding: 1.25rem;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-lg);
-  background: var(--surface-panel);
+  padding: 1.15rem 0;
+  border: 0;
+  border-top: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle);
+  border-radius: 0;
+  background: transparent;
 }
 
 .compareHero h2 {
@@ -55,37 +57,15 @@
   font-size: 0.68rem;
 }
 
-.compareControls button {
-  min-height: 42px;
-  padding: 0.55rem 0.85rem;
-  border: 1px solid var(--action-primary-bg);
-  border-radius: var(--radius-lg);
-  background: var(--action-primary-bg);
-  color: var(--surface-panel);
-  font-size: var(--text-xs);
-  font-weight: 700;
-  transition:
-    transform var(--transition-fast),
-    background var(--transition-fast);
-}
-
-.compareControls button:hover:not(:disabled) {
-  background: #fff;
-  transform: translateY(-1px);
-}
-
-.compareControls button:disabled {
-  cursor: not-allowed;
-  opacity: 0.48;
-}
-
 .comparabilityStrip {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   margin: 0;
   overflow: hidden;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-lg);
+  border: 0;
+  border-top: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle);
+  border-radius: 0;
 }
 
 .comparabilityStrip > div {
@@ -123,28 +103,6 @@
   font-size: 0.72rem;
 }
 
-.selectionScope button {
-  flex: 0 0 auto;
-  min-height: 34px;
-  padding: 0.38rem 0.65rem;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-lg);
-  background: rgba(255, 255, 255, 0.035);
-  color: var(--text-primary);
-  font-size: 0.72rem;
-  font-weight: 700;
-}
-
-.selectionScope button:hover:not(:disabled) {
-  border-color: rgba(255, 255, 255, 0.28);
-  background: var(--surface-raised);
-}
-
-.selectionScope button:disabled {
-  cursor: not-allowed;
-  opacity: 0.5;
-}
-
 @media (max-width: 1050px) {
   .compareHero {
     grid-template-columns: 1fr;
@@ -172,7 +130,7 @@
 
 @media (max-width: 600px) {
   .compareHero {
-    padding: 1rem;
+    padding: 1rem 0;
   }
 
   .comparabilityStrip {
