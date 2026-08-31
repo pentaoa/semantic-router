@@ -633,11 +633,18 @@ func brokerResponseContent(payload map[string]any) *string {
 	if !ok {
 		return nil
 	}
-	content, ok := message["content"].(string)
-	if !ok {
-		return nil
+	// Reasoning models can exhaust their output budget before emitting a final
+	// content field. Their OpenAI-compatible response still carries the exact
+	// provider output in a reasoning field. Bind that text when visible content
+	// is absent so the transcript proves what the runtime actually returned;
+	// grading still uses the exact normalized text and never invents a final answer.
+	for _, field := range []string{"content", "reasoning", "reasoning_content"} {
+		content, present := message[field].(string)
+		if present {
+			return &content
+		}
 	}
-	return &content
+	return nil
 }
 
 func normalizedAnswer(value string) string {
