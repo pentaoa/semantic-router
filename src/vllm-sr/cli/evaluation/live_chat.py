@@ -24,8 +24,11 @@ def response_content(payload: dict[str, Any] | None) -> str | None:
     message = choices[0].get("message")
     if not isinstance(message, dict):
         return None
-    value = message.get("content")
-    return value if isinstance(value, str) else None
+    for field in ("content", "reasoning", "reasoning_content"):
+        value = message.get(field)
+        if isinstance(value, str):
+            return value
+    return None
 
 
 def token_usage(payload: dict[str, Any] | None) -> tuple[int | None, int | None]:

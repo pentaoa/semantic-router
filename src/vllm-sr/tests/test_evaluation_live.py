@@ -31,7 +31,7 @@ from cli.evaluation.execution_plan import (
 )
 from cli.evaluation.fixtures import fixture_inputs
 from cli.evaluation.http_client import EvaluationHTTPClient, HTTPResult
-from cli.evaluation.live_chat import grade_response
+from cli.evaluation.live_chat import grade_response, response_content
 from cli.evaluation.live_executor import (
     LiveExecutionResult,
     LiveRawResult,
@@ -89,6 +89,33 @@ def test_exact_answer_grading_normalizes_whitespace_but_preserves_case() -> None
     labels = CaseGrading(case_id="case-1", expected_answer="Au")
     assert grade_response(result("  Au\n"), labels) == 1
     assert grade_response(result("au"), labels) == 0
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    (
+        (
+            {
+                "content": "final answer",
+                "reasoning": "hidden reasoning",
+                "reasoning_content": "alternate reasoning",
+            },
+            "final answer",
+        ),
+        ({"content": None, "reasoning": "hidden reasoning"}, "hidden reasoning"),
+        (
+            {"content": None, "reasoning": None, "reasoning_content": "fallback"},
+            "fallback",
+        ),
+        ({"content": "", "reasoning": "must not replace empty content"}, ""),
+        ({}, None),
+    ),
+)
+def test_response_content_uses_exact_broker_field_precedence(
+    message: dict[str, Any], expected: str | None
+) -> None:
+    payload = {"choices": [{"message": message}]}
+    assert response_content(payload) == expected
 
 
 class FakeResponse:
