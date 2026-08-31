@@ -1240,6 +1240,7 @@ function evaluationCampaign(request: CreateEvaluationCampaignPayload): Evaluatio
 }
 
 interface MockEvaluationPlaneOptions {
+  catalog?: EvaluationCatalog
   mutationDelayMs?: number
   campaignGetDelayMs?: number
   catalogDelayMs?: number
@@ -1415,7 +1416,7 @@ export async function mockEvaluationPlane(
 
   await page.route('**/api/evaluation/v1/catalog', async (route) => {
     await new Promise<void>((resolve) => setTimeout(resolve, options.catalogDelayMs || 0))
-    await fulfillJSON(route, 200, evaluationCatalog)
+    await fulfillJSON(route, 200, options.catalog ?? evaluationCatalog)
   })
   await page.route('**/api/evaluation/v1/controlled-pairs', async (route) => {
     if (route.request().method() !== 'POST') {

@@ -49,6 +49,15 @@ const EVENT_TYPE_SET = new Set([
   'cancelled',
 ])
 
+function runUsesMoMCohortReplay(mode: unknown, suiteIDs: unknown): boolean {
+  return (
+    mode === 'replay' &&
+    Array.isArray(suiteIDs) &&
+    suiteIDs.length === 1 &&
+    suiteIDs[0] === 'live-mom-core'
+  )
+}
+
 function isProtocolText(value: unknown, allowEmpty: boolean): value is string {
   return (
     typeof value === 'string' &&
@@ -100,8 +109,7 @@ function isTrackEvidenceLevels(value: unknown, trackIDs: unknown, headline: unkn
     keys.length !== trackIDs.length ||
     keys.some(
       (trackID) =>
-        !trackIDs.includes(trackID) ||
-        !isKnownValue(value[trackID], EVALUATION_EVIDENCE_LEVEL_SET),
+        !trackIDs.includes(trackID) || !isKnownValue(value[trackID], EVALUATION_EVIDENCE_LEVEL_SET),
     )
   ) {
     return false
@@ -168,7 +176,11 @@ export function decodeEvaluationRun(payload: unknown, expectedID?: string): Eval
     !isKnownValue(payload.status, RUN_STATUS_SET) ||
     !isKnownValue(payload.mode, EVALUATION_MODE_SET) ||
     !isKnownValue(payload.evidence_level, EVALUATION_EVIDENCE_LEVEL_SET) ||
-    !isTrackEvidenceLevels(payload.track_evidence_levels, payload.track_ids, payload.evidence_level) ||
+    !isTrackEvidenceLevels(
+      payload.track_evidence_levels,
+      payload.track_ids,
+      payload.evidence_level,
+    ) ||
     !isNonEmptyText(payload.target_id) ||
     (payload.mixture !== undefined && !isEvaluationMixture(payload.mixture)) ||
     !isKnownValue(payload.change_profile, EVALUATION_CHANGE_PROFILE_SET) ||
@@ -191,8 +203,12 @@ export function decodeEvaluationRun(payload: unknown, expectedID?: string): Eval
   ) {
     throw new Error('Evaluation run response is incomplete.')
   }
-  if ((payload.mode === 'live') !== (payload.mixture !== undefined)) {
-    throw new Error('Evaluation run does not bind exactly one live Mixture snapshot.')
+  const requiresMixture =
+    payload.mode === 'live' || runUsesMoMCohortReplay(payload.mode, payload.suite_ids)
+  if (requiresMixture !== (payload.mixture !== undefined)) {
+    throw new Error(
+      'Evaluation run does not bind exactly one Mixture snapshot for live or MoM cohort execution.',
+    )
   }
   if (payload.client_request_id !== payload.id) {
     throw new Error('Evaluation run identity does not match the current contract.')

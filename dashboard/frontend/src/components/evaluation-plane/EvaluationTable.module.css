@@ -1,10 +1,14 @@
 .tableScroll {
+  box-sizing: border-box;
   width: 100%;
+  min-width: 0;
+  max-width: 100%;
   overflow-x: auto;
   overscroll-behavior-inline: contain;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
   scrollbar-gutter: stable;
+  contain: inline-size;
 }
 
 .readinessTable {

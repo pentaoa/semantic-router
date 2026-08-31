@@ -51,6 +51,31 @@ const run: EvaluationRun = {
   completed_at: '2026-08-30T00:01:00Z',
 }
 
+const mixture = {
+  id: 'mom-live',
+  entrypoint_model: 'quality-router',
+  aliases: ['quality-router'],
+  recipe_name: 'quality',
+  recipe_description: 'Quality routing',
+  recipe_digest: `sha256:${'1'.repeat(64)}`,
+  pool_digest: `sha256:${'2'.repeat(64)}`,
+  selector_policy_digest: `sha256:${'3'.repeat(64)}`,
+  selector_digest: `sha256:${'4'.repeat(64)}`,
+  adaptation_digest: `sha256:${'5'.repeat(64)}`,
+  binding_digest: `sha256:${'6'.repeat(64)}`,
+  model_arms: [
+    {
+      id: 'arm-a',
+      model: 'model-a',
+      provider_model_id_digest: `sha256:${'7'.repeat(64)}`,
+      input_cost_per_million_tokens_usd: 1,
+      output_cost_per_million_tokens_usd: 2,
+    },
+  ],
+  support_models: [],
+  decisions: [{ name: 'route', algorithm: 'semantic', arm_ids: ['arm-a'] }],
+}
+
 describe('evaluation current-contract codec', () => {
   it('requires one explicit executor per advertised suite mode', () => {
     const catalog = {
@@ -235,6 +260,43 @@ describe('evaluation current-contract codec', () => {
     expect(() => decodeEvaluationRun({ ...run, retired_status: 'ready' }, RUN_ID)).toThrow(
       /run response is incomplete/i,
     )
+  })
+
+  it('binds Mixture snapshots to live runs and the exact MoM cohort replay only', () => {
+    const cohortReplay = {
+      ...run,
+      target_id: mixture.id,
+      suite_ids: ['live-mom-core'],
+      mixture,
+    }
+    const liveRun = { ...cohortReplay, mode: 'live' }
+    expect(decodeEvaluationRun(liveRun, RUN_ID)).toEqual(liveRun)
+    expect(
+      decodeEvaluationRunLedger({
+        schema_version: 'evaluation.v1',
+        runs: [cohortReplay],
+        total_runs: 1,
+        ledger_complete: true,
+        warning_count: 0,
+        warnings: [],
+      }).runs,
+    ).toEqual([cohortReplay])
+
+    expect(() => decodeEvaluationRun({ ...cohortReplay, mixture: undefined }, RUN_ID)).toThrow(
+      /Mixture snapshot for live or MoM cohort execution/i,
+    )
+    expect(() => decodeEvaluationRun({ ...liveRun, mixture: undefined }, RUN_ID)).toThrow(
+      /Mixture snapshot for live or MoM cohort execution/i,
+    )
+    expect(() => decodeEvaluationRun({ ...run, target_id: mixture.id, mixture }, RUN_ID)).toThrow(
+      /Mixture snapshot for live or MoM cohort execution/i,
+    )
+    expect(() =>
+      decodeEvaluationRun(
+        { ...cohortReplay, suite_ids: ['live-mom-core', 'evaluation-smoke'] },
+        RUN_ID,
+      ),
+    ).toThrow(/Mixture snapshot for live or MoM cohort execution/i)
   })
 
   it('keeps ledger warning evidence identities opaque and non-navigable', () => {

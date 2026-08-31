@@ -353,6 +353,39 @@ test.describe('Evaluation Plane', () => {
     await captureEvaluationSurface(page, 'overview-desktop')
   })
 
+  test('contains long readiness evidence inside its own scroll region at 320px', async ({
+    page,
+  }) => {
+    const longDescription =
+      'Routes exact production request cohorts across a frozen Mixture-of-Models pool while preserving abstention, fallback, selector latency, and per-arm outcome provenance for release review.'
+    const longCatalog = {
+      ...evaluationCatalog,
+      tracks: evaluationCatalog.tracks.map((track) =>
+        track.id === 'routing'
+          ? {
+              ...track,
+              description: longDescription,
+            }
+          : track,
+      ),
+    }
+    await page.setViewportSize({ width: 320, height: 568 })
+    await mockEvaluationPlane(page, defaultEvaluationRuns, { catalog: longCatalog })
+    await page.goto('/evaluation')
+
+    const readiness = page.getByRole('region', {
+      name: 'Scrollable evaluation track readiness',
+    })
+    await expect(readiness).toBeVisible()
+    await expect(readiness).toHaveAttribute('tabindex', '0')
+    await expect(readiness.getByText(longDescription, { exact: true })).toBeVisible()
+    await expect
+      .poll(() => readiness.evaluate((element) => element.scrollWidth - element.clientWidth))
+      .toBeGreaterThan(0)
+    await expectKeyboardScrollable(readiness, 'horizontal')
+    await expectNoHorizontalOverflow(page)
+  })
+
   test('keeps the initial loading boundary until catalog and durable ledger both settle', async ({
     page,
   }) => {
