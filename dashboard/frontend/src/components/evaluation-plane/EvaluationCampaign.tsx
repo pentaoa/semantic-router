@@ -76,8 +76,8 @@ export default function EvaluationCampaign({
           <h2>Promotion campaign</h2>
           <p>
             Bind completed evidence to the server catalog&apos;s gate slots, then publish one
-            immutable, server-attested release decision. A run comparison below remains diagnostic
-            and cannot substitute for this campaign.
+            immutable, server-attested release decision. The paired run comparison remains
+            diagnostic and cannot substitute for this campaign.
           </p>
         </div>
         <span className={styles.contractBadge}>{EVALUATION_CAMPAIGN_CONTRACT_VERSION}</span>

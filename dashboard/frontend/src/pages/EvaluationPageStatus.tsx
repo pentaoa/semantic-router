@@ -1,4 +1,5 @@
 import type { EvaluationRunLedgerWarning } from '../types/evaluationPlane'
+import { EvaluationActionButton } from '../components/evaluation-plane/EvaluationPrimitives'
 import styles from './EvaluationPage.module.css'
 
 interface EvaluationPageStatusProps {
@@ -56,9 +57,9 @@ export default function EvaluationPageStatus({
       {hasCatalog && (catalogError || runsError) ? (
         <div className={styles.staleBanner} role="status">
           <span>{refreshIssue}</span>
-          <button type="button" disabled={refreshing} onClick={onRefresh}>
+          <EvaluationActionButton type="button" compact disabled={refreshing} onClick={onRefresh}>
             {refreshing ? 'Retrying…' : 'Retry refresh'}
-          </button>
+          </EvaluationActionButton>
         </div>
       ) : null}
       {runsLoaded && !runLedgerComplete && runLedgerWarningCount > 0 ? (
@@ -97,9 +98,9 @@ export default function EvaluationPageStatus({
       {mutationError ? (
         <div className={styles.errorBanner} role="alert">
           <span>{mutationError}</span>
-          <button type="button" onClick={onClearMutationError}>
+          <EvaluationActionButton type="button" compact onClick={onClearMutationError}>
             Dismiss
-          </button>
+          </EvaluationActionButton>
         </div>
       ) : null}
     </>

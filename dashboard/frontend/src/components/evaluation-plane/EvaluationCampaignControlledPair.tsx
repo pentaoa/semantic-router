@@ -12,6 +12,7 @@ import {
   controlledPairBaselineSourceOptions,
   controlledPairCandidateSourceOptions,
 } from './evaluationCampaignSupport'
+import { EvaluationActionButton } from './EvaluationPrimitives'
 import styles from './EvaluationCampaignControlledPair.module.css'
 
 interface EvaluationCampaignControlledPairProps {
@@ -138,9 +139,14 @@ export default function EvaluationCampaignControlledPair({
         {pair.error ? (
           <div className={styles.error} role="alert">
             <span>{pair.error}</span>
-            <button type="button" disabled={!canCreate || busy} onClick={pair.retry}>
+            <EvaluationActionButton
+              type="button"
+              compact
+              disabled={!canCreate || busy}
+              onClick={pair.retry}
+            >
               Retry controlled pair
-            </button>
+            </EvaluationActionButton>
           </div>
         ) : null}
         {pair.status === 'ready' ? (
@@ -158,8 +164,10 @@ export default function EvaluationCampaignControlledPair({
                   ? 'Both workers must finish before their run identities enter the evidence matrix.'
                   : selectionRationale}
             </span>
-            <button
+            <EvaluationActionButton
               type="button"
+              compact
+              variant="primary"
               disabled={!canCreate || disabled || busy || !sourceReady}
               onClick={() => void pair.create(baselineSourceID, candidateSourceID)}
             >
@@ -170,7 +178,7 @@ export default function EvaluationCampaignControlledPair({
                   : pair.status === 'running'
                     ? 'Controlled pair running…'
                     : 'Launch controlled pair'}
-            </button>
+            </EvaluationActionButton>
           </div>
         ) : null}
       </div>

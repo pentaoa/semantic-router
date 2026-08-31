@@ -1,6 +1,7 @@
 import type { EvaluationRun, EvaluationRunEvent } from '../../types/evaluationPlane'
 import { TRACK_PRESENTATION } from '../../types/evaluationPlane'
 import { formatDateTime } from '../../utils/dateTime'
+import { EvaluationActionButton } from './EvaluationPrimitives'
 import planeStyles from './EvaluationPlane.module.css'
 import styles from './EvaluationRuns.module.css'
 
@@ -46,9 +47,9 @@ export default function EvaluationRunTimeline({
             <strong>Live stream unavailable</strong>
             <span>{error}</span>
           </div>
-          <button type="button" className={planeStyles.secondaryButton} onClick={onReconnect}>
+          <EvaluationActionButton type="button" compact onClick={onReconnect}>
             Reconnect stream
-          </button>
+          </EvaluationActionButton>
         </div>
       ) : null}
       {events.length === 0 ? (

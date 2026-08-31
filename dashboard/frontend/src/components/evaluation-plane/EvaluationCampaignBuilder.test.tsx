@@ -66,7 +66,7 @@ const catalog: EvaluationCatalog = {
 }
 
 describe('EvaluationCampaignBuilder workspace', () => {
-  it('renders one compact evidence matrix, progressive context, and one primary submit action', () => {
+  it('keeps expert evidence mapping progressively disclosed behind a readiness summary', () => {
     const markup = renderToStaticMarkup(
       createElement(EvaluationCampaign, {
         catalog,
@@ -92,6 +92,10 @@ describe('EvaluationCampaignBuilder workspace', () => {
     )
 
     expect(markup).toContain('aria-label="Campaign evidence slots"')
+    expect(markup).toContain('aria-label="Promotion readiness summary"')
+    expect(markup).toContain('Review / customize evidence')
+    expect(markup).toContain('1 required slot still needs evidence')
+    expect(markup).not.toContain('<details open=""')
     expect(markup).toContain('<table')
     expect(markup).toContain('<th scope="col">Gate slot</th>')
     expect(markup).toContain('G3 · Controlled paired-live value')

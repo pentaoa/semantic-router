@@ -95,59 +95,66 @@ export default function EvaluationCompareWorkspace({
     })
   }
 
+  const campaignPanel = (
+    <EvaluationCampaign
+      catalog={catalog}
+      runs={runs}
+      totalRuns={totalRuns}
+      runLedgerAvailable={runLedgerAvailable}
+      runLedgerComplete={runLedgerComplete}
+      allRunsLoaded={runLedgerAvailable && !hasMoreRuns && runs.length === totalRuns}
+      loadingAllRuns={loadingAllRuns}
+      canCreate={canCreateCampaign}
+      createPending={campaignCreateState.pending}
+      createError={campaignCreateState.error}
+      campaign={campaign}
+      campaignLoading={campaignState.loading && !campaign}
+      campaignError={campaignState.error}
+      onLoadAllRuns={() => (hasMoreRuns ? onLoadAllRuns() : onRefreshRuns())}
+      onRefreshRuns={onRefreshRuns}
+      onCreate={async (request) => {
+        const created = await campaignCreateState.create(request)
+        if (created) updateRoute(baselineRunID || null, candidateRunID || null, created.id)
+        return created
+      }}
+      onClearCreateError={campaignCreateState.clearError}
+      onRetryCampaign={() => void campaignState.refresh()}
+      onClearCampaign={() => {
+        campaignCreateState.reset()
+        updateRoute(baselineRunID || null, candidateRunID || null, null)
+      }}
+    />
+  )
+  const comparisonPanel = (
+    <EvaluationCompare
+      runs={comparisonRuns}
+      baselineID={baselineRunID}
+      candidateID={candidateRunID}
+      comparison={comparisonState.comparison}
+      runLedgerAvailable={runLedgerAvailable}
+      runLedgerComplete={runLedgerComplete}
+      totalRuns={totalRuns}
+      hasMoreRuns={hasMoreRuns}
+      loadingMoreRuns={loadingMoreRuns}
+      resourcesLoading={baselineState.loading || candidateState.loading}
+      resourcesError={baselineState.error || candidateState.error}
+      loading={comparisonState.loading}
+      error={comparisonState.error}
+      onPairChange={(candidate, baseline) => updateRoute(baseline, candidate, route.campaignID)}
+      onCompare={() => void comparisonState.compare()}
+      onLoadMoreRuns={onLoadMoreRuns}
+      onRetryResources={() => {
+        void baselineState.refresh()
+        void candidateState.refresh()
+      }}
+      onCreateRun={onCreateRun}
+    />
+  )
+
   return (
     <div className={styles.compareWorkspace}>
-      <EvaluationCampaign
-        catalog={catalog}
-        runs={runs}
-        totalRuns={totalRuns}
-        runLedgerAvailable={runLedgerAvailable}
-        runLedgerComplete={runLedgerComplete}
-        allRunsLoaded={runLedgerAvailable && !hasMoreRuns && runs.length === totalRuns}
-        loadingAllRuns={loadingAllRuns}
-        canCreate={canCreateCampaign}
-        createPending={campaignCreateState.pending}
-        createError={campaignCreateState.error}
-        campaign={campaign}
-        campaignLoading={campaignState.loading && !campaign}
-        campaignError={campaignState.error}
-        onLoadAllRuns={() => (hasMoreRuns ? onLoadAllRuns() : onRefreshRuns())}
-        onRefreshRuns={onRefreshRuns}
-        onCreate={async (request) => {
-          const created = await campaignCreateState.create(request)
-          if (created) updateRoute(baselineRunID || null, candidateRunID || null, created.id)
-          return created
-        }}
-        onClearCreateError={campaignCreateState.clearError}
-        onRetryCampaign={() => void campaignState.refresh()}
-        onClearCampaign={() => {
-          campaignCreateState.reset()
-          updateRoute(baselineRunID || null, candidateRunID || null, null)
-        }}
-      />
-      <EvaluationCompare
-        runs={comparisonRuns}
-        baselineID={baselineRunID}
-        candidateID={candidateRunID}
-        comparison={comparisonState.comparison}
-        runLedgerAvailable={runLedgerAvailable}
-        runLedgerComplete={runLedgerComplete}
-        totalRuns={totalRuns}
-        hasMoreRuns={hasMoreRuns}
-        loadingMoreRuns={loadingMoreRuns}
-        resourcesLoading={baselineState.loading || candidateState.loading}
-        resourcesError={baselineState.error || candidateState.error}
-        loading={comparisonState.loading}
-        error={comparisonState.error}
-        onPairChange={(candidate, baseline) => updateRoute(baseline, candidate, route.campaignID)}
-        onCompare={() => void comparisonState.compare()}
-        onLoadMoreRuns={onLoadMoreRuns}
-        onRetryResources={() => {
-          void baselineState.refresh()
-          void candidateState.refresh()
-        }}
-        onCreateRun={onCreateRun}
-      />
+      {route.campaignID ? campaignPanel : comparisonPanel}
+      {route.campaignID ? comparisonPanel : campaignPanel}
     </div>
   )
 }

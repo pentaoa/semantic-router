@@ -2,6 +2,7 @@ import { useDeferredValue, useEffect, useMemo, useState } from 'react'
 
 import type { EvidenceLevel, EvaluationTrackId } from '../../types/evaluationPlane'
 import type { EvaluationMetric } from '../../types/evaluationReport'
+import { EvaluationActionButton } from './EvaluationPrimitives'
 import { TRACK_PRESENTATION } from '../../types/evaluationPlane'
 import {
   formatConfidenceInterval,
@@ -227,23 +228,25 @@ export default function EvaluationMetricTable({
       )}
       {filtered.length > 0 && pages > 1 ? (
         <nav className={styles.metricPagination} aria-label="Metric table pages">
-          <button
+          <EvaluationActionButton
             type="button"
+            compact
             disabled={safePage === 1}
             onClick={() => setPage((value) => Math.max(1, value - 1))}
           >
             Previous
-          </button>
+          </EvaluationActionButton>
           <span>
             Page {safePage} of {pages}
           </span>
-          <button
+          <EvaluationActionButton
             type="button"
+            compact
             disabled={safePage === pages}
             onClick={() => setPage((value) => Math.min(pages, value + 1))}
           >
             Next
-          </button>
+          </EvaluationActionButton>
         </nav>
       ) : null}
     </div>

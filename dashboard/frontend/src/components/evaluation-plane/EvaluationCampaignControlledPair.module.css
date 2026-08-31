@@ -75,25 +75,6 @@
 .pairAction button,
 .error button {
   flex: 0 0 auto;
-  min-height: 36px;
-  padding: 0.42rem 0.7rem;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-lg);
-  background: transparent;
-  color: var(--text-primary);
-  font-size: 0.7rem;
-  font-weight: 700;
-}
-
-.pairAction button:hover:not(:disabled),
-.error button:hover:not(:disabled) {
-  background: var(--surface-raised);
-}
-
-.pairAction button:disabled,
-.error button:disabled {
-  cursor: not-allowed;
-  opacity: 0.48;
 }
 
 .progress {

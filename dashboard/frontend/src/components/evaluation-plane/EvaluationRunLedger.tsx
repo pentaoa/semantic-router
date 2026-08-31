@@ -5,7 +5,7 @@ import type {
 } from '../../types/evaluationPlane'
 import { EVALUATION_TRACK_IDS, TRACK_PRESENTATION } from '../../types/evaluationPlane'
 import { formatDateTime } from '../../utils/dateTime'
-import { RunStatusBadge } from './EvaluationPrimitives'
+import { EvaluationActionButton, RunStatusBadge } from './EvaluationPrimitives'
 import planeStyles from './EvaluationPlane.module.css'
 import styles from './EvaluationRuns.module.css'
 import type { EvaluationRunLedgerModel } from './useEvaluationRunLedger'
@@ -131,9 +131,9 @@ export default function EvaluationRunLedger({
             </p>
           </div>
           {filtersActive ? (
-            <button type="button" className={planeStyles.secondaryButton} onClick={resetFilters}>
+            <EvaluationActionButton type="button" compact onClick={resetFilters}>
               Reset filters
-            </button>
+            </EvaluationActionButton>
           ) : null}
         </div>
       ) : (
@@ -170,25 +170,25 @@ export default function EvaluationRunLedger({
       )}
       {pages > 1 ? (
         <nav className={styles.pagination} aria-label="Run ledger pages">
-          <button
+          <EvaluationActionButton
             type="button"
-            className={planeStyles.secondaryButton}
+            compact
             disabled={page === 1}
             onClick={() => setPage((value) => value - 1)}
           >
             Previous
-          </button>
+          </EvaluationActionButton>
           <span>
             Page {page} of {pages}
           </span>
-          <button
+          <EvaluationActionButton
             type="button"
-            className={planeStyles.secondaryButton}
+            compact
             disabled={page === pages}
             onClick={() => setPage((value) => value + 1)}
           >
             Next
-          </button>
+          </EvaluationActionButton>
         </nav>
       ) : null}
       {hasMoreRuns ? (
@@ -196,14 +196,14 @@ export default function EvaluationRunLedger({
           <span>
             {runs.length} of {totalRuns} runs loaded
           </span>
-          <button
+          <EvaluationActionButton
             type="button"
-            className={planeStyles.secondaryButton}
+            compact
             disabled={loadingMore || refreshing}
             onClick={onLoadMore}
           >
             {loadingMore ? 'Loading more…' : 'Load more'}
-          </button>
+          </EvaluationActionButton>
         </div>
       ) : null}
     </div>

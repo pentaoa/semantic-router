@@ -168,6 +168,11 @@ export default function EvaluationCampaignBuilder({
 }: EvaluationCampaignBuilderProps) {
   const g3 = model.slots.find((slot) => slot.gate_id === 'G3')
   const inputDisabled = createPending || !allRunsLoaded || !runLedgerComplete
+  const requiredSlots = model.slots.filter((slot) => slot.disposition === 'required')
+  const readyRequiredSlots = requiredSlots.filter((slot) => {
+    const ids = campaignSlotRunIDs(slot, model.draft.gateBindings)
+    return ids.length === (slot.binding_kind === 'run' ? 1 : 2)
+  }).length
   return (
     <form
       className={styles.builder}
@@ -179,14 +184,7 @@ export default function EvaluationCampaignBuilder({
       }}
     >
       <div className={styles.builderHeader}>
-        <div>
-          <span className={commonStyles.eyebrow}>Evidence composition</span>
-          <h3>Build a release decision</h3>
-          <p>
-            The server catalog defines each promotion slot. Only completed evidence satisfying its
-            mode, track, executor, and evidence boundary appears.
-          </p>
-        </div>
+        <span className={commonStyles.eyebrow}>Promotion readiness</span>
         <span className={commonStyles.contractBadge}>{totalRuns} durable runs</span>
       </div>
 
@@ -228,21 +226,19 @@ export default function EvaluationCampaignBuilder({
           </select>
           <small>{model.profile?.description || 'Current server campaign profile'}</small>
         </label>
-        <dl className={styles.profileSummary}>
+        <dl className={styles.profileSummary} aria-label="Promotion readiness summary">
           <div>
-            <dt>Required slots</dt>
-            <dd>{model.requiredSlotCount}</dd>
+            <dt>Required evidence</dt>
+            <dd>
+              {readyRequiredSlots} / {model.requiredSlotCount} bound
+            </dd>
           </div>
           <div>
-            <dt>Advisory slots</dt>
+            <dt>Optional evidence</dt>
             <dd>{model.advisorySlotCount} optional</dd>
           </div>
           <div>
-            <dt>Evidence policy</dt>
-            <dd>Server catalog</dd>
-          </div>
-          <div>
-            <dt>G3 boundary</dt>
+            <dt>Controlled pair</dt>
             <dd>
               {g3?.disposition === 'not_applicable' ? 'Not applicable' : 'Fresh controlled pair'}
             </dd>
@@ -250,80 +246,105 @@ export default function EvaluationCampaignBuilder({
         </dl>
       </div>
 
-      {g3 && g3.disposition !== 'not_applicable' && g3.disposition !== 'waived' && model.profile ? (
-        <EvaluationCampaignControlledPair
-          key={model.draft.changeProfile}
-          runs={runs}
-          catalog={catalog}
-          profile={model.profile}
-          slot={g3}
-          canCreate={canCreate}
-          disabled={inputDisabled}
-          onReady={async (execution) => {
-            if (!(await onRefreshRuns())) {
-              throw new Error(
-                'Controlled pair completed, but the durable run ledger could not be refreshed.',
-              )
-            }
-            model.applyControlledPair(execution.baseline_run.id, execution.candidate_run.id)
-          }}
-        />
-      ) : null}
+      <details className={styles.evidenceDisclosure}>
+        <summary>
+          <span>
+            <strong>Review / customize evidence</strong>
+            <small>
+              {readyRequiredSlots === requiredSlots.length
+                ? 'Required promotion evidence is assigned.'
+                : `${requiredSlots.length - readyRequiredSlots} required slot${requiredSlots.length - readyRequiredSlots === 1 ? ' still needs' : 's still need'} evidence.`}
+            </small>
+          </span>
+          <b>
+            {readyRequiredSlots}/{requiredSlots.length} ready
+          </b>
+        </summary>
+        <div className={styles.evidenceDisclosureBody}>
+          {g3 &&
+          g3.disposition !== 'not_applicable' &&
+          g3.disposition !== 'waived' &&
+          model.profile ? (
+            <EvaluationCampaignControlledPair
+              key={model.draft.changeProfile}
+              runs={runs}
+              catalog={catalog}
+              profile={model.profile}
+              slot={g3}
+              canCreate={canCreate}
+              disabled={inputDisabled}
+              onReady={async (execution) => {
+                if (!(await onRefreshRuns())) {
+                  throw new Error(
+                    'Controlled pair completed, but the durable run ledger could not be refreshed.',
+                  )
+                }
+                model.applyControlledPair(execution.baseline_run.id, execution.candidate_run.id)
+              }}
+            />
+          ) : null}
 
-      <div
-        className={styles.roleMatrixFrame}
-        role="region"
-        aria-label="Campaign evidence slots"
-        tabIndex={0}
-      >
-        <table className={styles.roleMatrix}>
-          <thead>
-            <tr>
-              <th scope="col">Gate slot</th>
-              <th scope="col">Requirement</th>
-              <th scope="col">Compatible evidence</th>
-            </tr>
-          </thead>
-          <tbody>
-            {model.slots.map((slot) => {
-              const ids = campaignSlotRunIDs(slot, model.draft.gateBindings)
-              const selected = ids.length === (slot.binding_kind === 'run' ? 1 : 2)
-              const required = slot.disposition === 'required'
-              return (
-                <tr key={slot.gate_id} data-gate={slot.gate_id} data-selected={selected}>
-                  <th scope="row">
-                    <strong>
-                      {slot.gate_id} · {slot.name}
-                    </strong>
-                    <small>{slot.description}</small>
-                  </th>
-                  <td>
-                    <span
-                      className={
-                        required ? commonStyles.requirementBadge : commonStyles.optionalBadge
-                      }
-                    >
-                      {slotDisposition(slot)}
-                    </span>
-                    <small className={selected ? styles.roleReady : styles.roleEmpty}>
-                      {selected
-                        ? 'Evidence bound'
-                        : slot.disposition === 'required'
-                          ? 'Evidence required'
-                          : slot.disposition === 'advisory'
-                            ? 'May be omitted'
-                            : 'No binding'}
-                    </small>
-                  </td>
-                  <td>
-                    <SlotBinding slot={slot} runs={runs} model={model} disabled={inputDisabled} />
-                  </td>
+          <div
+            className={styles.roleMatrixFrame}
+            role="region"
+            aria-label="Campaign evidence slots"
+            tabIndex={0}
+          >
+            <table className={styles.roleMatrix}>
+              <thead>
+                <tr>
+                  <th scope="col">Gate slot</th>
+                  <th scope="col">Requirement</th>
+                  <th scope="col">Compatible evidence</th>
                 </tr>
-              )
-            })}
-          </tbody>
-        </table>
-      </div>
+              </thead>
+              <tbody>
+                {model.slots.map((slot) => {
+                  const ids = campaignSlotRunIDs(slot, model.draft.gateBindings)
+                  const selected = ids.length === (slot.binding_kind === 'run' ? 1 : 2)
+                  const required = slot.disposition === 'required'
+                  return (
+                    <tr key={slot.gate_id} data-gate={slot.gate_id} data-selected={selected}>
+                      <th scope="row">
+                        <strong>
+                          {slot.gate_id} · {slot.name}
+                        </strong>
+                        <small>{slot.description}</small>
+                      </th>
+                      <td>
+                        <span
+                          className={
+                            required ? commonStyles.requirementBadge : commonStyles.optionalBadge
+                          }
+                        >
+                          {slotDisposition(slot)}
+                        </span>
+                        <small className={selected ? styles.roleReady : styles.roleEmpty}>
+                          {selected
+                            ? 'Evidence bound'
+                            : slot.disposition === 'required'
+                              ? 'Evidence required'
+                              : slot.disposition === 'advisory'
+                                ? 'May be omitted'
+                                : 'No binding'}
+                        </small>
+                      </td>
+                      <td>
+                        <SlotBinding
+                          slot={slot}
+                          runs={runs}
+                          model={model}
+                          disabled={inputDisabled}
+                        />
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </details>
 
       <div className={styles.formGrid}>
         <label className={styles.field}>

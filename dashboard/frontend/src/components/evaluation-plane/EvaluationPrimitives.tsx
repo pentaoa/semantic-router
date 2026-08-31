@@ -23,7 +23,7 @@ import overviewStyles from './EvaluationOverview.module.css'
 import styles from './EvaluationPlane.module.css'
 
 interface EvaluationActionButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
-  variant?: 'primary' | 'secondary'
+  variant?: 'primary' | 'secondary' | 'quiet' | 'danger'
   compact?: boolean
 }
 
@@ -33,7 +33,12 @@ export function EvaluationActionButton({
   className = '',
   ...props
 }: EvaluationActionButtonProps) {
-  const variantClass = variant === 'primary' ? styles.primaryButton : styles.secondaryButton
+  const variantClass = {
+    primary: styles.primaryButton,
+    secondary: styles.secondaryButton,
+    quiet: styles.quietButton,
+    danger: styles.dangerButton,
+  }[variant]
   return (
     <button
       {...props}

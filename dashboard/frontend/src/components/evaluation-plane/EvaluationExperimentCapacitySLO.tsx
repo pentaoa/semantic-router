@@ -1,5 +1,6 @@
 import type { EvaluationCapacitySLOInput } from './useEvaluationExperimentForm'
 import type { EvaluationExperimentFormModel } from './useEvaluationExperimentForm'
+import { EvaluationActionButton } from './EvaluationPrimitives'
 import EvaluationExperimentSectionHeading from './EvaluationExperimentSectionHeading'
 import styles from './EvaluationCapacitySLO.module.css'
 import sectionStyles from './EvaluationExperimentSection.module.css'
@@ -120,10 +121,15 @@ export default function EvaluationExperimentCapacitySLO({
             </small>
           </div>
           {CAPACITY_SLO_PRESETS.map((preset) => (
-            <button key={preset.id} type="button" onClick={() => applyPreset(preset)}>
+            <EvaluationActionButton
+              key={preset.id}
+              type="button"
+              variant="quiet"
+              onClick={() => applyPreset(preset)}
+            >
               <strong>{preset.label}</strong>
               <small>{preset.description}</small>
-            </button>
+            </EvaluationActionButton>
           ))}
         </div>
       ) : null}

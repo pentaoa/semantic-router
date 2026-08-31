@@ -95,8 +95,7 @@
   margin-bottom: 1rem;
 }
 
-.sloPresets > div,
-.sloPresets button {
+.sloPresets > div {
   display: grid;
   align-content: center;
   gap: 0.18rem;
@@ -116,23 +115,12 @@
 }
 
 .sloPresets button {
-  color: inherit;
-  cursor: pointer;
-  transition:
-    border-color var(--transition-fast),
-    background var(--transition-fast),
-    transform var(--transition-fast);
-}
-
-.sloPresets button:hover:not(:disabled) {
-  border-color: var(--border-strong);
-  background: var(--surface-raised);
-  transform: translateY(-1px);
-}
-
-.sloPresets button:disabled {
-  cursor: not-allowed;
-  opacity: 0.48;
+  display: grid;
+  align-content: center;
+  gap: 0.18rem;
+  min-width: 0;
+  min-height: 62px;
+  text-align: left;
 }
 
 .sloPresets button strong {

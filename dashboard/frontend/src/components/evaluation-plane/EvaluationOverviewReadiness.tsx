@@ -3,7 +3,7 @@ import { formatDateTime } from '../../utils/dateTime'
 import type { EvaluationView } from './EvaluationNavigation'
 import styles from './EvaluationOverview.module.css'
 import type { EvaluationOverviewModel } from './evaluationOverview'
-import { GateVerdictBadge } from './EvaluationPrimitives'
+import { EvaluationActionButton, GateVerdictBadge } from './EvaluationPrimitives'
 import planeStyles from './EvaluationPlane.module.css'
 
 interface EvaluationOverviewReadinessProps {
@@ -51,20 +51,12 @@ export default function EvaluationOverviewReadiness({
           {model.latestVerdict ? (
             <GateVerdictBadge verdict={model.latestVerdict} disposition="required" />
           ) : null}
-          <button
-            type="button"
-            className={planeStyles.primaryButton}
-            onClick={() => onNavigate('new')}
-          >
+          <EvaluationActionButton type="button" variant="primary" onClick={() => onNavigate('new')}>
             New experiment
-          </button>
-          <button
-            type="button"
-            className={planeStyles.secondaryButton}
-            onClick={() => onNavigate('runs')}
-          >
+          </EvaluationActionButton>
+          <EvaluationActionButton type="button" onClick={() => onNavigate('runs')}>
             Inspect runs
-          </button>
+          </EvaluationActionButton>
         </div>
       </section>
 

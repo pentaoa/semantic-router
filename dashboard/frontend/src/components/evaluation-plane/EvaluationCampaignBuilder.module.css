@@ -8,23 +8,9 @@
 
 .builderHeader {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 1rem;
-}
-
-.builderHeader h3 {
-  margin: 0.25rem 0 0;
-  color: var(--text-primary);
-  letter-spacing: -0.025em;
-}
-
-.builderHeader p {
-  max-width: 56rem;
-  margin: 0.35rem 0 0;
-  color: var(--text-secondary);
-  font-size: var(--text-xs);
-  line-height: 1.55;
 }
 
 .profileGrid {
@@ -72,11 +58,82 @@
 
 .profileSummary {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0;
   padding: 0;
   border-top: 1px solid var(--border-subtle);
   border-bottom: 1px solid var(--border-subtle);
+}
+
+.evidenceDisclosure {
+  min-width: 0;
+  margin-top: 0.9rem;
+  border-top: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.evidenceDisclosure > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.8rem 0;
+  cursor: pointer;
+  list-style: none;
+}
+
+.evidenceDisclosure > summary::-webkit-details-marker {
+  display: none;
+}
+
+.evidenceDisclosure > summary::after {
+  width: 0.45rem;
+  height: 0.45rem;
+  flex: 0 0 auto;
+  border-right: 1.5px solid var(--text-secondary);
+  border-bottom: 1.5px solid var(--text-secondary);
+  content: '';
+  transform: rotate(45deg) translate(-0.1rem, -0.1rem);
+  transition: transform var(--transition-fast);
+}
+
+.evidenceDisclosure[open] > summary {
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.evidenceDisclosure[open] > summary::after {
+  transform: rotate(225deg) translate(-0.05rem, -0.05rem);
+}
+
+.evidenceDisclosure > summary:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 4px;
+}
+
+.evidenceDisclosure > summary span {
+  display: grid;
+  gap: 0.15rem;
+}
+
+.evidenceDisclosure > summary strong {
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+}
+
+.evidenceDisclosure > summary small,
+.evidenceDisclosure > summary b {
+  color: var(--text-muted);
+  font-size: 0.7rem;
+}
+
+.evidenceDisclosure > summary b {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-weight: 650;
+}
+
+.evidenceDisclosureBody {
+  padding-bottom: 0.9rem;
 }
 
 .profileSummary > div {
@@ -108,7 +165,7 @@
   min-width: 0;
   max-width: 100%;
   contain: inline-size;
-  margin-top: 0.85rem;
+  margin-top: 0;
   overflow-x: auto;
   overscroll-behavior-inline: contain;
   border: 1px solid var(--border-subtle);
@@ -322,6 +379,10 @@
 
   .profileSummary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .evidenceDisclosure > summary {
+    align-items: flex-start;
   }
 
   .profileSummary > div:nth-child(odd) {

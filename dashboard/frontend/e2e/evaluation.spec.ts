@@ -85,6 +85,22 @@ async function expectPageBottomReachable(page: Page) {
     .toBe(true)
 }
 
+async function expectEvaluationBottomGutter(page: Page) {
+  const panel = page.getByRole('tabpanel')
+  await expect(panel).toBeVisible()
+  const geometry = await panel.evaluate((element) => {
+    const panelRect = element.getBoundingClientRect()
+    const lastChild = element.lastElementChild
+    const lastRect = lastChild?.getBoundingClientRect()
+    return {
+      paddingBottom: Number.parseFloat(getComputedStyle(element).paddingBottom),
+      contentGap: lastRect ? panelRect.bottom - lastRect.bottom : 0,
+    }
+  })
+  expect(geometry.paddingBottom).toBeGreaterThanOrEqual(31)
+  expect(geometry.contentGap).toBeGreaterThanOrEqual(geometry.paddingBottom - 1)
+}
+
 async function expectDialogBottomReachable(page: Page, dialog: Locator) {
   await expect(dialog).toBeVisible()
   await expect
@@ -262,6 +278,7 @@ async function expectResponsiveEvaluationSurface(
   }
   await expectScrollRegionsKeyboardReachable(page)
   await expectPageBottomReachable(page)
+  await expectEvaluationBottomGutter(page)
   await captureEvaluationSurface(page, `${surface.capture}-${viewportName}-bottom`)
 }
 
@@ -399,6 +416,65 @@ test.describe('Evaluation Plane', () => {
 
     await expect(page.getByText('Loading evaluation plane', { exact: true })).toHaveCount(0)
     await expect(page.getByText('Decision readiness', { exact: true })).toBeVisible()
+  })
+
+  test('keeps evidence navigation available while suppressing run mutations in read-only mode', async ({
+    page,
+  }) => {
+    await mockAuthenticatedAppShell(page, {
+      user: evalUser,
+      settings: { readonlyMode: true, serverReadonly: true },
+    })
+    await mockEvaluationPlane(page)
+    await page.goto(`/evaluation?view=runs&run=${EVALUATION_RUN_IDS.candidate}`)
+
+    await expect(page.getByText(/Server read-only policy disables creation/i)).toBeVisible()
+    await expect(
+      page.getByRole('button', { name: `Open report for Candidate recipe` }),
+    ).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Delete Candidate recipe' })).toHaveCount(0)
+    await page.getByRole('button', { name: `Open report for Candidate recipe` }).click()
+    await expect(page.getByRole('heading', { name: 'Candidate recipe' })).toBeVisible()
+  })
+
+  test('exposes advanced promotion evidence with a discoverable touch disclosure at 320px', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 320, height: 568 })
+    await mockEvaluationPlane(page)
+    await page.goto('/evaluation?view=compare')
+
+    const disclosure = page.locator('details').filter({
+      has: page.getByText('Review / customize evidence', { exact: true }),
+    })
+    const summary = disclosure.locator('summary')
+    await expect(disclosure).not.toHaveAttribute('open', '')
+    await expect
+      .poll(() => summary.evaluate((element) => getComputedStyle(element, '::after').content))
+      .not.toBe('none')
+    await summary.click()
+    await expect(disclosure).toHaveAttribute('open', '')
+    await expect(page.getByRole('region', { name: 'Campaign evidence slots' })).toBeVisible()
+    await expectNoHorizontalOverflow(page)
+    await summary.click()
+    await expect(disclosure).not.toHaveAttribute('open', '')
+  })
+
+  test('keeps native radio and checkbox inline width outside the shared field skin', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 320, height: 568 })
+    await mockEvaluationPlane(page)
+    await page.goto('/evaluation?view=new')
+
+    for (const control of [page.getByRole('radio').first(), page.getByRole('checkbox').first()]) {
+      await expect(control).toBeVisible()
+      await control.hover()
+      await control.focus()
+      const width = await control.evaluate((element) => element.getBoundingClientRect().width)
+      expect(width).toBeLessThanOrEqual(24)
+    }
+    await expectNoHorizontalOverflow(page)
   })
 
   test('loads the run ledger incrementally without hiding the server total', async ({ page }) => {
@@ -1218,6 +1294,18 @@ test.describe('Evaluation Plane', () => {
     await expect(
       page.getByText(/scientific diagnostic does not issue a promotion decision/i),
     ).toBeVisible()
+    const evidenceDisclosure = page.locator('details').filter({
+      has: page.getByText('Review / customize evidence', { exact: true }),
+    })
+    await expect(page.getByLabel('Controlled pair baseline source')).not.toBeVisible()
+    await evidenceDisclosure.locator('summary').focus()
+    await evidenceDisclosure.locator('summary').press('Enter')
+    await expect(evidenceDisclosure).toHaveAttribute('open', '')
+    await expect(page.getByLabel('Controlled pair baseline source')).toBeVisible()
+    await evidenceDisclosure.locator('summary').press('Enter')
+    await expect(evidenceDisclosure).not.toHaveAttribute('open', '')
+    await evidenceDisclosure.locator('summary').press('Enter')
+    await expect(evidenceDisclosure).toHaveAttribute('open', '')
     await page
       .getByLabel('Controlled pair baseline source')
       .selectOption(EVALUATION_RUN_IDS.baselineLive)
@@ -1412,7 +1500,7 @@ test.describe('Evaluation Plane', () => {
     })
 
     await page.getByRole('button', { name: 'Build another campaign' }).click()
-    await expect(page.getByRole('heading', { name: 'Build a release decision' })).toBeVisible()
+    await expect(page.getByText('Promotion readiness', { exact: true })).toBeVisible()
     await expect(page.getByLabel('Campaign name')).toHaveValue('')
     await expect.poll(() => new URL(page.url()).searchParams.get('campaign')).toBeNull()
     await expectNoHorizontalOverflow(page)

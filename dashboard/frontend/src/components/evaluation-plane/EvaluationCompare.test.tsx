@@ -108,5 +108,7 @@ describe('EvaluationCompare evidence labels', () => {
     expect(markup).toContain('Case normalized regret')
     expect(markup).toContain('Needs at least 20 independent case units; observed 4.')
     expect(markup).toContain('Not estimable')
+    expect(markup.match(/<select/g)).toHaveLength(1)
+    expect(markup).toContain('Read-only scientific lineage')
   })
 })

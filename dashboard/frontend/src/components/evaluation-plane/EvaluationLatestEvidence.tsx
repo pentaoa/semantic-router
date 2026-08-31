@@ -3,7 +3,7 @@ import { TRACK_PRESENTATION } from '../../types/evaluationPlane'
 import overviewStyles from './EvaluationOverview.module.css'
 import { formatMetric } from './evaluationPresentation'
 import type { EvaluationOverviewModel } from './evaluationOverview'
-import { RunStatusBadge } from './EvaluationPrimitives'
+import { EvaluationActionButton, RunStatusBadge } from './EvaluationPrimitives'
 import styles from './EvaluationPlane.module.css'
 
 interface EvaluationLatestEvidenceProps {
@@ -55,13 +55,13 @@ export default function EvaluationLatestEvidence({
           </p>
         </div>
         {latestReport ? (
-          <button
+          <EvaluationActionButton
             type="button"
-            className={styles.secondaryButton}
+            variant="quiet"
             onClick={() => onOpenReport(latestReport.run.id)}
           >
             Open full report
-          </button>
+          </EvaluationActionButton>
         ) : null}
       </header>
       {reportLoading ? <p className={styles.emptyCopy}>Loading report summary…</p> : null}
@@ -71,9 +71,9 @@ export default function EvaluationLatestEvidence({
             <strong>Latest report could not be refreshed.</strong>
             <span>{reportError}</span>
           </div>
-          <button type="button" onClick={onRetryReport}>
+          <EvaluationActionButton type="button" compact onClick={onRetryReport}>
             Retry
-          </button>
+          </EvaluationActionButton>
         </div>
       ) : null}
       {!reportLoading && !reportError && latestReport ? (
@@ -115,9 +115,14 @@ export default function EvaluationLatestEvidence({
                 : 'Complete a run to establish a report.'}
           </p>
           {runLedgerAvailable && hasMoreRuns ? (
-            <button type="button" disabled={loadingMoreRuns} onClick={onLoadMoreRuns}>
+            <EvaluationActionButton
+              type="button"
+              compact
+              disabled={loadingMoreRuns}
+              onClick={onLoadMoreRuns}
+            >
               {loadingMoreRuns ? 'Loading older runs…' : 'Load older runs'}
-            </button>
+            </EvaluationActionButton>
           ) : null}
           {model.latestRun ? <RunStatusBadge status={model.latestRun.status} /> : null}
         </div>

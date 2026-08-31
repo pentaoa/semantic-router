@@ -1,8 +1,7 @@
 import type { EvaluationRun, EvaluationRunEvent } from '../../types/evaluationPlane'
 import { formatDurationBetween } from '../../utils/dateTime'
-import ProductIcon from '../ProductIcon'
 import ProductLoadingState from '../ProductLoadingState'
-import { RunStatusBadge, TrackChips } from './EvaluationPrimitives'
+import { EvaluationActionButton, RunStatusBadge, TrackChips } from './EvaluationPrimitives'
 import EvaluationRunTimeline from './EvaluationRunTimeline'
 import planeStyles from './EvaluationPlane.module.css'
 import styles from './EvaluationRuns.module.css'
@@ -58,9 +57,9 @@ export default function EvaluationRunInspector({
         <div className={styles.inspectorEmpty} role="alert">
           <strong>Run could not be loaded</strong>
           <p>{error}</p>
-          <button type="button" className={planeStyles.secondaryButton} onClick={onRetry}>
+          <EvaluationActionButton type="button" onClick={onRetry}>
             Retry run
-          </button>
+          </EvaluationActionButton>
         </div>
       ) : run ? (
         <>
@@ -128,47 +127,46 @@ export default function EvaluationRunInspector({
           ) : null}
           <div className={styles.inspectorActions} aria-label={`Actions for ${run.name}`}>
             {run.status === 'pending' && canRun ? (
-              <button
+              <EvaluationActionButton
                 type="button"
-                className={planeStyles.primaryButton}
+                variant="primary"
                 disabled={mutationPending}
                 aria-label={`Start ${run.name}`}
                 onClick={() => onStart(run)}
               >
-                <ProductIcon name="play" /> {selectedPending('start') ? 'Starting…' : 'Start'}
-              </button>
+                {selectedPending('start') ? 'Starting…' : 'Start'}
+              </EvaluationActionButton>
             ) : null}
             {run.status === 'running' && canRun ? (
-              <button
+              <EvaluationActionButton
                 type="button"
-                className={`${planeStyles.secondaryButton} ${styles.warningButton}`}
                 disabled={mutationPending}
                 aria-label={`Cancel ${run.name}`}
                 onClick={() => onCancel(run)}
               >
-                <ProductIcon name="close" /> Cancel
-              </button>
+                Cancel
+              </EvaluationActionButton>
             ) : null}
             {run.status === 'completed' ? (
-              <button
+              <EvaluationActionButton
                 type="button"
-                className={planeStyles.primaryButton}
+                variant="primary"
                 aria-label={`Open report for ${run.name}`}
                 onClick={() => onOpenReport(run)}
               >
-                <ProductIcon name="chart" /> Open report
-              </button>
+                Open report
+              </EvaluationActionButton>
             ) : null}
             {run.status !== 'running' && run.status !== 'sealing' && canDelete ? (
-              <button
+              <EvaluationActionButton
                 type="button"
-                className={`${planeStyles.secondaryButton} ${styles.dangerButton}`}
+                variant="danger"
                 disabled={mutationPending}
                 aria-label={`Delete ${run.name}`}
                 onClick={() => onDelete(run)}
               >
-                <ProductIcon name="trash" /> Delete
-              </button>
+                Delete
+              </EvaluationActionButton>
             ) : null}
           </div>
           {run.status !== 'completed' && ['failed', 'cancelled'].includes(run.status) ? (
@@ -194,9 +192,9 @@ export default function EvaluationRunInspector({
               : 'Its immutable scope, valid actions, and execution timeline appear here.'}
           </p>
           {selectedRunID ? (
-            <button type="button" className={planeStyles.secondaryButton} onClick={onRetry}>
+            <EvaluationActionButton type="button" onClick={onRetry}>
               Retry run
-            </button>
+            </EvaluationActionButton>
           ) : null}
         </div>
       )}

@@ -3,6 +3,7 @@ import { baselineCohortIssue, EVALUATION_RUN_LIMITS } from './evaluationExperime
 import type { EvaluationExperimentFormModel } from './useEvaluationExperimentForm'
 import EvaluationExperimentSectionHeading from './EvaluationExperimentSectionHeading'
 import EvaluationExperimentMixture from './EvaluationExperimentMixture'
+import { EvaluationActionButton } from './EvaluationPrimitives'
 import styles from './EvaluationExperimentFields.module.css'
 import sectionStyles from './EvaluationExperimentSection.module.css'
 
@@ -135,16 +136,16 @@ export default function EvaluationExperimentIdentity({
                   : 'Selecting a baseline copies and locks its exact comparable cohort.'}
           </small>
           {runLedgerAvailable && runLedgerComplete && hasMoreRuns && !form.baselineLocked ? (
-            <button
+            <EvaluationActionButton
               type="button"
-              className={styles.loadMoreButton}
+              compact
               disabled={loadingMoreRuns}
               onClick={onLoadMoreRuns}
             >
               {loadingMoreRuns
                 ? 'Loading older runs…'
                 : `Load older baselines · ${runs.length}/${totalRuns}`}
-            </button>
+            </EvaluationActionButton>
           ) : null}
         </div>
         <EvaluationExperimentMixture target={selectedTarget} form={form} />

@@ -1,6 +1,7 @@
 import ProductLoadingState from '../ProductLoadingState'
 import type { EvaluationRun } from '../../types/evaluationPlane'
 import type { EvaluationReport } from '../../types/evaluationReport'
+import { EvaluationActionButton } from './EvaluationPrimitives'
 import EvaluationReportView from './EvaluationReportView'
 import styles from './EvaluationPlane.module.css'
 import reportStyles from './EvaluationReports.module.css'
@@ -77,14 +78,14 @@ export default function EvaluationReports({
             <span>
               Report selection covers {runs.length} of {totalRuns} loaded runs.
             </span>
-            <button
+            <EvaluationActionButton
               type="button"
-              className={styles.secondaryButton}
+              compact
               disabled={loadingMoreRuns}
               onClick={onLoadMoreRuns}
             >
               {loadingMoreRuns ? 'Loading older runs…' : 'Load older reports'}
-            </button>
+            </EvaluationActionButton>
           </div>
         ) : null}
       </section>
@@ -97,9 +98,9 @@ export default function EvaluationReports({
         <div className={styles.errorState} role="alert">
           <h2>Report unavailable</h2>
           <p>{error}</p>
-          <button type="button" onClick={onRetry}>
+          <EvaluationActionButton type="button" onClick={onRetry}>
             Retry
-          </button>
+          </EvaluationActionButton>
         </div>
       ) : null}
       {!loading && !error && report ? <EvaluationReportView report={report} /> : null}

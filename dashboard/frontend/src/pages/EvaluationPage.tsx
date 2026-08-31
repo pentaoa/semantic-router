@@ -10,6 +10,7 @@ import EvaluationNavigation, {
 import EvaluationOverview from '../components/evaluation-plane/EvaluationOverview'
 import EvaluationReports from '../components/evaluation-plane/EvaluationReports'
 import EvaluationRuns from '../components/evaluation-plane/EvaluationRuns'
+import { EvaluationActionButton } from '../components/evaluation-plane/EvaluationPrimitives'
 import { defaultComparisonPair } from '../components/evaluation-plane/evaluationRunSupport'
 import { useAuth } from '../contexts/AuthContext'
 import { useReadonly } from '../contexts/ReadonlyContext'
@@ -217,9 +218,9 @@ export function EvaluationPage() {
           <div className={styles.loadError} role="alert">
             <h2>Evaluation catalog unavailable</h2>
             <p>{plane.catalogError}</p>
-            <button type="button" onClick={plane.refresh}>
+            <EvaluationActionButton type="button" onClick={plane.refresh}>
               Retry
-            </button>
+            </EvaluationActionButton>
           </div>
         ) : null}
         {!plane.loading && plane.catalog ? (

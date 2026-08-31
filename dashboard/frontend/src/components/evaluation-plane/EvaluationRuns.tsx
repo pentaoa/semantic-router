@@ -1,6 +1,6 @@
 import type { EvaluationRun, EvaluationRunEvent } from '../../types/evaluationPlane'
 import { formatDateTime } from '../../utils/dateTime'
-import ProductIcon from '../ProductIcon'
+import { EvaluationActionButton } from './EvaluationPrimitives'
 import EvaluationRunInspector from './EvaluationRunInspector'
 import EvaluationRunLedger, { EvaluationRunLedgerFilters } from './EvaluationRunLedger'
 import useEvaluationRunLedger from './useEvaluationRunLedger'
@@ -89,16 +89,16 @@ export default function EvaluationRuns({
                   ? `Updated ${formatDateTime(lastUpdatedAt.toISOString())}`
                   : 'Not refreshed yet'}
             </span>
-            <button
+            <EvaluationActionButton
               type="button"
-              className={styles.iconButton}
+              compact
               disabled={refreshing || loadingMore}
               aria-busy={refreshing}
               onClick={onRefresh}
               aria-label="Refresh evaluation runs"
             >
-              <ProductIcon name="refresh" /> {refreshing ? 'Refreshing…' : 'Refresh'}
-            </button>
+              {refreshing ? 'Refreshing…' : 'Refresh'}
+            </EvaluationActionButton>
           </div>
         </header>
 

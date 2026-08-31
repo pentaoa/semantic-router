@@ -91,10 +91,8 @@
 
 .primaryButton,
 .secondaryButton,
-.iconButton,
-.emptyState button,
-.inlineError button,
-.errorState button {
+.quietButton,
+.dangerButton {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -124,44 +122,50 @@
 }
 
 .secondaryButton,
-.iconButton,
-.emptyState button,
-.inlineError button,
-.errorState button {
+.quietButton,
+.dangerButton {
   background: rgba(255, 255, 255, 0.035);
   color: var(--text-primary);
 }
 
+.quietButton,
+.dangerButton {
+  border-color: transparent;
+  background: transparent;
+}
+
+.quietButton {
+  color: var(--text-secondary);
+}
+
+.dangerButton {
+  color: #ff9da1;
+}
+
 .secondaryButton:hover:not(:disabled),
-.iconButton:hover:not(:disabled),
-.emptyState button:hover:not(:disabled),
-.inlineError button:hover:not(:disabled),
-.errorState button:hover:not(:disabled) {
+.quietButton:hover:not(:disabled) {
   border-color: rgba(255, 255, 255, 0.28);
   background: var(--surface-raised);
 }
 
+.dangerButton:hover:not(:disabled) {
+  border-color: rgba(248, 113, 113, 0.2);
+  background: rgba(239, 68, 68, 0.08);
+}
+
 .primaryButton:active:not(:disabled),
 .secondaryButton:active:not(:disabled),
-.iconButton:active:not(:disabled),
-.emptyState button:active:not(:disabled),
-.inlineError button:active:not(:disabled) {
+.quietButton:active:not(:disabled),
+.dangerButton:active:not(:disabled) {
   transform: translateY(1px);
 }
 
 .primaryButton:disabled,
 .secondaryButton:disabled,
-.iconButton:disabled,
-.emptyState button:disabled,
-.inlineError button:disabled,
-.errorState button:disabled {
+.quietButton:disabled,
+.dangerButton:disabled {
   cursor: not-allowed;
   opacity: 0.5;
-}
-
-.iconButton svg {
-  width: 15px;
-  height: 15px;
 }
 
 .compactButton {
@@ -372,9 +376,5 @@
   .emptyState {
     align-items: stretch;
     flex-direction: column;
-  }
-
-  .emptyState button {
-    width: 100%;
   }
 }

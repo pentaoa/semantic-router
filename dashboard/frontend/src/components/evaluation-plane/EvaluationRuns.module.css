@@ -43,10 +43,8 @@
 .runWorkspace {
   display: grid;
   grid-template-columns: minmax(250px, 360px) minmax(0, 1fr);
+  gap: clamp(1.25rem, 2vw, 2.25rem);
   min-width: 0;
-  overflow: hidden;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
 }
 
 .runLedger {
@@ -55,8 +53,8 @@
   min-width: 0;
   max-height: min(66vh, 650px);
   overflow: hidden;
-  border-right: 1px solid var(--border-subtle);
-  background: rgba(255, 255, 255, 0.012);
+  border-top: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle);
 }
 
 .runList {
@@ -75,7 +73,7 @@
   display: grid;
   width: 100%;
   gap: 0.3rem;
-  padding: 0.68rem 0.75rem;
+  padding: 0.78rem 0.25rem 0.78rem 0.75rem;
   color: var(--text-secondary);
   text-align: left;
   transition:
@@ -88,7 +86,7 @@
 }
 
 .runSelected .runSummary {
-  background: var(--surface-raised);
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.045), transparent 82%);
   box-shadow: inset 2px 0 0 var(--brand-amd);
 }
 
@@ -131,11 +129,6 @@
   border-top: 1px solid var(--border-subtle);
 }
 
-.pagination button {
-  min-height: 34px;
-  padding: 0.35rem 0.55rem;
-}
-
 .pagination span {
   color: var(--text-muted);
   font-size: 0.72rem;
@@ -143,7 +136,8 @@
 
 .runInspector {
   min-width: 0;
-  padding: 0.9rem 1rem 1rem;
+  padding: 0.15rem 0 1rem clamp(1.25rem, 2vw, 2.25rem);
+  border-left: 1px solid var(--border-subtle);
 }
 
 .inspectorHeader {
@@ -174,9 +168,8 @@
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   margin: 0.8rem 0;
-  overflow: hidden;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
+  border-top: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle);
 }
 
 .definitionGrid > div {
@@ -212,16 +205,6 @@
   flex-wrap: wrap;
   gap: 0.55rem;
   margin: 0.85rem 0;
-}
-
-.warningButton {
-  border-color: rgba(251, 191, 36, 0.38) !important;
-  color: #f9d38b !important;
-}
-
-.dangerButton {
-  border-color: rgba(248, 113, 113, 0.4) !important;
-  color: #ffb0b3 !important;
 }
 
 .eventHeader {
@@ -337,8 +320,12 @@
 
   .runLedger {
     max-height: 320px;
-    border-right: 0;
-    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .runInspector {
+    padding: 1.25rem 0 0;
+    border-top: 1px solid var(--border-subtle);
+    border-left: 0;
   }
 }
 
