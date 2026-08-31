@@ -472,7 +472,7 @@ describe('Evaluation Plane API', () => {
       ],
     }
 
-    expect(() =>
+    expect(
       buildCreateRunPayload(
         {
           ...request,
@@ -481,7 +481,7 @@ describe('Evaluation Plane API', () => {
         },
         expandedCatalog,
       ),
-    ).toThrow(/fully supported/i)
+    ).toMatchObject({ suite_ids: ['suite-partial'], track_ids: ['routing'] })
     expect(() =>
       buildCreateRunPayload(
         {

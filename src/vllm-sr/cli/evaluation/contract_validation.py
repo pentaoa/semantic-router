@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
 import re
 import uuid
 from urllib.parse import urlsplit
@@ -32,6 +33,19 @@ def validate_portable_id(value: str) -> str:
 
 def is_portable_id(value: str) -> bool:
     return _ID_RE.fullmatch(value) is not None
+
+
+def derived_portable_id(namespace: str, *parts: str) -> str:
+    """Build an unambiguous content-addressed identity inside the wire bound."""
+
+    validate_portable_id(namespace)
+    if not parts:
+        raise ValueError("a derived portable identifier requires identity parts")
+    for part in parts:
+        validate_portable_id(part)
+    digest = hashlib.sha256("\x00".join((namespace, *parts)).encode()).hexdigest()
+    compact = f"{namespace}-{digest}"
+    return compact if is_portable_id(compact) else f"derived-{digest}"
 
 
 def is_subject_target_id(value: str, subject_id: str) -> bool:

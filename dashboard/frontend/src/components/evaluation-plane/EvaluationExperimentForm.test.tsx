@@ -210,6 +210,20 @@ describe('evaluation experiment cohort helpers', () => {
     })
   })
 
+  it('offers the executable subset of a suite for a partial-capability target', () => {
+    const partialCatalog: EvaluationCatalog = {
+      ...catalog,
+      targets: [{ ...catalog.targets[0], track_ids: ['routing'] }],
+    }
+
+    expect(
+      compatibleEvaluationSuites(partialCatalog, 'fixture', 'replay').map((suite) => suite.id),
+    ).toEqual(['routing-suite'])
+    expect(
+      toggleEvaluationSuite(partialCatalog, 'fixture', 'replay', [], [], 'routing-suite'),
+    ).toEqual({ suiteIDs: ['routing-suite'], trackIDs: ['routing'] })
+  })
+
   it('keeps one target-approved executor cohort and switches cohorts deliberately', () => {
     const mixedCatalog: EvaluationCatalog = {
       ...catalog,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from cli.evaluation.contract_validation import derived_portable_id
 from cli.evaluation.contracts import CaseGrading, CaseVisible, EvaluationTargetArm
 from cli.evaluation.http_client import EvaluationHTTPClient, HTTPResult
 
@@ -89,7 +90,7 @@ def execute_chat_cases(
             case,
             model,
             "multimodal",
-            f"attempt-{case.id}",
+            derived_portable_id("attempt", case.id),
         )
         for case in cases
     }

@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from typing import Any
 
+from cli.evaluation.contract_validation import derived_portable_id
 from cli.evaluation.contracts import (
     CapacityLoadProtocol,
     CaseGrading,
@@ -219,7 +220,7 @@ def _route_records(
     concurrency: int,
 ) -> tuple[list[ExecutionRecord], tuple[RoutingDiagnostic, ...]]:
     def evaluate(case: CaseVisible) -> tuple[ExecutionRecord, RoutingDiagnostic | None]:
-        attempt_id = f"attempt-{case.id}"
+        attempt_id = derived_portable_id("attempt", case.id)
         result = client.post(
             endpoint,
             {
@@ -244,7 +245,7 @@ def _route_records(
             raise ValueError("routing selected a model outside the frozen mixture pool")
         return (
             ExecutionRecord(
-                id=f"routing-{case.id}",
+                id=derived_portable_id("routing", case.id),
                 track_id="routing",
                 case_id=case.id,
                 attempt_id=attempt_id,
@@ -292,7 +293,7 @@ def _model_pool_records(
         task: tuple[CaseVisible, EvaluationTargetArm],
     ) -> tuple[ExecutionRecord, HTTPResult]:
         case, arm = task
-        attempt_id = f"attempt-model-pool-{case.id}-{arm.id}"
+        attempt_id = derived_portable_id("attempt-model-pool", case.id, arm.id)
         result = chat_request(
             client,
             endpoint,
@@ -304,7 +305,7 @@ def _model_pool_records(
         input_tokens, output_tokens, runtime_cost = _accounting_for_arm(result, arm)
         return (
             ExecutionRecord(
-                id=f"model-pool-{case.id}-{arm.id}",
+                id=derived_portable_id("model-pool", case.id, arm.id),
                 track_id="model_pool",
                 case_id=case.id,
                 attempt_id=attempt_id,
@@ -340,7 +341,7 @@ def _joint_records(
     concurrency: int,
 ) -> tuple[list[ExecutionRecord], dict[str, HTTPResult]]:
     def evaluate(case: CaseVisible) -> tuple[ExecutionRecord, HTTPResult]:
-        attempt_id = f"attempt-joint-{case.id}"
+        attempt_id = derived_portable_id("attempt-joint", case.id)
         result = chat_request(
             client,
             endpoint,
@@ -365,7 +366,7 @@ def _joint_records(
         )
         return (
             ExecutionRecord(
-                id=f"joint-{case.id}",
+                id=derived_portable_id("joint", case.id),
                 track_id="joint",
                 case_id=case.id,
                 attempt_id=attempt_id,
@@ -412,10 +413,10 @@ def _multimodal_records(
         )
         records.append(
             ExecutionRecord(
-                id=f"multimodal-{case.id}",
+                id=derived_portable_id("multimodal", case.id),
                 track_id="multimodal",
                 case_id=case.id,
-                attempt_id=f"attempt-{case.id}",
+                attempt_id=derived_portable_id("attempt", case.id),
                 status="succeeded" if result.success else "failed",
                 selected_arm_id=arm.id if arm is not None else None,
                 success=result.success,

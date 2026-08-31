@@ -94,7 +94,7 @@ export function compatibleEvaluationSuites(
       suite.modes.includes(mode) &&
       acceptedExecutors.has(suite.executors[mode] || '') &&
       suite.track_ids.length > 0 &&
-      suite.track_ids.every((trackID) => availableTracks.includes(trackID)),
+      suite.track_ids.some((trackID) => availableTracks.includes(trackID)),
   )
 }
 

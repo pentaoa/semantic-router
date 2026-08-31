@@ -423,11 +423,10 @@ export function buildCreateRunPayload(
     suites.some(
       (suite) =>
         !suite?.modes.includes(request.mode) ||
-        !target.accepted_executors[request.mode]?.includes(suite.executors[request.mode] || '') ||
-        suite.track_ids.some((trackID) => !target.track_ids.includes(trackID)),
+        !target.accepted_executors[request.mode]?.includes(suite.executors[request.mode] || ''),
     )
   ) {
-    throw new Error('Every selected suite must be fully supported by the target and mode.')
+    throw new Error('Every selected suite must use a target-approved mode and executor.')
   }
   const executorIDs = new Set(suites.map((suite) => suite?.executors[request.mode]))
   if (executorIDs.size !== 1 || executorIDs.has(undefined)) {

@@ -7,8 +7,10 @@ from typing import Any
 
 import pytest
 from cli.evaluation import live_executor as live_executor_module
+from cli.evaluation.contract_validation import derived_portable_id, is_portable_id
 from cli.evaluation.fixtures import fixture_inputs
 from cli.evaluation.http_client import EvaluationHTTPClient, HTTPResult
+from cli.evaluation.live_chat import execute_chat_cases
 from cli.evaluation.live_executor import (
     LiveRawResult,
     execute_live_raw,
@@ -112,6 +114,51 @@ def test_live_model_pool_and_joint_execute_the_same_dense_cohort() -> None:
     joint = [row for row in result.records if row.track_id == "joint"]
     assert {row.case_id for row in pool} == {row.case_id for row in joint}
     assert len(pool) == len(joint) * len(_arms())
+
+
+def test_derived_live_evidence_ids_are_stable_and_bounded() -> None:
+    case_id = "case-" + "c" * 122
+    arm_id = "arm-" + "a" * 123
+    first = derived_portable_id("attempt-model-pool", case_id, arm_id)
+    second = derived_portable_id("attempt-model-pool", case_id, arm_id)
+    sibling = derived_portable_id("attempt-model-pool", case_id, arm_id[:-1] + "b")
+
+    assert first == second
+    assert first != sibling
+    assert is_portable_id(first)
+    assert len(first) <= 128
+    assert derived_portable_id("model-pool", "case-a", "arm-b") != derived_portable_id(
+        "model-pool", "case", "a-arm-b"
+    )
+    overflow = derived_portable_id("attempt", "x" * 128)
+    assert derived_portable_id("attempt", overflow.removeprefix("attempt-")) != overflow
+
+
+def test_multimodal_probe_compacts_a_maximum_length_case_identity() -> None:
+    case = fixture_inputs().visible.cases[0].model_copy(update={"id": "c" * 128})
+    attempts: list[str] = []
+
+    class CapturingClient:
+        def post(self, _endpoint: str, _payload: object, **metadata: str) -> HTTPResult:
+            attempts.append(metadata["attempt_id"])
+            return HTTPResult(
+                success=False,
+                status_code=503,
+                payload=None,
+                latency_ms=1,
+                headers={},
+                error="HTTP 503",
+            )
+
+    execute_chat_cases(
+        CapturingClient(),  # type: ignore[arg-type]
+        "http://envoy.test/v1/chat/completions",
+        (case,),
+        "vllm-sr/auto",
+    )
+
+    assert attempts == [derived_portable_id("attempt", case.id)]
+    assert is_portable_id(attempts[0])
 
 
 def test_live_mom_cohort_is_layered_exact_and_has_no_synthetic_routes() -> None:
