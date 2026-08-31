@@ -52,6 +52,11 @@ func (s *Service) execute(
 	if err != nil && controlledPair != nil {
 		controlledPair.coordinator.abort(err)
 	}
+	if err != nil {
+		// Public run state stays deliberately generic; detailed worker, broker,
+		// sealing, and attestation failures belong only in protected server logs.
+		log.Printf("evaluationplane: execution failed run_id=%q error=%q", runID, err)
+	}
 	s.finalizeRun(runID, err)
 }
 
