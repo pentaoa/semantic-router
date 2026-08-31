@@ -94,6 +94,19 @@ func (p *controlledProcess) Run(ctx context.Context, spec ProcessSpec, emit func
 	return ProcessResult{}, nil
 }
 
+func TestBuildTerminalRunReturnsSynthesizedFailureCause(t *testing.T) {
+	run := Run{
+		ID:       newTestClientRequestID(),
+		Status:   StatusRunning,
+		Progress: RunProgress{Total: 1},
+	}
+	terminal, cause := (&Service{}).buildTerminalRun(run, nil)
+	if terminal.Status != StatusFailed || cause == nil ||
+		!strings.Contains(cause.Error(), "not in the sealing phase") {
+		t.Fatalf("terminal run=%+v cause=%v, want protected synthesized failure", terminal, cause)
+	}
+}
+
 func TestControlledProcessReportBundlePassesServerValidation(t *testing.T) {
 	service, root := newTestService(t, &controlledProcess{}, 1)
 	run, err := service.CreateRun(context.Background(), validCreateRequest())

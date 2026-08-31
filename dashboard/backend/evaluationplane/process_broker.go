@@ -467,6 +467,12 @@ func (broker *workerHTTPBroker) attestResponse(
 	entry.RequestedModel = brokerRequestedModel(request.Operation, requestPayload)
 	entry.LedgerSealedAt = brokerLedgerSealedAt(request.Operation, response.Payload)
 	populateBrokerObservedFields(&entry, response.Payload)
+	// Router diagnostics expose both the configured decision algorithm and the
+	// method that actually selected this request. Execution evidence is bound to
+	// the realized method; the configured algorithm remains in routing traces.
+	if request.Operation == workerBrokerRouterEvaluate {
+		entry.Algorithm = copyString(entry.SelectionMethod)
+	}
 	if entry.SelectedModel == nil && (request.Operation == workerBrokerRoutedChatCompletion ||
 		request.Operation == workerBrokerArmChatCompletion) {
 		entry.SelectedModel = nonEmptyStringPointer(response.Headers["x-vsr-selected-model"])
@@ -569,6 +575,14 @@ func nonEmptyStringPointer(value string) *string {
 		return nil
 	}
 	return &value
+}
+
+func copyString(value *string) *string {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
 }
 
 func populateBrokerObservedFields(entry *executionAttestationEntry, payload map[string]any) {

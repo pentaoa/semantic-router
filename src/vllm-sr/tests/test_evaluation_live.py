@@ -479,6 +479,40 @@ def test_live_diagnostic_routing_multimodal_and_capacity_smoke() -> None:
         assert hidden_field not in serialized_requests
 
 
+def test_routing_record_attests_realized_method_not_configured_algorithm() -> None:
+    class DistinctAlgorithmSession(FakeSession):
+        def post(
+            self,
+            url: str,
+            json: dict[str, Any],
+            headers: dict[str, str],
+            timeout: float,
+        ) -> FakeResponse:
+            response = super().post(url, json, headers, timeout)
+            if "/api/v1/eval?trace=true" in url:
+                response._payload["decision_result"]["algorithm"] = "static"
+                response._payload["selection_method"] = "confidence"
+            return response
+
+    raw = execute_live_raw(
+        fixture_inputs().visible,
+        track_ids=("routing",),
+        router_api_url="http://router:8080",
+        envoy_url="http://envoy:8801",
+        concurrency=1,
+        capacity_load_protocol=None,
+        mixture=_mixture(),
+        client=EvaluationHTTPClient(session=DistinctAlgorithmSession()),
+    )
+
+    routing = [row for row in raw.records if row.track_id == "routing"]
+    assert routing and all(row.selection_method == "confidence" for row in routing)
+    assert all(row.algorithm == "confidence" for row in routing)
+    assert raw.routing_traces and all(
+        trace.algorithm == "static" for trace in raw.routing_traces
+    )
+
+
 def test_live_multimodal_sampling_filters_before_applying_the_limit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

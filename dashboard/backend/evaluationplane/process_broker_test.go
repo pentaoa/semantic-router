@@ -302,6 +302,82 @@ func TestBrokerMixtureBindingRejectsOutOfDecisionArm(t *testing.T) {
 	}
 }
 
+func TestRoutingBrokerAttestationBindsRealizedSelectionMethod(t *testing.T) {
+	tests := map[string]struct {
+		selectionMethod string
+		wantValid       bool
+	}{
+		"authorized realized method":   {selectionMethod: "weighted", wantValid: true},
+		"unauthorized realized method": {selectionMethod: "unapproved"},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				writer.Header().Set("Content-Type", "application/json")
+				_, _ = writer.Write([]byte(`{
+					"recipe":"recipe-a",
+					"selected_model":"model-fast",
+					"selection_status":"selected",
+					"selection_method":"` + test.selectionMethod + `",
+					"decision_result":{"decision_name":"quality","algorithm":"static"}
+				}`))
+			}))
+			t.Cleanup(server.Close)
+
+			mixture := brokerTestMixture()
+			broker := newWorkerHTTPBroker(RunManifest{
+				Concurrency: 1,
+				TrackIDs:    []TrackID{"routing"},
+				Target: ManifestTarget{
+					RouterAPIURL: server.URL,
+					Mixture:      mixture,
+				},
+			}, workerBrokerCredentials{})
+			broker.captureSelectableModels(map[string]any{"data": []any{
+				map[string]any{
+					"id": "virtual-entrypoint",
+					"routing": map[string]any{
+						"resolution": "virtual", "selectable": true, "recipe": "recipe-a",
+					},
+				},
+				map[string]any{
+					"id": "virtual-alias",
+					"routing": map[string]any{
+						"resolution": "virtual", "selectable": true, "recipe": "recipe-a",
+					},
+				},
+			}})
+			response := broker.execute(context.Background(), workerBrokerRequest{
+				ID: 1, Operation: workerBrokerRouterEvaluate, TrackID: "routing",
+				CaseID: "case-1", AttemptID: "attempt-1",
+				Payload:   json.RawMessage(`{"model":"virtual-entrypoint","messages":[{"role":"user","content":"hello"}],"evaluate_all_signals":true}`),
+				TimeoutMS: 1_000,
+			})
+			if !response.Success {
+				t.Fatalf("routing broker response = %+v", response)
+			}
+			entry := broker.entries[1]
+			if entry.Algorithm == nil || *entry.Algorithm != test.selectionMethod ||
+				entry.SelectionMethod == nil || *entry.SelectionMethod != test.selectionMethod {
+				t.Fatalf("routing execution projection = %+v", entry)
+			}
+			if configured := entry.responsePayload["decision_result"].(map[string]any)["algorithm"]; configured != "static" {
+				t.Fatalf("configured routing diagnostic algorithm = %v, want static", configured)
+			}
+			if err := validateStoredExecutionAttestationEntry(entry, 1); err != nil {
+				t.Fatalf("stored routing attestation rejected: %v", err)
+			}
+			err := validateBrokerMixtureBinding(mixture, entry)
+			if test.wantValid && err != nil {
+				t.Fatalf("authorized realized selector rejected: %v", err)
+			}
+			if !test.wantValid && err == nil {
+				t.Fatal("unauthorized realized selector crossed the frozen decision boundary")
+			}
+		})
+	}
+}
+
 func newTypedChatBroker(t *testing.T, chatCalls *atomic.Int64) *workerHTTPBroker {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {

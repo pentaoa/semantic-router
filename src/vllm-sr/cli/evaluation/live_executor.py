@@ -255,7 +255,9 @@ def _route_records(
                 selection_method=diagnostic.selection_method,
                 recipe=diagnostic.recipe,
                 decision_name=diagnostic.decision_name,
-                algorithm=diagnostic.algorithm,
+                # Records attest the realized selector. The configured
+                # decision algorithm remains available in routing traces.
+                algorithm=diagnostic.selection_method,
                 trace_digest=(
                     routing_trace_digest(diagnostic)
                     if result.payload is not None

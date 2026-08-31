@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"math"
 	"os"
 	"path/filepath"
@@ -51,11 +50,6 @@ func (s *Service) execute(
 	}
 	if err != nil && controlledPair != nil {
 		controlledPair.coordinator.abort(err)
-	}
-	if err != nil {
-		// Public run state stays deliberately generic; detailed worker, broker,
-		// sealing, and attestation failures belong only in protected server logs.
-		log.Printf("evaluationplane: execution failed run_id=%q error=%q", runID, err)
 	}
 	s.finalizeRun(runID, err)
 }
@@ -198,6 +192,7 @@ func validateWorkerEventForRun(event WorkerEvent, run Run) error {
 
 func (s *Service) finalizeRun(runID string, processErr error) {
 	retryDelay := 10 * time.Millisecond
+	var terminalCause error
 	for {
 		s.mu.Lock()
 		current, readErr := s.store.GetRun(runID)
@@ -209,10 +204,14 @@ func (s *Service) finalizeRun(runID string, processErr error) {
 		}
 		var transitionErr error
 		var terminalEvent Event
+		terminalFailed := current.Status == StatusFailed
 		if terminalStatus(current.Status) {
 			terminalEvent, transitionErr = s.store.commitTerminalRun(current)
 		} else if current.Status == StatusRunning || current.Status == StatusSealing {
-			terminalEvent, transitionErr = s.store.commitTerminalRun(s.buildTerminalRun(current, processErr))
+			var terminal Run
+			terminal, terminalCause = s.buildTerminalRun(current, processErr)
+			terminalFailed = terminal.Status == StatusFailed
+			terminalEvent, transitionErr = s.store.commitTerminalRun(terminal)
 		} else {
 			transitionErr = fmt.Errorf("%w: run cannot complete from %s", ErrConflict, current.Status)
 		}
@@ -220,10 +219,17 @@ func (s *Service) finalizeRun(runID string, processErr error) {
 			s.cleanupWorkerLocked(runID)
 			s.broadcastEventLocked(terminalEvent)
 			s.mu.Unlock()
+			if terminalFailed && terminalCause != nil {
+				// Public run state stays deliberately generic; detailed worker,
+				// broker, sealing, and attestation failures belong only here.
+				s.diagnosticLogger.Printf(
+					"evaluationplane: execution failed run_id=%q error=%q", runID, terminalCause,
+				)
+			}
 			return
 		}
 		s.mu.Unlock()
-		log.Printf("evaluationplane: terminal lifecycle persistence retry run_id=%q error=%q", runID, transitionErr)
+		s.diagnosticLogger.Printf("evaluationplane: terminal lifecycle persistence retry run_id=%q error=%q", runID, transitionErr)
 
 		timer := time.NewTimer(retryDelay)
 		select {
@@ -247,7 +253,7 @@ func (s *Service) finalizeRun(runID string, processErr error) {
 	}
 }
 
-func (s *Service) buildTerminalRun(run Run, processErr error) Run {
+func (s *Service) buildTerminalRun(run Run, processErr error) (Run, error) {
 	now := time.Now().UTC()
 	if processErr == nil && run.Status != StatusSealing {
 		processErr = fmt.Errorf("evaluation evidence was not in the sealing phase")
@@ -284,7 +290,7 @@ func (s *Service) buildTerminalRun(run Run, processErr error) Run {
 		run.Error = "Evaluation worker failed; inspect protected server diagnostics"
 		run.Progress.Message = message
 	}
-	return run
+	return run, processErr
 }
 
 func (s *Service) cleanupWorkerLocked(runID string) {

@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"log"
+	"os"
 	"reflect"
 	"regexp"
 	"strings"
@@ -29,7 +32,11 @@ type Options struct {
 	WorkerTimeout              time.Duration
 	Process                    Process
 	CredentialProvider         CredentialProvider
-	LifecycleLimits            LifecycleLimits
+	// DiagnosticSink is server-owned and must never be exposed through the
+	// Evaluation API. It receives detailed execution failures while durable run
+	// status retains only the generic public error contract.
+	DiagnosticSink  io.Writer
+	LifecycleLimits LifecycleLimits
 }
 
 const defaultWorkerTimeout = 6 * time.Hour
@@ -72,6 +79,7 @@ type Service struct {
 	closeOnce                  sync.Once
 	shutdown                   chan struct{}
 	lifecycleErr               error
+	diagnosticLogger           *log.Logger
 	closed                     bool
 }
 
@@ -138,6 +146,10 @@ func NewService(options Options) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
+	diagnosticSink := options.DiagnosticSink
+	if diagnosticSink == nil {
+		diagnosticSink = os.Stderr
+	}
 	service := &Service{
 		store:                      store,
 		suiteStorePath:             store.SuiteRoot(),
@@ -161,6 +173,7 @@ func NewService(options Options) (*Service, error) {
 		workerEvents:               make(map[string]int),
 		subscribers:                make(map[string]map[chan Event]struct{}),
 		shutdown:                   make(chan struct{}),
+		diagnosticLogger:           log.New(diagnosticSink, "", log.LstdFlags|log.LUTC),
 	}
 	if err := service.RecoverInterruptedRuns(); err != nil {
 		return nil, err
