@@ -73,26 +73,25 @@ func (s *Service) beginSealing(runID string) error {
 }
 
 func (s *Service) attestAndAnchorExecution(runID string, transcript *brokerExecutionTranscript) error {
-	runEvidencePublicationMu.Lock()
-	defer runEvidencePublicationMu.Unlock()
-
-	attestationDigest, err := s.persistExecutionAttestation(runID, transcript)
-	if err != nil {
-		return fmt.Errorf("attest evaluation execution: %w", err)
-	}
-	validationErr := s.validateAndAnchorReport(runID)
-	if validationErr == nil {
-		return nil
-	}
-	// An unanchored attestation is not durable evidence. Roll it back in the
-	// same publication critical section; an already-published anchor is left
-	// intact so restart recovery can validate the completed seal.
-	if attestationDigest != "" {
-		if rollbackErr := s.rollbackUnanchoredExecutionAttestation(runID); rollbackErr != nil {
-			return fmt.Errorf("validate evaluation worker report: %w; %w", validationErr, rollbackErr)
+	return s.store.withEvidencePublication(func() error {
+		attestationDigest, err := s.persistExecutionAttestationDuringPublication(runID, transcript)
+		if err != nil {
+			return fmt.Errorf("attest evaluation execution: %w", err)
 		}
-	}
-	return fmt.Errorf("validate evaluation worker report: %w", validationErr)
+		validationErr := s.validateAndAnchorReport(runID)
+		if validationErr == nil {
+			return nil
+		}
+		// An unanchored attestation is not durable evidence. Roll it back in the
+		// same publication transaction; an already-published anchor is left
+		// intact so restart recovery can validate the completed seal.
+		if attestationDigest != "" {
+			if rollbackErr := s.rollbackUnanchoredExecutionAttestation(runID); rollbackErr != nil {
+				return fmt.Errorf("validate evaluation worker report: %w; %w", validationErr, rollbackErr)
+			}
+		}
+		return fmt.Errorf("validate evaluation worker report: %w", validationErr)
+	})
 }
 
 func (s *Service) rollbackUnanchoredExecutionAttestation(runID string) error {

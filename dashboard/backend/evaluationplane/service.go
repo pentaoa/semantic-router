@@ -184,7 +184,7 @@ func configureServiceProcess(options *Options, store *Store) (Process, error) {
 		commandProcess.routerAPIKeyEnv = strings.TrimSpace(options.RouterAPIKeyEnv)
 		commandProcess.envoyAPIKeyEnv = strings.TrimSpace(options.EnvoyAPIKeyEnv)
 		commandProcess.cpuSeconds = workerCPULimit(options.WorkerTimeout)
-		commandProcess.quotaCheck = store.requireEvidenceQuotaUnlocked
+		commandProcess.publishEvidence = store.importWorkerEvidence
 		process = commandProcess
 	}
 	return process, nil

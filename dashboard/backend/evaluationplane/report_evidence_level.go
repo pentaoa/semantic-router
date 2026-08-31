@@ -11,6 +11,12 @@ type sealedEvidenceLevels struct {
 	ByTrack map[TrackID]EvidenceLevel
 }
 
+const (
+	liveMoMRoutingEvidenceKind   = "live-routing-diagnostic-smoke"
+	liveMoMModelPoolEvidenceKind = "live-mom-arm-outcome.v1"
+	liveMoMJointEvidenceKind     = "live-mom-routed-outcome.v1"
+)
+
 func deriveSealedEvidenceLevels(
 	runDir string,
 	manifest RunManifest,
@@ -193,11 +199,7 @@ func deriveLiveMoMEvidenceLevels(
 	routingCases := records.PlannedCaseIDsByTrack["routing"]
 	poolCases := records.PlannedCaseIDsByTrack["model_pool"]
 	jointCases := records.PlannedCaseIDsByTrack["joint"]
-	if len(routingCases) == 0 || !sameEvidenceCaseSet(routingCases, poolCases) ||
-		!sameEvidenceCaseSet(routingCases, jointCases) ||
-		!sameEvidenceCaseSet(routingCases, records.EvaluatedCaseIDsByTrack["routing"]) ||
-		!sameEvidenceCaseSet(poolCases, records.EvaluatedCaseIDsByTrack["model_pool"]) ||
-		!sameEvidenceCaseSet(jointCases, records.EvaluatedCaseIDsByTrack["joint"]) {
+	if !liveMoMSelectedCohortsMatch(manifest.TrackIDs, routingCases, poolCases, jointCases) {
 		return
 	}
 	armIDs, validArms := liveMoMArmIDs(manifest.Target.Mixture)
@@ -205,16 +207,22 @@ func deriveLiveMoMEvidenceLevels(
 		return
 	}
 	entries, validEntries := countLiveMoMAttestationEntries(attestation, routingCases, poolCases, jointCases, armIDs)
-	if !validEntries || !completeLiveMoMCaseMatrix(records, routingCases, armIDs, entries) {
+	if !validEntries {
 		return
 	}
 
-	// Reaching this point means the durable live-mom manifest and its hidden
-	// grading set were executed through the broker, every record was bound to a
-	// server receipt, and the exact dense case/arm matrix survived report seal.
-	levels.ByTrack["routing"] = "E3"
-	levels.ByTrack["model_pool"] = "E4"
-	levels.ByTrack["joint"] = "E5"
+	// Each selected aspect earns its own level from its complete broker-bound
+	// case matrix. This keeps routing-only and pool-only diagnostics useful
+	// without allowing an incomplete aspect to inherit a sibling's evidence.
+	if containsTrack(manifest.TrackIDs, "routing") && completeLiveMoMRouting(records, routingCases, entries) {
+		levels.ByTrack["routing"] = "E3"
+	}
+	if containsTrack(manifest.TrackIDs, "model_pool") && completeLiveMoMModelPool(records, poolCases, armIDs, entries) {
+		levels.ByTrack["model_pool"] = "E4"
+	}
+	if containsTrack(manifest.TrackIDs, "joint") && completeLiveMoMJoint(records, jointCases, entries) {
+		levels.ByTrack["joint"] = "E5"
+	}
 }
 
 func validLiveMoMEvidenceSubject(
@@ -225,15 +233,41 @@ func validLiveMoMEvidenceSubject(
 ) bool {
 	return executor.ID == liveRuntimeExecutorID && records.validated && attestation != nil &&
 		manifest.SuiteExecutors["live-mom-core"] == liveRuntimeExecutorID &&
-		containsTrack(manifest.TrackIDs, "routing") &&
-		containsTrack(manifest.TrackIDs, "model_pool") &&
-		containsTrack(manifest.TrackIDs, "joint") &&
+		(containsTrack(manifest.TrackIDs, "routing") ||
+			containsTrack(manifest.TrackIDs, "model_pool") ||
+			containsTrack(manifest.TrackIDs, "joint")) &&
 		manifest.Target.Mixture != nil && len(manifest.Target.Mixture.ModelArms) >= 2 &&
 		attestation.RunID == manifest.RunID && attestation.ManifestDigest == manifest.ManifestDigest &&
 		attestation.TargetID == manifest.Target.ID && attestation.Mode == ModeLive &&
 		attestation.PolicySnapshotDigest == manifest.PolicySnapshotDigest &&
 		attestation.BackendTopologyDigest == manifest.Target.BackendTopologyDigest &&
 		digestPattern.MatchString(attestation.Digest)
+}
+
+func liveMoMSelectedCohortsMatch(
+	trackIDs []TrackID,
+	routingCases map[string]struct{},
+	poolCases map[string]struct{},
+	jointCases map[string]struct{},
+) bool {
+	byTrack := map[TrackID]map[string]struct{}{
+		"routing": routingCases, "model_pool": poolCases, "joint": jointCases,
+	}
+	var reference map[string]struct{}
+	for _, trackID := range trackIDs {
+		cases, isMoMTrack := byTrack[trackID]
+		if !isMoMTrack {
+			continue
+		}
+		if len(cases) == 0 {
+			return false
+		}
+		if reference != nil && !sameEvidenceCaseSet(reference, cases) {
+			return false
+		}
+		reference = cases
+	}
+	return reference != nil
 }
 
 func liveMoMArmIDs(mixture *ManifestMixture) (map[string]struct{}, bool) {
@@ -307,19 +341,33 @@ func countLiveMoMAttestationEntries(
 	return counts, true
 }
 
-func completeLiveMoMCaseMatrix(
+func completeLiveMoMRouting(records recordAttestation, cases map[string]struct{}, entries liveMoMEntryCounts) bool {
+	if !sameEvidenceCaseSet(cases, records.EvaluatedCaseIDsByTrack["routing"]) {
+		return false
+	}
+	for caseID := range cases {
+		cell := records.CellEvidence["routing"][caseID]
+		if cell == nil || cell.Unavailable || cell.Rows != 1 || entries.routing[caseID] != 1 ||
+			!hasExactLiveMoMEvidenceKind(cell, liveMoMRoutingEvidenceKind) {
+			return false
+		}
+	}
+	return true
+}
+
+func completeLiveMoMModelPool(
 	records recordAttestation,
-	routingCases map[string]struct{},
+	cases map[string]struct{},
 	armIDs map[string]struct{},
 	entries liveMoMEntryCounts,
 ) bool {
-	for caseID := range routingCases {
-		routingCell := records.CellEvidence["routing"][caseID]
-		poolCell := records.CellEvidence["model_pool"][caseID]
-		jointCell := records.CellEvidence["joint"][caseID]
-		if routingCell == nil || routingCell.Unavailable || routingCell.Rows != 1 || entries.routing[caseID] != 1 ||
-			poolCell == nil || poolCell.Unavailable || poolCell.Rows != len(armIDs) || len(entries.pool[caseID]) != len(armIDs) ||
-			jointCell == nil || jointCell.Unavailable || jointCell.Rows != 1 || entries.joint[caseID] != 1 {
+	if !sameEvidenceCaseSet(cases, records.EvaluatedCaseIDsByTrack["model_pool"]) {
+		return false
+	}
+	for caseID := range cases {
+		cell := records.CellEvidence["model_pool"][caseID]
+		if cell == nil || cell.Unavailable || cell.Rows != len(armIDs) || len(entries.pool[caseID]) != len(armIDs) ||
+			!hasExactLiveMoMEvidenceKind(cell, liveMoMModelPoolEvidenceKind) {
 			return false
 		}
 		for armID := range armIDs {
@@ -329,6 +377,28 @@ func completeLiveMoMCaseMatrix(
 		}
 	}
 	return true
+}
+
+func completeLiveMoMJoint(records recordAttestation, cases map[string]struct{}, entries liveMoMEntryCounts) bool {
+	if !sameEvidenceCaseSet(cases, records.EvaluatedCaseIDsByTrack["joint"]) {
+		return false
+	}
+	for caseID := range cases {
+		cell := records.CellEvidence["joint"][caseID]
+		if cell == nil || cell.Unavailable || cell.Rows != 1 || entries.joint[caseID] != 1 ||
+			!hasExactLiveMoMEvidenceKind(cell, liveMoMJointEvidenceKind) {
+			return false
+		}
+	}
+	return true
+}
+
+func hasExactLiveMoMEvidenceKind(cell *recordCellAttestation, expected string) bool {
+	if len(cell.EvidenceKinds) != 1 {
+		return false
+	}
+	_, exact := cell.EvidenceKinds[expected]
+	return exact
 }
 
 func sameEvidenceCaseSet(left, right map[string]struct{}) bool {

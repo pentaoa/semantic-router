@@ -74,7 +74,7 @@ type CommandProcess struct {
 	envoyAPIKeyEnv   string
 	cpuSeconds       int
 	diagnosticSink   io.Writer
-	quotaCheck       func(runID string, runBytes, logicalCASBytes, physicalCASBytes int64) error
+	publishEvidence  func(*workerStaging) error
 }
 
 func NewCommandProcess(pythonPath string) *CommandProcess {
@@ -89,7 +89,6 @@ func (p *CommandProcess) Run(ctx context.Context, spec ProcessSpec, emit func(Wo
 	if err != nil {
 		return ProcessResult{}, err
 	}
-	staging.quotaCheck = p.quotaCheck
 	retainStaging := false
 	defer func() {
 		if !retainStaging {
@@ -109,10 +108,14 @@ func (p *CommandProcess) Run(ctx context.Context, spec ProcessSpec, emit func(Wo
 		return ProcessResult{}, err
 	}
 	transcript := brokerSession.broker.transcript(time.Now().UTC())
+	publishEvidence := staging.importEvidence
+	if p.publishEvidence != nil {
+		publishEvidence = func() error { return p.publishEvidence(staging) }
+	}
 	retainStaging = true
 	return ProcessResult{
 		ExecutionTranscript: &transcript,
-		publishEvidence:     staging.importEvidence,
+		publishEvidence:     publishEvidence,
 		discardEvidence:     staging.cleanup,
 	}, nil
 }

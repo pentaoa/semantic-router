@@ -24,6 +24,21 @@ func (s *Service) persistExecutionAttestation(
 	runID string,
 	transcript *brokerExecutionTranscript,
 ) (string, error) {
+	var digest string
+	err := s.store.withEvidencePublication(func() error {
+		var persistErr error
+		digest, persistErr = s.persistExecutionAttestationDuringPublication(runID, transcript)
+		return persistErr
+	})
+	return digest, err
+}
+
+// persistExecutionAttestationDuringPublication validates and publishes the
+// server transcript while the caller owns the lifecycle/evidence transaction.
+func (s *Service) persistExecutionAttestationDuringPublication(
+	runID string,
+	transcript *brokerExecutionTranscript,
+) (string, error) {
 	manifest, _, err := s.readDurableManifest(runID)
 	if err != nil {
 		return "", err
@@ -95,7 +110,7 @@ func (s *Service) persistExecutionAttestation(
 	if err != nil {
 		return "", err
 	}
-	if err := s.store.writeLifecycleBoundExecutionAttestation(attestation); err != nil {
+	if err := s.store.writeLifecycleBoundExecutionAttestationDuringPublication(attestation); err != nil {
 		return "", err
 	}
 	return attestation.Digest, nil

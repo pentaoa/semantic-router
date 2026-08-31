@@ -67,10 +67,13 @@ func (staging *workerStaging) importEvidence() error {
 func (staging *workerStaging) importEvidenceWithBudget(bundleLimit int64) error {
 	runEvidencePublicationMu.Lock()
 	defer runEvidencePublicationMu.Unlock()
-	return staging.importEvidenceUnlocked(bundleLimit)
+	return staging.importEvidenceDuringPublication(bundleLimit, nil)
 }
 
-func (staging *workerStaging) importEvidenceUnlocked(bundleLimit int64) error {
+func (staging *workerStaging) importEvidenceDuringPublication(
+	bundleLimit int64,
+	quotaCheck func(runID string, runBytes, logicalCASBytes, physicalCASBytes int64) error,
+) error {
 	destinationRun := filepath.Join(staging.destinationStore, "runs", staging.runID)
 	if err := requirePrivateDirectory(destinationRun); err != nil {
 		return fmt.Errorf("validate destination run bundle: %w", err)
@@ -101,8 +104,8 @@ func (staging *workerStaging) importEvidenceUnlocked(bundleLimit int64) error {
 			physicalCASBytes += object.size
 		}
 	}
-	if staging.quotaCheck != nil {
-		if err := staging.quotaCheck(staging.runID, runBytes, casBytes, physicalCASBytes); err != nil {
+	if quotaCheck != nil {
+		if err := quotaCheck(staging.runID, runBytes, casBytes, physicalCASBytes); err != nil {
 			return err
 		}
 	}

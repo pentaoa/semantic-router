@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
 func TestValidateRoutingTraceArtifactAcceptsStrictBoundedCaseJoinedRows(t *testing.T) {
@@ -89,11 +88,13 @@ func TestRealWorkerRoutingTracePassesServerBudgets(t *testing.T) {
 	service, err := NewService(Options{
 		DataDir: root, PythonPath: python, ConfigPath: configPath,
 		RouterAPIURL: server.URL, EnvoyURL: server.URL,
-		CodeRevision: testSourceRevision, MaxConcurrent: 1, Process: &controlledProcess{},
+		CodeRevision: testSourceRevision, MaxConcurrent: 1,
 	})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
+	var diagnostics bytes.Buffer
+	service.process.(*CommandProcess).diagnosticSink = &diagnostics
 	t.Cleanup(func() { _ = service.Close() })
 	run, err := service.CreateRun(context.Background(), CreateRunRequest{
 		ClientRequestID: newTestClientRequestID(),
@@ -104,37 +105,12 @@ func TestRealWorkerRoutingTracePassesServerBudgets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateRun: %v", err)
 	}
-	startedAt := time.Now().UTC()
-	run.Status = StatusRunning
-	run.StartedAt = &startedAt
-	if updateErr := service.store.UpdateRun(run); updateErr != nil {
-		t.Fatalf("stage running run: %v", updateErr)
+	if _, startErr := service.StartRun(context.Background(), run.ID); startErr != nil {
+		t.Fatalf("StartRun: %v", startErr)
 	}
-	spec := ProcessSpec{
-		ManifestPath:       filepath.Join(root, "runs", run.ID, manifestFileName),
-		StorePath:          root,
-		SuiteStorePath:     service.store.SuiteRoot(),
-		executionContracts: serviceExecutionContractsForTest(t, service),
-	}
-	process := NewCommandProcess(python)
-	var diagnostics bytes.Buffer
-	process.diagnosticSink = &diagnostics
-	result, processErr := process.Run(context.Background(), spec, func(WorkerEvent) error { return nil })
-	if processErr != nil {
-		t.Fatalf("real routing worker: %v; diagnostics=%s", processErr, diagnostics.String())
-	}
-	defer result.discardStagedEvidence()
-	if sealingErr := service.beginSealing(run.ID); sealingErr != nil {
-		t.Fatalf("begin routing evidence sealing: %v", sealingErr)
-	}
-	if publishErr := result.publishStagedEvidence(); publishErr != nil {
-		t.Fatalf("publish routing worker evidence: %v", publishErr)
-	}
-	if _, attestationErr := service.persistExecutionAttestation(run.ID, result.ExecutionTranscript); attestationErr != nil {
-		t.Fatalf("attest real routing worker: %v", attestationErr)
-	}
-	if validationErr := service.validateAndAnchorReport(run.ID); validationErr != nil {
-		t.Fatalf("Go rejected a bounded real-worker routing trace: %v", validationErr)
+	completed := waitForRunStatus(t, service, run.ID, StatusCompleted)
+	if completed.Error != "" {
+		t.Fatalf("live routing lifecycle failed: %s; diagnostics=%s", completed.Error, diagnostics.String())
 	}
 	traceBytes, err := os.ReadFile(filepath.Join(root, "runs", run.ID, "routing-traces.jsonl"))
 	if err != nil {

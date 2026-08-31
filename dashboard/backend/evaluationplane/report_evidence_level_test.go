@@ -210,33 +210,93 @@ func TestSealedLiveMoMEvidenceDerivesTrackSpecificLevelsOnlyFromCompleteAttestat
 		t.Fatalf("complete sealed live-mom levels=%+v, want E3/E4/E5", levels)
 	}
 
-	tests := map[string]func(*recordAttestation, *executionAttestation){
-		"missing receipt": func(_ *recordAttestation, value *executionAttestation) {
+	tests := map[string]struct {
+		mutate   func(*recordAttestation, *executionAttestation)
+		expected map[TrackID]EvidenceLevel
+	}{
+		"missing receipt": {mutate: func(_ *recordAttestation, value *executionAttestation) {
 			value.Entries[2].BrokerReceipt = ""
-		},
-		"missing frozen arm": func(_ *recordAttestation, value *executionAttestation) {
+		}, expected: map[TrackID]EvidenceLevel{"routing": "E0", "model_pool": "E0", "joint": "E0"}},
+		"missing frozen arm": {mutate: func(_ *recordAttestation, value *executionAttestation) {
 			value.Entries = append(value.Entries[:3], value.Entries[4:]...)
-		},
-		"incomplete case coverage": func(value *recordAttestation, _ *executionAttestation) {
+		}, expected: map[TrackID]EvidenceLevel{"routing": "E3", "model_pool": "E0", "joint": "E5"}},
+		"incomplete case coverage": {mutate: func(value *recordAttestation, _ *executionAttestation) {
 			delete(value.EvaluatedCaseIDsByTrack["joint"], "case-1")
-		},
-		"unavailable cell": func(value *recordAttestation, _ *executionAttestation) {
+		}, expected: map[TrackID]EvidenceLevel{"routing": "E3", "model_pool": "E4", "joint": "E0"}},
+		"unavailable cell": {mutate: func(value *recordAttestation, _ *executionAttestation) {
 			value.CellEvidence["routing"]["case-1"].Unavailable = true
-		},
+		}, expected: map[TrackID]EvidenceLevel{"routing": "E0", "model_pool": "E4", "joint": "E5"}},
 	}
-	for name, mutate := range tests {
+	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
 			candidateRecords, candidateAttestation := sealedLiveMoMEvidenceFixtureCopies(records, attestation)
-			mutate(&candidateRecords, &candidateAttestation)
+			test.mutate(&candidateRecords, &candidateAttestation)
 			got := derive(candidateRecords, &candidateAttestation)
-			if got.Run != "E0" || got.ByTrack["routing"] != "E0" ||
-				got.ByTrack["model_pool"] != "E0" || got.ByTrack["joint"] != "E0" {
-				t.Fatalf("fail-closed levels=%+v, want every track E0", got)
+			if got.Run != "E0" {
+				t.Fatalf("incomplete selected matrix levels=%+v, want E0 headline", got)
+			}
+			for trackID, expected := range test.expected {
+				if got.ByTrack[trackID] != expected {
+					t.Fatalf("incomplete selected matrix levels=%+v, want %s=%s", got, trackID, expected)
+				}
 			}
 		})
 	}
 	if got := derive(records, nil); got.Run != "E0" {
 		t.Fatalf("missing execution attestation levels=%+v, want E0", got)
+	}
+}
+
+func TestSealedLiveMoMEvidenceQualifiesSelectedAspectsIndependently(t *testing.T) {
+	manifest, records, attestation := sealedLiveMoMEvidenceFixture()
+	tests := []struct {
+		track TrackID
+		level EvidenceLevel
+	}{
+		{track: "routing", level: "E3"},
+		{track: "model_pool", level: "E4"},
+		{track: "joint", level: "E5"},
+	}
+	for _, test := range tests {
+		t.Run(string(test.track), func(t *testing.T) {
+			candidateRecords, candidateAttestation := sealedLiveMoMEvidenceFixtureCopies(records, attestation)
+			manifest.TrackIDs = []TrackID{test.track}
+			for trackID := range candidateRecords.PlannedCaseIDsByTrack {
+				if trackID != test.track {
+					delete(candidateRecords.PlannedCaseIDsByTrack, trackID)
+					delete(candidateRecords.EvaluatedCaseIDsByTrack, trackID)
+					delete(candidateRecords.CellEvidence, trackID)
+				}
+			}
+			filtered := candidateAttestation.Entries[:1]
+			for _, entry := range candidateAttestation.Entries[1:] {
+				if entry.TrackID == test.track {
+					filtered = append(filtered, entry)
+				}
+			}
+			candidateAttestation.Entries = filtered
+			levels, err := deriveSealedEvidenceLevels(
+				t.TempDir(), manifest, candidateRecords, suiteGateQualification{},
+				builtinExecutorContractForTest(t, liveRuntimeExecutorID), nil, &candidateAttestation,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if levels.Run != test.level || levels.ByTrack[test.track] != test.level {
+				t.Fatalf("selected %s levels=%+v, want %s", test.track, levels, test.level)
+			}
+			candidateRecords.CellEvidence[test.track]["case-1"].EvidenceKinds = map[string]struct{}{"wrong-kind": {}}
+			levels, err = deriveSealedEvidenceLevels(
+				t.TempDir(), manifest, candidateRecords, suiteGateQualification{},
+				builtinExecutorContractForTest(t, liveRuntimeExecutorID), nil, &candidateAttestation,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if levels.Run != "E0" || levels.ByTrack[test.track] != "E0" {
+				t.Fatalf("selected %s accepted the wrong evidence kind: %+v", test.track, levels)
+			}
+		})
 	}
 }
 
@@ -337,9 +397,9 @@ func sealedLiveMoMEvidenceFixture() (RunManifest, recordAttestation, executionAt
 			"routing": copySet(), "model_pool": copySet(), "joint": copySet(),
 		},
 		CellEvidence: map[TrackID]map[string]*recordCellAttestation{
-			"routing":    {"case-1": {Rows: 1, EvidenceKinds: map[string]struct{}{"live-routing-diagnostic-smoke": {}}}},
-			"model_pool": {"case-1": {Rows: 2, EvidenceKinds: map[string]struct{}{"live-mom-arm-outcome.v1": {}}}},
-			"joint":      {"case-1": {Rows: 1, EvidenceKinds: map[string]struct{}{"live-mom-routed-outcome.v1": {}}}},
+			"routing":    {"case-1": {Rows: 1, EvidenceKinds: map[string]struct{}{liveMoMRoutingEvidenceKind: {}}}},
+			"model_pool": {"case-1": {Rows: 2, EvidenceKinds: map[string]struct{}{liveMoMModelPoolEvidenceKind: {}}}},
+			"joint":      {"case-1": {Rows: 1, EvidenceKinds: map[string]struct{}{liveMoMJointEvidenceKind: {}}}},
 		},
 	}
 	armFast, armStrong := "arm-fast", "arm-strong"
@@ -417,8 +477,15 @@ func sealedLiveMoMEvidenceFixtureCopies(
 	attestation executionAttestation,
 ) (recordAttestation, executionAttestation) {
 	copiedRecords := records
+	copiedRecords.PlannedCaseIDsByTrack = make(map[TrackID]map[string]struct{}, len(records.PlannedCaseIDsByTrack))
 	copiedRecords.EvaluatedCaseIDsByTrack = make(map[TrackID]map[string]struct{}, len(records.EvaluatedCaseIDsByTrack))
 	copiedRecords.CellEvidence = make(map[TrackID]map[string]*recordCellAttestation, len(records.CellEvidence))
+	for trackID, values := range records.PlannedCaseIDsByTrack {
+		copiedRecords.PlannedCaseIDsByTrack[trackID] = make(map[string]struct{}, len(values))
+		for caseID := range values {
+			copiedRecords.PlannedCaseIDsByTrack[trackID][caseID] = struct{}{}
+		}
+	}
 	for trackID, values := range records.EvaluatedCaseIDsByTrack {
 		copiedRecords.EvaluatedCaseIDsByTrack[trackID] = make(map[string]struct{}, len(values))
 		for caseID := range values {

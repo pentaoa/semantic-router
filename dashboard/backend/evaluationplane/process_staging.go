@@ -13,7 +13,6 @@ type workerStaging struct {
 	destinationStore string
 	runID            string
 	manifestBytes    []byte
-	quotaCheck       func(runID string, runBytes, logicalCASBytes, physicalCASBytes int64) error
 }
 
 func prepareWorkerStaging(spec ProcessSpec) (*workerStaging, error) {
